@@ -1,0 +1,26 @@
+apiVersion: dingo.blinklabs.io/v1alpha1
+kind: DingoNode
+metadata:
+  name: relay
+  namespace: cardano
+spec:
+  role: relay
+  network: mainnet
+  replicas: 2
+  storageMode: core
+  persistence:
+    size: 120Gi
+  mithril:
+    enabled: true
+  metrics:
+    podMonitor:
+      enabled: true
+  topology:
+    # Relays peer with the block producer and any external relays.
+    relayRefs:
+      - producer
+    externalRelays:
+      - address: relay1.example.com
+        port: 3001
+        valency: 1
+        trustable: true

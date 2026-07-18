@@ -1,0 +1,11 @@
+.claude/
+.codex/
+.git/
+.github/
+.worktrees/
+bin/
+dingo-operator
+Dockerfile
+docs/
+README.md
+cover.out
