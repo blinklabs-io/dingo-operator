@@ -300,9 +300,14 @@ type DingoNodeSpec struct {
 	// "custom" (with networkMagic).
 	// +kubebuilder:validation:MinLength=1
 	Network string `json:"network"`
-	// NetworkMagic is required when network is "custom".
+	// NetworkMagic is required when network is "custom". It is a 32-bit unsigned
+	// value; it is modeled as int64 with an explicit 0..4294967295 range so the
+	// CRD accepts the full uint32 space (a uint32 renders as int32 and would
+	// reject magics above 2147483647).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
 	// +optional
-	NetworkMagic *uint32 `json:"networkMagic,omitempty"`
+	NetworkMagic *int64 `json:"networkMagic,omitempty"`
 	// +optional
 	Image ImageSpec `json:"image,omitempty"`
 	// Replicas applies to relays. Block-producer active count is HA-managed.

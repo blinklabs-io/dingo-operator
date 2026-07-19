@@ -171,7 +171,7 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 	if dn.Spec.NetworkMagic != nil {
 		env = append(env, corev1.EnvVar{
 			Name:  "CARDANO_NETWORK_MAGIC",
-			Value: strconv.FormatUint(uint64(*dn.Spec.NetworkMagic), 10),
+			Value: strconv.FormatInt(*dn.Spec.NetworkMagic, 10),
 		})
 	}
 	if opts.HasTopology {

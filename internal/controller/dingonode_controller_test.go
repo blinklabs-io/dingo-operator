@@ -65,7 +65,7 @@ func startEnv(t *testing.T) (client.Client, context.Context) {
 }
 
 func reconcilerFor(c client.Client) *DingoNodeReconciler {
-	return &DingoNodeReconciler{Client: c, Scheme: c.Scheme()}
+	return &DingoNodeReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
 }
 
 func createNamespace(t *testing.T, ctx context.Context, c client.Client, name string) {

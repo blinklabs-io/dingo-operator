@@ -83,7 +83,7 @@ exec dingo mithril sync
 			env,
 			corev1.EnvVar{
 				Name:  "CARDANO_NETWORK_MAGIC",
-				Value: strconv.FormatUint(uint64(*dn.Spec.NetworkMagic), 10),
+				Value: strconv.FormatInt(*dn.Spec.NetworkMagic, 10),
 			},
 		)
 	}

@@ -57,9 +57,14 @@ func BuildNetworkPolicy(
 	metricsPort := intstr.FromInt32(portMetrics)
 
 	metricsIngress := networkingv1.NetworkPolicyIngressRule{
-		// Metrics scraping from anywhere in the namespace.
+		// Metrics scraping is allowed from any namespace: the cluster-scoped
+		// operator (which scrapes KES/opcert state to drive rotation) and
+		// Prometheus normally run outside the node's namespace, so a
+		// same-namespace-only rule would silently break KES monitoring. Only the
+		// metrics port is opened this way; the node-to-node ports stay
+		// restricted to declared relays below.
 		From: []networkingv1.NetworkPolicyPeer{
-			{PodSelector: &metav1.LabelSelector{}},
+			{NamespaceSelector: &metav1.LabelSelector{}},
 		},
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Protocol: &tcp, Port: &metricsPort},

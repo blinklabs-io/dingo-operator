@@ -34,14 +34,46 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleRelay, Network: "mainnet"},
 		},
 		{
+			// A bare `kind: DingoNode` with no spec must be rejected, not
+			// silently reconciled as a relay.
+			name:    "empty spec",
+			spec:    dingov1alpha1.DingoNodeSpec{},
+			wantErr: true,
+		},
+		{
+			name:    "missing network",
+			spec:    dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleRelay},
+			wantErr: true,
+		},
+		{
+			name:    "invalid role",
+			spec:    dingov1alpha1.DingoNodeSpec{Role: "gateway", Network: "mainnet"},
+			wantErr: true,
+		},
+		{
 			name:    "custom network without magic",
 			spec:    dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleRelay, Network: "custom"},
 			wantErr: true,
 		},
 		{
+			// Only the native Secret backend is implemented; reserved backends
+			// must be rejected rather than silently mounting a plain Secret.
+			name: "unsupported keys sourceType",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
+				BlockProducer: &dingov1alpha1.BlockProducerSpec{
+					Keys: dingov1alpha1.KeysSpec{
+						SourceType: dingov1alpha1.KeySourceExternalSecret,
+						SecretRef:  "keys",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "custom network with magic",
 			spec: dingov1alpha1.DingoNodeSpec{
-				Role: dingov1alpha1.RoleRelay, Network: "custom", NetworkMagic: ptr.To(uint32(42)),
+				Role: dingov1alpha1.RoleRelay, Network: "custom", NetworkMagic: ptr.To(int64(42)),
 			},
 		},
 		{
@@ -68,18 +100,19 @@ func TestValidateSpec(t *testing.T) {
 			},
 		},
 		{
-			name: "auto rotation without cold signer",
+			name: "valid block producer assisted rotation",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
 					Keys:     dingov1alpha1.KeysSpec{SecretRef: "keys"},
-					Rotation: dingov1alpha1.RotationSpec{Mode: dingov1alpha1.RotationModeAuto},
+					Rotation: dingov1alpha1.RotationSpec{Mode: dingov1alpha1.RotationModeAssisted},
 				},
 			},
-			wantErr: true,
 		},
 		{
-			name: "auto rotation with bursa signer",
+			// Auto rotation is not implemented yet; it must be rejected rather
+			// than silently accepted, even with a cold signer configured.
+			name: "auto rotation rejected as unsupported",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
@@ -93,6 +126,22 @@ func TestValidateSpec(t *testing.T) {
 					},
 				},
 			},
+			wantErr: true,
+		},
+		{
+			// ActiveStandby HA is not implemented yet; accepting it would give a
+			// single-replica node while the user believes they have failover.
+			name: "active standby rejected as unsupported",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
+				BlockProducer: &dingov1alpha1.BlockProducerSpec{
+					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					HA: dingov1alpha1.HASpec{
+						Strategy: dingov1alpha1.HAActiveStandby,
+					},
+				},
+			},
+			wantErr: true,
 		},
 	}
 	for _, tc := range tests {

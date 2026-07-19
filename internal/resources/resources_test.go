@@ -137,6 +137,26 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.True(t, found, "expected block-producer keys volume")
 	})
 
+	t.Run("keys checksum stamps a rollout annotation", func(t *testing.T) {
+		dn := bpNode()
+		anns := func(sum string) map[string]string {
+			return BuildStatefulSet(dn, RenderOptions{
+				Replicas: 1, MountKeys: true, KeysChecksum: sum,
+			}).Spec.Template.Annotations
+		}
+		// No checksum -> no annotation (no spurious rollout).
+		_, present := anns("")[KeysChecksumAnnotation]
+		assert.False(t, present, "empty checksum must not set the annotation")
+		// A checksum is propagated to the pod template so a key change rolls.
+		assert.Equal(t, "abc123", anns("abc123")[KeysChecksumAnnotation])
+		// A different checksum changes the template (triggers a new revision).
+		assert.NotEqual(
+			t,
+			anns("abc123")[KeysChecksumAnnotation],
+			anns("def456")[KeysChecksumAnnotation],
+		)
+	})
+
 	t.Run("nil block producer config omits key material", func(t *testing.T) {
 		dn := bpNode()
 		dn.Spec.BlockProducer = nil

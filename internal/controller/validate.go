@@ -26,6 +26,22 @@ import (
 // validateSpec enforces cross-field invariants the CRD OpenAPI schema cannot
 // express on its own.
 func validateSpec(dn *dingov1alpha1.DingoNode) error {
+	// Guard against an object with no (or an incomplete) spec. The CRD requires
+	// role/network only when spec is present, so a bare `kind: DingoNode` would
+	// otherwise reconcile with empty values and be treated as a relay.
+	switch dn.Spec.Role {
+	case dingov1alpha1.RoleRelay, dingov1alpha1.RoleBlockProducer:
+	default:
+		return fmt.Errorf(
+			"spec.role must be %q or %q",
+			dingov1alpha1.RoleRelay,
+			dingov1alpha1.RoleBlockProducer,
+		)
+	}
+	if dn.Spec.Network == "" {
+		return errors.New("spec.network is required")
+	}
+
 	if dn.Spec.Network == "custom" && dn.Spec.NetworkMagic == nil {
 		return errors.New("network \"custom\" requires spec.networkMagic")
 	}
@@ -40,26 +56,36 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				"role blockProducer requires spec.blockProducer.keys.secretRef",
 			)
 		}
+		// Only the native Secret backend is implemented. Reject the reserved
+		// ExternalSecret/CSI values rather than accepting them and silently
+		// mounting a plain Secret (or failing the pod when the referent is
+		// absent).
+		if st := bp.Keys.SourceType; st != "" &&
+			st != dingov1alpha1.KeySourceSecret {
+			return fmt.Errorf(
+				"keys.sourceType %q is not supported in this operator "+
+					"version; only Secret is implemented",
+				st,
+			)
+		}
+		// Reject configuration for features that are not implemented yet, rather
+		// than accepting them and silently doing nothing. A block producer set
+		// to Auto rotation or ActiveStandby would otherwise appear healthy while
+		// its KES key drifts toward expiry with no rotation, or while the
+		// operator provides no failover at all. These branches are relaxed when
+		// the P2/P3 rotation and HA pipelines land (cold-signer validation
+		// returns here for Auto at that point).
 		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
-			cs := bp.Rotation.ColdSigner
-			switch cs.Type {
-			case dingov1alpha1.ColdSignerBursa:
-				if cs.Endpoint == "" {
-					return errors.New(
-						"rotation mode Auto with cold signer bursa requires coldSigner.endpoint",
-					)
-				}
-			case dingov1alpha1.ColdSignerSecret:
-				if cs.SecretRef == "" {
-					return errors.New(
-						"rotation mode Auto with cold signer secret requires coldSigner.secretRef",
-					)
-				}
-			case dingov1alpha1.ColdSignerNone, "":
-				return errors.New(
-					"rotation mode Auto requires a cold signer (bursa or secret)",
-				)
-			}
+			return errors.New(
+				"rotation mode Auto is not supported in this operator version; " +
+					"use MonitorOnly or Assisted",
+			)
+		}
+		if bp.HA.Strategy == dingov1alpha1.HAActiveStandby {
+			return errors.New(
+				"ha strategy ActiveStandby is not supported in this operator " +
+					"version; use SingleActive",
+			)
 		}
 	}
 	return nil
@@ -71,5 +97,3 @@ func checksum(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:16]
 }
-
-var _ = fmt.Sprintf // reserved for future validation messages

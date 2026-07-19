@@ -1167,8 +1167,14 @@ spec:
                 minLength: 1
                 type: string
               networkMagic:
-                description: NetworkMagic is required when network is "custom".
-                format: int32
+                description: |-
+                  NetworkMagic is required when network is "custom". It is a 32-bit unsigned
+                  value; it is modeled as int64 with an explicit 0..4294967295 range so the
+                  CRD accepts the full uint32 space (a uint32 renders as int32 and would
+                  reject magics above 2147483647).
+                format: int64
+                maximum: 4294967295
+                minimum: 0
                 type: integer
               nodeSelector:
                 additionalProperties:

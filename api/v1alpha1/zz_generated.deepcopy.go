@@ -136,7 +136,7 @@ func (in *DingoNodeSpec) DeepCopyInto(out *DingoNodeSpec) {
 	*out = *in
 	if in.NetworkMagic != nil {
 		in, out := &in.NetworkMagic, &out.NetworkMagic
-		*out = new(uint32)
+		*out = new(int64)
 		**out = **in
 	}
 	out.Image = in.Image
