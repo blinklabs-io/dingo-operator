@@ -67,6 +67,8 @@ type DingoNodeReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
+// +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 
 // Reconcile drives a DingoNode toward its desired state.
 func (r *DingoNodeReconciler) Reconcile(
@@ -156,7 +158,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// PodMonitor is best-effort and skipped when the CRD is absent.
 	if dn.Spec.Metrics.PodMonitor.Enabled && r.PodMonitorCRD {
 		if err := r.upsertPodMonitor(ctx, dn); err != nil {
-			return fmt.Errorf("apply podmonitor: %w", err)
+			log.FromContext(ctx).V(1).Info(
+				"unable to apply PodMonitor",
+				"error",
+				err,
+			)
 		}
 	}
 	return nil

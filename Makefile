@@ -38,8 +38,8 @@ clean: ## Remove build artifacts
 	rm -f $(APPLICATION_NAME)
 
 format: mod-tidy ## Format source
-	go fmt ./...
-	gofmt -s -w $(GO_FILES)
+	golangci-lint fmt
+	golines -w --ignore-generated --chain-split-dots --max-len=80 --reformat-tags .
 
 golines: ## Reformat long lines
 	golines -w --ignore-generated --chain-split-dots --max-len=80 --reformat-tags .

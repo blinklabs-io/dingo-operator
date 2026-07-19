@@ -54,13 +54,22 @@ func BuildNetworkPolicy(
 	dn *dingov1alpha1.DingoNode,
 ) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
-	relayPort := intstr.FromInt32(portRelay)
-	privatePort := intstr.FromInt32(portPrivate)
 	metricsPort := intstr.FromInt32(portMetrics)
 
-	var peerSelector metav1.LabelSelector
+	metricsIngress := networkingv1.NetworkPolicyIngressRule{
+		// Metrics scraping from anywhere in the namespace.
+		From: []networkingv1.NetworkPolicyPeer{
+			{PodSelector: &metav1.LabelSelector{}},
+		},
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &metricsPort},
+		},
+	}
+	ingress := []networkingv1.NetworkPolicyIngressRule{metricsIngress}
 	if refs := dn.Spec.Topology.RelayRefs; len(refs) > 0 {
-		peerSelector = metav1.LabelSelector{
+		relayPort := intstr.FromInt32(portRelay)
+		privatePort := intstr.FromInt32(portPrivate)
+		peerSelector := metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
 					Key:      NodeLabel,
@@ -69,10 +78,7 @@ func BuildNetworkPolicy(
 				},
 			},
 		}
-	}
-
-	ingress := []networkingv1.NetworkPolicyIngressRule{
-		{
+		ingress = []networkingv1.NetworkPolicyIngressRule{{
 			From: []networkingv1.NetworkPolicyPeer{
 				{PodSelector: &peerSelector},
 			},
@@ -80,16 +86,7 @@ func BuildNetworkPolicy(
 				{Protocol: &tcp, Port: &relayPort},
 				{Protocol: &tcp, Port: &privatePort},
 			},
-		},
-		{
-			// Metrics scraping from anywhere in the namespace.
-			From: []networkingv1.NetworkPolicyPeer{
-				{PodSelector: &metav1.LabelSelector{}},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &metricsPort},
-			},
-		},
+		}, metricsIngress}
 	}
 
 	return &networkingv1.NetworkPolicy{

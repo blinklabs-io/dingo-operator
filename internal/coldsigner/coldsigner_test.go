@@ -28,28 +28,45 @@ func TestSecretSignerRoundTrip(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	t.Run("from full private key", func(t *testing.T) {
-		s, err := NewSecretSigner(priv)
-		require.NoError(t, err)
-		sig, err := s.Sign(context.Background(), []byte("opcert-signable"))
-		require.NoError(t, err)
-		assert.Len(t, sig, SignatureSize)
-		assert.True(t, ed25519.Verify(pub, []byte("opcert-signable"), sig))
-		assert.Equal(t, pub, s.PublicKey())
-	})
+	tests := []struct {
+		name      string
+		input     []byte
+		message   []byte
+		wantValid bool
+	}{
+		{
+			name:      "from full private key",
+			input:     priv,
+			message:   []byte("opcert-signable"),
+			wantValid: true,
+		},
+		{
+			name:      "from seed",
+			input:     priv.Seed(),
+			message:   []byte("msg"),
+			wantValid: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := NewSecretSigner(tt.input)
+			require.NoError(t, err)
+			sig, err := s.Sign(context.Background(), tt.message)
+			require.NoError(t, err)
+			assert.Len(t, sig, SignatureSize)
+			assert.Equal(
+				t,
+				tt.wantValid,
+				ed25519.Verify(pub, tt.message, sig),
+			)
+			assert.Equal(t, pub, s.PublicKey())
+		})
+	}
+}
 
-	t.Run("from seed", func(t *testing.T) {
-		s, err := NewSecretSigner(priv.Seed())
-		require.NoError(t, err)
-		sig, err := s.Sign(context.Background(), []byte("msg"))
-		require.NoError(t, err)
-		assert.True(t, ed25519.Verify(pub, []byte("msg"), sig))
-	})
-
-	t.Run("invalid length", func(t *testing.T) {
-		_, err := NewSecretSigner([]byte{1, 2, 3})
-		assert.Error(t, err)
-	})
+func TestSecretSignerInvalidLength(t *testing.T) {
+	_, err := NewSecretSigner([]byte{1, 2, 3})
+	assert.Error(t, err)
 }
 
 func TestBursaSignerNotImplemented(t *testing.T) {

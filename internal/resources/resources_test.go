@@ -137,11 +137,65 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.True(t, found, "expected block-producer keys volume")
 	})
 
+	t.Run("nil block producer config omits key material", func(t *testing.T) {
+		dn := bpNode()
+		dn.Spec.BlockProducer = nil
+		sts := BuildStatefulSet(
+			dn,
+			RenderOptions{Replicas: 1, MountKeys: true},
+		)
+		for _, volume := range sts.Spec.Template.Spec.Volumes {
+			assert.NotEqual(t, keysVolumeName, volume.Name)
+		}
+		env := envMap(dn, RenderOptions{MountKeys: true})
+		assert.NotContains(t, env, "CARDANO_BLOCK_PRODUCER")
+	})
+
 	t.Run("mithril init container present by default", func(t *testing.T) {
 		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
 		require.Len(t, sts.Spec.Template.Spec.InitContainers, 1)
 		assert.Equal(t, mithrilInitName, sts.Spec.Template.Spec.InitContainers[0].Name)
 	})
+}
+
+func TestBuildNetworkPolicy(t *testing.T) {
+	t.Run(
+		"without relay refs only metrics ingress is allowed",
+		func(t *testing.T) {
+			policy := BuildNetworkPolicy(bpNode())
+			require.Len(t, policy.Spec.Ingress, 1)
+			require.Len(t, policy.Spec.Ingress[0].Ports, 1)
+			require.NotNil(t, policy.Spec.Ingress[0].Ports[0].Port)
+			assert.Equal(
+				t,
+				portMetrics,
+				policy.Spec.Ingress[0].Ports[0].Port.IntValue(),
+			)
+		},
+	)
+
+	t.Run(
+		"with relay refs allows node ports from selected relays",
+		func(t *testing.T) {
+			dn := bpNode()
+			dn.Spec.Topology.RelayRefs = []string{"relay-a", "relay-b"}
+			policy := BuildNetworkPolicy(dn)
+			require.Len(t, policy.Spec.Ingress, 2)
+			require.Len(t, policy.Spec.Ingress[0].From, 1)
+			require.NotNil(t, policy.Spec.Ingress[0].From[0].PodSelector)
+			require.Len(
+				t,
+				policy.Spec.Ingress[0].From[0].PodSelector.MatchExpressions,
+				1,
+			)
+			assert.ElementsMatch(
+				t,
+				[]string{"relay-a", "relay-b"},
+				policy.Spec.Ingress[0].From[0].PodSelector.
+					MatchExpressions[0].Values,
+			)
+		},
+	)
 }
 
 func TestImageRef(t *testing.T) {

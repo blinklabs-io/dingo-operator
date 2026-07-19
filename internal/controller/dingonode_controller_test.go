@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -107,12 +108,19 @@ func TestReconcileRelay(t *testing.T) {
 
 	// Services and ServiceAccount exist.
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay-headless", Namespace: "relay-ns"}, &corev1.Service{}))
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &corev1.Service{}))
+	svc := &corev1.Service{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, svc))
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &corev1.ServiceAccount{}))
+	wantIPFamilies := svc.Spec.IPFamilies
+	wantIPFamilyPolicy := svc.Spec.IPFamilyPolicy
+	reconcile(t, ctx, reconcilerFor(c), "relay", "relay-ns")
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, svc))
+	assert.Equal(t, wantIPFamilies, svc.Spec.IPFamilies)
+	assert.Equal(t, wantIPFamilyPolicy, svc.Spec.IPFamilyPolicy)
 
 	// A relay must NOT get a block-producer PDB or NetworkPolicy.
 	err := c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &policyv1.PodDisruptionBudget{})
-	assert.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err))
 }
 
 func TestReconcileBlockProducer(t *testing.T) {
@@ -174,5 +182,5 @@ func TestReconcileInvalidSpecSetsDegraded(t *testing.T) {
 	assert.Equal(t, "Degraded", got.Status.Phase)
 	// No StatefulSet should have been created for an invalid spec.
 	err := c.Get(ctx, types.NamespacedName{Name: "bad", Namespace: "bad-ns"}, &appsv1.StatefulSet{})
-	assert.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err))
 }

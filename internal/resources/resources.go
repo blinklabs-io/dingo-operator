@@ -180,7 +180,7 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 			Value: topologyMountPath + "/" + topologyFileName,
 		})
 	}
-	if IsBlockProducer(dn) && opts.MountKeys {
+	if mountsBlockProducerKeys(dn, opts) {
 		bp := dn.Spec.BlockProducer
 		env = append(
 			env,
@@ -387,7 +387,7 @@ func volumeMounts(
 			ReadOnly:  true,
 		})
 	}
-	if IsBlockProducer(dn) && opts.MountKeys {
+	if mountsBlockProducerKeys(dn, opts) {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      keysVolumeName,
 			MountPath: keysMountPath,
@@ -411,7 +411,7 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 			},
 		})
 	}
-	if IsBlockProducer(dn) && opts.MountKeys {
+	if mountsBlockProducerKeys(dn, opts) {
 		vols = append(vols, corev1.Volume{
 			Name: keysVolumeName,
 			VolumeSource: corev1.VolumeSource{
@@ -423,6 +423,13 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 		})
 	}
 	return vols
+}
+
+func mountsBlockProducerKeys(
+	dn *dingov1alpha1.DingoNode,
+	opts RenderOptions,
+) bool {
+	return IsBlockProducer(dn) && opts.MountKeys && dn.Spec.BlockProducer != nil
 }
 
 func dataPVC(dn *dingov1alpha1.DingoNode) corev1.PersistentVolumeClaim {

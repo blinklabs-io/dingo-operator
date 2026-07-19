@@ -59,10 +59,18 @@ func (r *DingoNodeReconciler) upsertService(
 		// Preserve the API-assigned cluster IP on update (immutable).
 		clusterIP := svc.Spec.ClusterIP
 		clusterIPs := svc.Spec.ClusterIPs
+		ipFamilies := svc.Spec.IPFamilies
+		ipFamilyPolicy := svc.Spec.IPFamilyPolicy
 		svc.Spec = desired.Spec
 		if clusterIP != "" {
 			svc.Spec.ClusterIP = clusterIP
 			svc.Spec.ClusterIPs = clusterIPs
+		}
+		if len(ipFamilies) > 0 {
+			svc.Spec.IPFamilies = ipFamilies
+		}
+		if ipFamilyPolicy != nil {
+			svc.Spec.IPFamilyPolicy = ipFamilyPolicy
 		}
 		return ctrl.SetControllerReference(dn, svc, r.Scheme)
 	})
