@@ -53,9 +53,6 @@ const (
 // DingoNodeReconciler reconciles a DingoNode object.
 type DingoNodeReconciler struct {
 	client.Client
-	// APIReader performs uncached reads (the keys Secret is not cached/watched,
-	// so it needs only "get" RBAC on secrets — see keysChecksum).
-	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	ForgeStatus   forgestatus.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
@@ -66,7 +63,6 @@ type DingoNodeReconciler struct {
 // +kubebuilder:rbac:groups=dingo.blinklabs.io,resources=dingonodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -141,11 +137,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if hasTopo {
 		opts.TopologyChecksum = checksum(topoJSON)
 	}
-	if opts.MountKeys {
-		// Roll the pod when the mounted key material changes (Dingo has no
-		// hot-reload, so a rotated opcert only takes effect on restart).
-		opts.KeysChecksum = r.keysChecksum(ctx, dn)
-	}
+	// Rolling the pod when the mounted key Secret changes (opts.KeysChecksum) is
+	// deferred to the rotation controller (P2/P3): it will observe key material
+	// through narrowly scoped, purpose-built access rather than the cluster-wide
+	// Secret read this operator must not hold. Until then, an external key/opcert
+	// swap is picked up on the next pod restart.
 
 	if err := r.upsertServiceAccount(ctx, dn); err != nil {
 		return fmt.Errorf("apply serviceaccount: %w", err)
@@ -184,40 +180,6 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 	}
 	return nil
-}
-
-// keysChecksum returns a digest that changes whenever the block-producer key
-// Secret changes, so that an updated opcert/KES key (e.g. an externally
-// delivered opcert under Assisted rotation) forces a StatefulSet rollout. The
-// Secret is read uncached (APIReader) and only its resourceVersion is used, so
-// the operator needs just "get" on secrets and never has to load key bytes to
-// decide whether to roll. A changed Secret is picked up on the next periodic
-// requeue. Returns "" (no rollout annotation) when the Secret is missing or
-// unreadable — the pod surfaces a missing Secret through its own mount failure.
-func (r *DingoNodeReconciler) keysChecksum(
-	ctx context.Context,
-	dn *dingov1alpha1.DingoNode,
-) string {
-	if r.APIReader == nil || dn.Spec.BlockProducer == nil {
-		return ""
-	}
-	ref := dn.Spec.BlockProducer.Keys.SecretRef
-	if ref == "" {
-		return ""
-	}
-	secret := &corev1.Secret{}
-	if err := r.APIReader.Get(
-		ctx,
-		types.NamespacedName{Name: ref, Namespace: dn.Namespace},
-		secret,
-	); err != nil {
-		log.FromContext(ctx).V(1).Info(
-			"keys secret unavailable for rollout checksum",
-			"secret", ref, "error", err.Error(),
-		)
-		return ""
-	}
-	return checksum(secret.ResourceVersion)
 }
 
 // reconcileStatus refreshes the DingoNode status from live children.

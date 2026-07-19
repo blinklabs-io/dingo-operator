@@ -107,7 +107,6 @@ func main() {
 
 	reconciler := &controller.DingoNodeReconciler{
 		Client:        mgr.GetClient(),
-		APIReader:     mgr.GetAPIReader(),
 		Scheme:        mgr.GetScheme(),
 		ForgeStatus:   forgestatus.NewHTTPFetcher(),
 		PodMonitorCRD: podMonitorInstalled(mgr),

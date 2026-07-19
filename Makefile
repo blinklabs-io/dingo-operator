@@ -37,9 +37,13 @@ mod-tidy: ## Fetch and tidy module dependencies
 clean: ## Remove build artifacts
 	rm -f $(APPLICATION_NAME)
 
-format: mod-tidy ## Format source
-	golangci-lint fmt
-	golines -w --ignore-generated --chain-split-dots --max-len=80 --reformat-tags .
+# Uses only the Go-provided formatters so a clean checkout can run the default
+# `make` target without installing extra tooling. Full formatting (gofumpt, gci,
+# goimports, golines) is applied by `make golines` and enforced by `make lint`
+# / CI (golangci-lint).
+format: mod-tidy ## Format source (go fmt + gofmt)
+	go fmt ./...
+	gofmt -s -w $(GO_FILES)
 
 golines: ## Reformat long lines
 	golines -w --ignore-generated --chain-split-dots --max-len=80 --reformat-tags .

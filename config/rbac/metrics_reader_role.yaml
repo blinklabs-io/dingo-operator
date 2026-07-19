@@ -1,0 +1,15 @@
+# Grants read access to the operator's protected /metrics endpoint. Bind this
+# ClusterRole to the ServiceAccount of your metrics scraper (e.g. Prometheus) so
+# it can pass the metrics authn/authz filter. The operator's own permission to
+# authenticate/authorize scrapes (tokenreviews/subjectaccessreviews) is in
+# role.yaml (generated from +kubebuilder:rbac markers). The Helm chart wires the
+# equivalent for real deployments.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dingo-operator-metrics-reader
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
