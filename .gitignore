@@ -27,6 +27,21 @@ go.work.sum
 # env file
 .env
 
+# Operator binary
+/dingo-operator
+
+# Local tooling
+/bin/
+
+# Kubebuilder / envtest
+testbin/
+
+# Git worktrees
+.worktrees/
+
+# Local-only planning/design docs (kept locally, never committed)
+/docs/
+
 # Editor/IDE
 # .idea/
 # .vscode/

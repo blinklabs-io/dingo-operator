@@ -1,0 +1,40 @@
+apiVersion: dingo.blinklabs.io/v1alpha1
+kind: DingoNode
+metadata:
+  name: producer
+  namespace: cardano
+spec:
+  role: blockProducer
+  network: mainnet
+  storageMode: core
+  persistence:
+    size: 120Gi
+  mithril:
+    enabled: true
+  metrics:
+    podMonitor:
+      enabled: true
+  topology:
+    # A block producer peers only with its own relays (never public roots).
+    relayRefs:
+      - relay
+  blockProducer:
+    # A Secret holding cardano-cli text-envelope files: vrf.skey, kes.skey,
+    # opcert.cert. The operator mounts it read-only at /keys (mode 0600).
+    keys:
+      secretRef: producer-pool-keys
+    slotsPerKESPeriod: 129600
+    maxKESEvolutions: 62
+    rotation:
+      # MonitorOnly: surface KES/opcert state and RotationDue; do not mutate keys.
+      # Switch to Auto with a cold signer to fully automate opcert issuance.
+      mode: MonitorOnly
+      renewBeforePeriods: 8
+      # coldSigner:
+      #   type: bursa
+      #   endpoint: https://bursa-signer.spo-signing.svc:8443
+      #   mtlsSecretRef: bursa-client-mtls
+      #   coldKeyHash: <blake2b224 of cold vkey>
+    ha:
+      strategy: SingleActive
+      failover: Automatic
