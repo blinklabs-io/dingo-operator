@@ -101,7 +101,20 @@ func TestBuildEnv(t *testing.T) {
 		dn := bpNode()
 		dn.Spec.BlockProducer = nil
 		env := envMap(dn, RenderOptions{MountKeys: true})
-		assert.NotContains(t, env, "CARDANO_BLOCK_PRODUCER")
+		// All block-producer env vars are gated behind the same bp != nil
+		// condition in BuildEnv, so none of them should be present.
+		for _, key := range []string{
+			"CARDANO_BLOCK_PRODUCER",
+			"CARDANO_SHELLEY_VRF_KEY",
+			"CARDANO_SHELLEY_KES_KEY",
+			"CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE",
+			"DINGO_SLOTS_PER_KES_PERIOD",
+			"DINGO_MAX_KES_EVOLUTIONS",
+			"DINGO_FORGE_SYNC_TOLERANCE_SLOTS",
+			"DINGO_FORGE_STALE_GAP_THRESHOLD_SLOTS",
+		} {
+			assert.NotContains(t, env, key)
+		}
 	})
 
 	t.Run("spec environment overrides defaults", func(t *testing.T) {
