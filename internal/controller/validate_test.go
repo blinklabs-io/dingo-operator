@@ -20,7 +20,6 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/utils/ptr"
 )
 
 func TestValidateSpec(t *testing.T) {
@@ -73,7 +72,7 @@ func TestValidateSpec(t *testing.T) {
 		{
 			name: "custom network with magic",
 			spec: dingov1alpha1.DingoNodeSpec{
-				Role: dingov1alpha1.RoleRelay, Network: "custom", NetworkMagic: ptr.To(int64(42)),
+				Role: dingov1alpha1.RoleRelay, Network: "custom", NetworkMagic: new(int64(42)),
 			},
 		},
 		{

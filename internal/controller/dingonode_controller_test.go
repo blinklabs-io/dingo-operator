@@ -92,7 +92,7 @@ func TestReconcileRelay(t *testing.T) {
 		Spec: dingov1alpha1.DingoNodeSpec{
 			Role:     dingov1alpha1.RoleRelay,
 			Network:  "preview",
-			Replicas: ptr.To(int32(2)),
+			Replicas: new(int32(2)),
 		},
 	}
 	require.NoError(t, c.Create(ctx, dn))

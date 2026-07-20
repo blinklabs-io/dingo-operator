@@ -247,10 +247,10 @@ func podSecurityContext(
 		return dn.Spec.PodSecurityContext
 	}
 	return &corev1.PodSecurityContext{
-		RunAsNonRoot:        ptr.To(true),
-		RunAsUser:           ptr.To(int64(dingoUID)),
-		RunAsGroup:          ptr.To(int64(dingoGID)),
-		FSGroup:             ptr.To(int64(dingoGID)),
+		RunAsNonRoot:        new(true),
+		RunAsUser:           new(int64(dingoUID)),
+		RunAsGroup:          new(int64(dingoGID)),
+		FSGroup:             new(int64(dingoGID)),
 		FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -261,10 +261,10 @@ func podSecurityContext(
 // containerSecurityContext returns the hardened container security context.
 func containerSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: ptr.To(false),
+		AllowPrivilegeEscalation: new(false),
 		// Dingo writes its NtC socket and scratch files to the container
 		// filesystem, so the root FS cannot be fully read-only yet.
-		ReadOnlyRootFilesystem: ptr.To(false),
+		ReadOnlyRootFilesystem: new(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
@@ -321,7 +321,7 @@ func BuildStatefulSet(
 		},
 		Spec: appsv1.StatefulSetSpec{
 			ServiceName:         HeadlessServiceName(dn),
-			Replicas:            ptr.To(opts.Replicas),
+			Replicas:            new(opts.Replicas),
 			PodManagementPolicy: appsv1.OrderedReadyPodManagement,
 			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 				Type: appsv1.RollingUpdateStatefulSetStrategyType,
@@ -418,7 +418,7 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  bp.Keys.SecretRef,
-					DefaultMode: ptr.To(int32(0o600)),
+					DefaultMode: new(int32(0o600)),
 				},
 			},
 		})

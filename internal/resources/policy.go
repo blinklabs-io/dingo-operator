@@ -21,7 +21,6 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 )
 
 // BuildPodDisruptionBudget keeps at least one node available during voluntary
@@ -124,6 +123,6 @@ func BuildServiceAccount(dn *dingov1alpha1.DingoNode) *corev1.ServiceAccount {
 			Namespace: dn.Namespace,
 			Labels:    Labels(dn),
 		},
-		AutomountServiceAccountToken: ptr.To(false),
+		AutomountServiceAccountToken: new(false),
 	}
 }

@@ -24,4 +24,7 @@ jobs:
       - name: install nilaway
         run: go install go.uber.org/nilaway/cmd/nilaway@latest
       - name: run nilaway
-        run: nilaway ./...
+        # Scope analysis to this module's own packages. Analyzing the full
+        # transitive dependency graph (controller-runtime, k8s.io/...) needs
+        # ~20 GB RAM and OOM-kills the ~16 GB runner ("operation was canceled").
+        run: nilaway -include-pkgs="github.com/blinklabs-io/dingo-operator" ./...
