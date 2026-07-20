@@ -39,7 +39,9 @@ func (r *DingoNodeReconciler) upsertServiceAccount(
 	dn *dingov1alpha1.DingoNode,
 ) error {
 	desired := resources.BuildServiceAccount(dn)
-	sa := &corev1.ServiceAccount{ObjectMeta: objectMeta(desired.Name, desired.Namespace)}
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
 		sa.Labels = desired.Labels
 		sa.AutomountServiceAccountToken = desired.AutomountServiceAccountToken
@@ -53,7 +55,9 @@ func (r *DingoNodeReconciler) upsertService(
 	dn *dingov1alpha1.DingoNode,
 	desired *corev1.Service,
 ) error {
-	svc := &corev1.Service{ObjectMeta: objectMeta(desired.Name, desired.Namespace)}
+	svc := &corev1.Service{
+		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		svc.Labels = desired.Labels
 		// Preserve the API-assigned cluster IP on update (immutable).
@@ -83,7 +87,9 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 	topologyJSON string,
 ) error {
 	desired := resources.BuildTopologyConfigMap(dn, topologyJSON)
-	cm := &corev1.ConfigMap{ObjectMeta: objectMeta(desired.Name, desired.Namespace)}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = desired.Labels
 		cm.Data = desired.Data
@@ -98,7 +104,9 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 	opts resources.RenderOptions,
 ) error {
 	desired := resources.BuildStatefulSet(dn, opts)
-	sts := &appsv1.StatefulSet{ObjectMeta: objectMeta(desired.Name, desired.Namespace)}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		sts.Labels = desired.Labels
 		if sts.CreationTimestamp.IsZero() {
@@ -122,7 +130,9 @@ func (r *DingoNodeReconciler) upsertPDB(
 	dn *dingov1alpha1.DingoNode,
 ) error {
 	desired := resources.BuildPodDisruptionBudget(dn)
-	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: objectMeta(desired.Name, desired.Namespace)}
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pdb, func() error {
 		pdb.Labels = desired.Labels
 		if pdb.CreationTimestamp.IsZero() {
@@ -141,7 +151,9 @@ func (r *DingoNodeReconciler) upsertNetworkPolicy(
 	dn *dingov1alpha1.DingoNode,
 ) error {
 	desired := resources.BuildNetworkPolicy(dn)
-	np := &networkingv1.NetworkPolicy{ObjectMeta: objectMeta(desired.Name, desired.Namespace)}
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
 		np.Labels = desired.Labels
 		np.Spec = desired.Spec
@@ -161,6 +173,9 @@ func (r *DingoNodeReconciler) upsertPodMonitor(
 	pm.SetNamespace(dn.Namespace)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pm, func() error {
 		pm.SetLabels(desired.GetLabels())
+		if pm.Object == nil {
+			pm.Object = make(map[string]any)
+		}
 		pm.Object["spec"] = desired.Object["spec"]
 		return ctrl.SetControllerReference(dn, pm, r.Scheme)
 	})

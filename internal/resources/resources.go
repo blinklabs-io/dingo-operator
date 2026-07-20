@@ -180,8 +180,8 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 			Value: topologyMountPath + "/" + topologyFileName,
 		})
 	}
-	if mountsBlockProducerKeys(dn, opts) {
-		bp := dn.Spec.BlockProducer
+	bp := dn.Spec.BlockProducer
+	if mountsBlockProducerKeys(dn, opts) && bp != nil {
 		env = append(
 			env,
 			corev1.EnvVar{Name: "CARDANO_BLOCK_PRODUCER", Value: "true"},
@@ -411,12 +411,13 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 			},
 		})
 	}
-	if mountsBlockProducerKeys(dn, opts) {
+	bp := dn.Spec.BlockProducer
+	if mountsBlockProducerKeys(dn, opts) && bp != nil {
 		vols = append(vols, corev1.Volume{
 			Name: keysVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName:  dn.Spec.BlockProducer.Keys.SecretRef,
+					SecretName:  bp.Keys.SecretRef,
 					DefaultMode: ptr.To(int32(0o600)),
 				},
 			},

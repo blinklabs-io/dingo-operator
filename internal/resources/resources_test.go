@@ -42,7 +42,9 @@ func bpNode() *dingov1alpha1.DingoNode {
 			BlockProducer: &dingov1alpha1.BlockProducerSpec{
 				SlotsPerKESPeriod: 129600,
 				MaxKESEvolutions:  62,
-				Keys:              dingov1alpha1.KeysSpec{SecretRef: "pool-keys"},
+				Keys: dingov1alpha1.KeysSpec{
+					SecretRef: "pool-keys",
+				},
 			},
 		},
 	}
@@ -86,9 +88,20 @@ func TestBuildEnv(t *testing.T) {
 		assert.Equal(t, "true", env["CARDANO_BLOCK_PRODUCER"])
 		assert.Equal(t, "/keys/kes.skey", env["CARDANO_SHELLEY_KES_KEY"])
 		assert.Equal(t, "/keys/vrf.skey", env["CARDANO_SHELLEY_VRF_KEY"])
-		assert.Equal(t, "/keys/opcert.cert", env["CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE"])
+		assert.Equal(
+			t,
+			"/keys/opcert.cert",
+			env["CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE"],
+		)
 		assert.Equal(t, "129600", env["DINGO_SLOTS_PER_KES_PERIOD"])
 		assert.Equal(t, "62", env["DINGO_MAX_KES_EVOLUTIONS"])
+	})
+
+	t.Run("block producer without config has no key env", func(t *testing.T) {
+		dn := bpNode()
+		dn.Spec.BlockProducer = nil
+		env := envMap(dn, RenderOptions{MountKeys: true})
+		assert.NotContains(t, env, "CARDANO_BLOCK_PRODUCER")
 	})
 
 	t.Run("spec environment overrides defaults", func(t *testing.T) {
@@ -174,7 +187,11 @@ func TestBuildStatefulSet(t *testing.T) {
 	t.Run("mithril init container present by default", func(t *testing.T) {
 		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
 		require.Len(t, sts.Spec.Template.Spec.InitContainers, 1)
-		assert.Equal(t, mithrilInitName, sts.Spec.Template.Spec.InitContainers[0].Name)
+		assert.Equal(
+			t,
+			mithrilInitName,
+			sts.Spec.Template.Spec.InitContainers[0].Name,
+		)
 	})
 }
 

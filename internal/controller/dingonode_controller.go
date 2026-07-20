@@ -226,7 +226,8 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) {
-	if r.ForgeStatus == nil {
+	bp := dn.Spec.BlockProducer
+	if r.ForgeStatus == nil || bp == nil {
 		return
 	}
 	logger := log.FromContext(ctx)
@@ -251,7 +252,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		RemainingPeriods: st.RemainingKESPeriods,
 	}
 
-	renewBefore := int64(dn.Spec.BlockProducer.Rotation.RenewBeforePeriods)
+	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
 	if renewBefore > 0 && st.RemainingKESPeriods <= renewBefore {
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type: condRotationDue, Status: metav1.ConditionTrue, Reason: "KESExpiringSoon",

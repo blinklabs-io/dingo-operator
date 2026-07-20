@@ -38,7 +38,7 @@ func BuildPodMonitor(dn *dingov1alpha1.DingoNode) *unstructured.Unstructured {
 	}
 	selector := toInterfaceMap(SelectorLabels(dn))
 
-	pm := &unstructured.Unstructured{}
+	pm := &unstructured.Unstructured{Object: map[string]any{}}
 	pm.SetGroupVersionKind(PodMonitorGVK)
 	pm.SetName(dn.Name)
 	pm.SetNamespace(dn.Namespace)
