@@ -53,6 +53,10 @@ const (
 // DingoNodeReconciler reconciles a DingoNode object.
 type DingoNodeReconciler struct {
 	client.Client
+	// APIReader is an uncached reader used to fetch the one named keys Secret on
+	// demand. It bypasses the manager's cache so the operator never holds a
+	// cluster-wide Secret informer/watch/cache.
+	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	ForgeStatus   forgestatus.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
@@ -66,6 +70,13 @@ type DingoNodeReconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//
+// The operator also reads block-producer key Secrets (get-only, uncached) to
+// detect key/opcert rotation. That grant is deliberately NOT declared here:
+// adding secrets to this always-cluster-wide manager ClusterRole would give
+// read access to every Secret in the cluster. The deployment provides it
+// instead — the Helm chart renders a cluster-wide keys-reader ClusterRole by
+// default, or namespaced Roles when rbac.keySecretsNamespaces is set.
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
@@ -137,11 +148,40 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if hasTopo {
 		opts.TopologyChecksum = checksum(topoJSON)
 	}
-	// Rolling the pod when the mounted key Secret changes (opts.KeysChecksum) is
-	// deferred to the rotation controller (P2/P3): it will observe key material
-	// through narrowly scoped, purpose-built access rather than the cluster-wide
-	// Secret read this operator must not hold. Until then, an external key/opcert
-	// swap is picked up on the next pod restart.
+	// Roll the block-producer pod when its mounted key Secret changes so an
+	// externally-delivered key/opcert swap takes effect. The Secret is read via
+	// the uncached APIReader (get-only, no informer/watch) to avoid holding the
+	// cluster-wide Secret cache this operator must not have.
+	if bp := dn.Spec.BlockProducer; resources.IsBlockProducer(dn) &&
+		r.APIReader != nil && bp != nil {
+		secret := &corev1.Secret{}
+		key := types.NamespacedName{
+			Name:      bp.Keys.SecretRef,
+			Namespace: dn.Namespace,
+		}
+		if err := r.APIReader.Get(ctx, key, secret); err == nil {
+			opts.KeysChecksum = keysChecksum(secret)
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("read keys secret: %w", err)
+		}
+		// NotFound: the keys Secret is absent; leave the checksum empty. The pod
+		// cannot start without it, which is surfaced elsewhere.
+	}
+	// Roll the pod when the referenced config bundle (config.json + genesis)
+	// changes. The ConfigMap is non-secret and already cached by the manager, so
+	// the ordinary cached client is used here (unlike the keys Secret above).
+	if dn.Spec.ConfigRef != "" {
+		cm := &corev1.ConfigMap{}
+		key := types.NamespacedName{
+			Name:      dn.Spec.ConfigRef,
+			Namespace: dn.Namespace,
+		}
+		if err := r.Get(ctx, key, cm); err == nil {
+			opts.ConfigChecksum = configChecksum(cm)
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("read config bundle: %w", err)
+		}
+	}
 
 	if err := r.upsertServiceAccount(ctx, dn); err != nil {
 		return fmt.Errorf("apply serviceaccount: %w", err)

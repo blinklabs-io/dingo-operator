@@ -65,7 +65,7 @@ func startEnv(t *testing.T) (client.Client, context.Context) {
 }
 
 func reconcilerFor(c client.Client) *DingoNodeReconciler {
-	return &DingoNodeReconciler{Client: c, Scheme: c.Scheme()}
+	return &DingoNodeReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 }
 
 func createNamespace(t *testing.T, ctx context.Context, c client.Client, name string) {
@@ -159,6 +159,138 @@ func TestReconcileBlockProducer(t *testing.T) {
 	// Block producer gets a PDB and a NetworkPolicy.
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "bp", Namespace: "bp-ns"}, &policyv1.PodDisruptionBudget{}))
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "bp", Namespace: "bp-ns"}, &networkingv1.NetworkPolicy{}))
+}
+
+func TestBlockProducerKeysChecksumRollout(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "keys-ns")
+
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pool-keys",
+			Namespace: "keys-ns",
+		},
+		Data: map[string][]byte{
+			"kes.skey":    []byte("kes-material"),
+			"opcert.cert": []byte("opcert-material"),
+			"vrf.skey":    []byte("vrf-material"),
+		},
+	}))
+
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: "keys-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleBlockProducer,
+			Network: "preview",
+			BlockProducer: &dingov1alpha1.BlockProducerSpec{
+				SlotsPerKESPeriod: 129600,
+				MaxKESEvolutions:  62,
+				Keys:              dingov1alpha1.KeysSpec{SecretRef: "pool-keys"},
+				Rotation: dingov1alpha1.RotationSpec{
+					Mode: dingov1alpha1.RotationModeMonitorOnly,
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
+
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp", Namespace: "keys-ns"},
+		sts,
+	))
+	first := sts.Spec.Template.Annotations["dingo.blinklabs.io/keys-checksum"]
+	assert.NotEmpty(
+		t,
+		first,
+		"keys-checksum annotation should be set from the Secret",
+	)
+
+	// Rotating the key material must change the checksum so the pod rolls.
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "pool-keys", Namespace: "keys-ns"},
+		secret,
+	))
+	secret.Data["opcert.cert"] = []byte("opcert-material-ROTATED")
+	require.NoError(t, c.Update(ctx, secret))
+
+	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp", Namespace: "keys-ns"},
+		sts,
+	))
+	second := sts.Spec.Template.Annotations["dingo.blinklabs.io/keys-checksum"]
+	assert.NotEmpty(t, second)
+	assert.NotEqual(
+		t,
+		first,
+		second,
+		"keys-checksum must change when key material changes",
+	)
+}
+
+func TestConfigRefChecksumRollout(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "cfg-ns")
+
+	require.NoError(t, c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "net-config", Namespace: "cfg-ns"},
+		Data: map[string]string{
+			"config.json":          `{"Protocol":"Cardano"}`,
+			"shelley-genesis.json": `{"networkMagic":42}`,
+		},
+	}))
+
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-relay", Namespace: "cfg-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:         dingov1alpha1.RoleRelay,
+			Network:      "custom",
+			NetworkMagic: new(int64(42)),
+			ConfigRef:    "net-config",
+			// custom + configRef requires Mithril handled explicitly.
+			Mithril: dingov1alpha1.MithrilSpec{Enabled: new(false)},
+		},
+	}
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "custom-relay", "cfg-ns")
+
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "custom-relay", Namespace: "cfg-ns"},
+		sts,
+	))
+	first := sts.Spec.Template.Annotations["dingo.blinklabs.io/config-checksum"]
+	assert.NotEmpty(t, first, "config-checksum should be set from the ConfigMap")
+
+	cm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "net-config", Namespace: "cfg-ns"},
+		cm,
+	))
+	cm.Data["shelley-genesis.json"] = `{"networkMagic":42,"epochLength":500}`
+	require.NoError(t, c.Update(ctx, cm))
+
+	reconcile(t, ctx, reconcilerFor(c), "custom-relay", "cfg-ns")
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "custom-relay", Namespace: "cfg-ns"},
+		sts,
+	))
+	second := sts.Spec.Template.Annotations["dingo.blinklabs.io/config-checksum"]
+	assert.NotEqual(
+		t,
+		first,
+		second,
+		"config-checksum must change when the config bundle changes",
+	)
 }
 
 func TestReconcileInvalidSpecSetsDegraded(t *testing.T) {

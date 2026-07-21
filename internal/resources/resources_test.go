@@ -20,6 +20,7 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -132,6 +133,32 @@ func TestBuildEnv(t *testing.T) {
 		env := envMap(relayNode(), RenderOptions{HasTopology: true})
 		assert.Equal(t, "/config/topology.json", env["CARDANO_TOPOLOGY"])
 	})
+
+	t.Run("config ref sets CARDANO_CONFIG", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.ConfigRef = "devnet-config"
+		env := envMap(dn, RenderOptions{})
+		assert.Equal(
+			t,
+			"/cardano-config/config.json",
+			env["CARDANO_CONFIG"],
+		)
+	})
+
+	t.Run("no config ref omits CARDANO_CONFIG", func(t *testing.T) {
+		env := envMap(relayNode(), RenderOptions{})
+		assert.NotContains(t, env, "CARDANO_CONFIG")
+	})
+
+	t.Run("spec environment overrides CARDANO_CONFIG", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.ConfigRef = "devnet-config"
+		dn.Spec.Environment = map[string]string{
+			"CARDANO_CONFIG": "/custom/config.json",
+		}
+		env := envMap(dn, RenderOptions{})
+		assert.Equal(t, "/custom/config.json", env["CARDANO_CONFIG"])
+	})
 }
 
 func TestBuildStatefulSet(t *testing.T) {
@@ -204,6 +231,107 @@ func TestBuildStatefulSet(t *testing.T) {
 			t,
 			mithrilInitName,
 			sts.Spec.Template.Spec.InitContainers[0].Name,
+		)
+	})
+
+	t.Run("config ref mounts config bundle read-only", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.ConfigRef = "devnet-config"
+		sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+
+		var vol *corev1.Volume
+		for i := range sts.Spec.Template.Spec.Volumes {
+			v := &sts.Spec.Template.Spec.Volumes[i]
+			if v.Name == configBundleVolumeName {
+				vol = v
+			}
+		}
+		require.NotNil(t, vol, "expected cardano-config volume")
+		require.NotNil(t, vol.ConfigMap)
+		assert.Equal(t, "devnet-config", vol.ConfigMap.Name)
+
+		container := sts.Spec.Template.Spec.Containers[0]
+		var mount *corev1.VolumeMount
+		for i := range container.VolumeMounts {
+			m := &container.VolumeMounts[i]
+			if m.Name == configBundleVolumeName {
+				mount = m
+			}
+		}
+		require.NotNil(t, mount, "expected cardano-config volume mount")
+		assert.Equal(t, configBundleMountPath, mount.MountPath)
+		assert.True(t, mount.ReadOnly)
+	})
+
+	t.Run("no config ref omits config bundle", func(t *testing.T) {
+		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
+		for _, v := range sts.Spec.Template.Spec.Volumes {
+			assert.NotEqual(t, configBundleVolumeName, v.Name)
+		}
+		container := sts.Spec.Template.Spec.Containers[0]
+		for _, m := range container.VolumeMounts {
+			assert.NotEqual(t, configBundleVolumeName, m.Name)
+		}
+	})
+
+	t.Run("mithril init container gets the config bundle", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.ConfigRef = "devnet-config"
+		sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+		require.Len(t, sts.Spec.Template.Spec.InitContainers, 1)
+		ic := sts.Spec.Template.Spec.InitContainers[0]
+
+		var cfg string
+		for _, e := range ic.Env {
+			if e.Name == "CARDANO_CONFIG" {
+				cfg = e.Value
+			}
+		}
+		assert.Equal(
+			t,
+			configBundleMountPath+"/"+configBundleFileName,
+			cfg,
+			"init container must point at the mounted config.json",
+		)
+
+		var mounted bool
+		for _, m := range ic.VolumeMounts {
+			if m.Name == configBundleVolumeName {
+				mounted = true
+				assert.Equal(t, configBundleMountPath, m.MountPath)
+				assert.True(t, m.ReadOnly)
+			}
+		}
+		assert.True(t, mounted, "init container must mount the config bundle")
+	})
+
+	t.Run("init container omits config bundle without a ref", func(t *testing.T) {
+		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
+		ic := sts.Spec.Template.Spec.InitContainers[0]
+		for _, e := range ic.Env {
+			assert.NotEqual(t, "CARDANO_CONFIG", e.Name)
+		}
+		for _, m := range ic.VolumeMounts {
+			assert.NotEqual(t, configBundleVolumeName, m.Name)
+		}
+	})
+
+	t.Run("config checksum stamps a rollout annotation", func(t *testing.T) {
+		dn := relayNode()
+		anns := func(sum string) map[string]string {
+			return BuildStatefulSet(dn, RenderOptions{
+				Replicas: 1, ConfigChecksum: sum,
+			}).Spec.Template.Annotations
+		}
+		// No checksum -> no annotation (no spurious rollout).
+		_, present := anns("")[ConfigChecksumAnnotation]
+		assert.False(t, present, "empty checksum must not set the annotation")
+		// A checksum is propagated so a config-bundle change rolls the pod.
+		assert.Equal(t, "cfg123", anns("cfg123")[ConfigChecksumAnnotation])
+		assert.NotEqual(
+			t,
+			anns("cfg123")[ConfigChecksumAnnotation],
+			anns("cfg456")[ConfigChecksumAnnotation],
 		)
 	})
 }

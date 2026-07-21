@@ -1101,6 +1101,18 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              configRef:
+                description: |-
+                  ConfigRef names a ConfigMap holding a Cardano node config.json plus its
+                  referenced genesis files (byron/shelley/alonzo/conway-genesis.json), all as
+                  sibling keys. When set, the operator mounts it read-only and points Dingo at
+                  it via CARDANO_CONFIG. Required for custom networks whose genesis is not
+                  built into Dingo; leave empty for named networks (mainnet/preprod/preview).
+                  Must be a valid ConfigMap name (RFC 1123 DNS subdomain) so an invalid
+                  reference is rejected at admission rather than failing pod creation later.
+                maxLength: 253
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
               environment:
                 additionalProperties:
                   type: string

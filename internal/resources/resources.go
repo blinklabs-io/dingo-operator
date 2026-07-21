@@ -45,6 +45,9 @@ const (
 	TopologyChecksumAnnotation = "dingo.blinklabs.io/topology-checksum"
 	// KeysChecksumAnnotation forces a rollout when key material changes.
 	KeysChecksumAnnotation = "dingo.blinklabs.io/keys-checksum"
+	// ConfigChecksumAnnotation forces a rollout when the config bundle
+	// (config.json + genesis files) referenced by spec.configRef changes.
+	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
 
 	containerName   = "dingo"
 	mithrilInitName = "mithril-sync"
@@ -58,6 +61,10 @@ const (
 	topologyVolumeName = "topology"
 	topologyMountPath  = "/config"
 	topologyFileName   = "topology.json"
+
+	configBundleVolumeName = "cardano-config"
+	configBundleMountPath  = "/cardano-config"
+	configBundleFileName   = "config.json"
 
 	portRelay   = 3001
 	portPrivate = 3002
@@ -153,6 +160,8 @@ type RenderOptions struct {
 	TopologyChecksum string
 	// KeysChecksum triggers a rollout when key material changes.
 	KeysChecksum string
+	// ConfigChecksum triggers a rollout when the config bundle changes.
+	ConfigChecksum string
 	// Replicas is the desired StatefulSet replica count.
 	Replicas int32
 	// MountKeys mounts the block-producer key Secret. Keyless standby pods set
@@ -178,6 +187,12 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "CARDANO_TOPOLOGY",
 			Value: topologyMountPath + "/" + topologyFileName,
+		})
+	}
+	if dn.Spec.ConfigRef != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "CARDANO_CONFIG",
+			Value: configBundleMountPath + "/" + configBundleFileName,
 		})
 	}
 	bp := dn.Spec.BlockProducer
@@ -287,6 +302,9 @@ func BuildStatefulSet(
 	if opts.KeysChecksum != "" {
 		podAnnotations[KeysChecksumAnnotation] = opts.KeysChecksum
 	}
+	if opts.ConfigChecksum != "" {
+		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
+	}
 
 	container := corev1.Container{
 		Name:            containerName,
@@ -387,6 +405,13 @@ func volumeMounts(
 			ReadOnly:  true,
 		})
 	}
+	if dn.Spec.ConfigRef != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      configBundleVolumeName,
+			MountPath: configBundleMountPath,
+			ReadOnly:  true,
+		})
+	}
 	if mountsBlockProducerKeys(dn, opts) {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      keysVolumeName,
@@ -406,6 +431,18 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: TopologyConfigMapName(dn),
+					},
+				},
+			},
+		})
+	}
+	if dn.Spec.ConfigRef != "" {
+		vols = append(vols, corev1.Volume{
+			Name: configBundleVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: dn.Spec.ConfigRef,
 					},
 				},
 			},
