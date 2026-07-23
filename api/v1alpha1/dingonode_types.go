@@ -308,6 +308,17 @@ type DingoNodeSpec struct {
 	// +kubebuilder:validation:Maximum=4294967295
 	// +optional
 	NetworkMagic *int64 `json:"networkMagic,omitempty"`
+	// ConfigRef names a ConfigMap holding a Cardano node config.json plus its
+	// referenced genesis files (byron/shelley/alonzo/conway-genesis.json), all as
+	// sibling keys. When set, the operator mounts it read-only and points Dingo at
+	// it via CARDANO_CONFIG. Required for custom networks whose genesis is not
+	// built into Dingo; leave empty for named networks (mainnet/preprod/preview).
+	// Must be a valid ConfigMap name (RFC 1123 DNS subdomain) so an invalid
+	// reference is rejected at admission rather than failing pod creation later.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	ConfigRef string `json:"configRef,omitempty"`
 	// +optional
 	Image ImageSpec `json:"image,omitempty"`
 	// Replicas applies to relays. Block-producer active count is HA-managed.

@@ -96,6 +96,23 @@ exec dingo mithril sync
 			},
 		)
 	}
+	// A custom network's genesis is not built into Dingo, so "dingo mithril
+	// sync" must be pointed at the mounted config bundle just like the main
+	// container; otherwise it fails to load config.json before bootstrap.
+	mounts := []corev1.VolumeMount{
+		{Name: dataVolumeName, MountPath: dataMountPath},
+	}
+	if dn.Spec.ConfigRef != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "CARDANO_CONFIG",
+			Value: configBundleMountPath + "/" + configBundleFileName,
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      configBundleVolumeName,
+			MountPath: configBundleMountPath,
+			ReadOnly:  true,
+		})
+	}
 	return []corev1.Container{
 		{
 			Name:            mithrilInitName,
@@ -103,9 +120,7 @@ exec dingo mithril sync
 			ImagePullPolicy: pullPolicy(dn),
 			Command:         []string{"/bin/sh", "-c", script},
 			Env:             env,
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: dataVolumeName, MountPath: dataMountPath},
-			},
+			VolumeMounts:    mounts,
 			SecurityContext: containerSecurityContext(),
 			Resources:       dn.Spec.Resources,
 		},

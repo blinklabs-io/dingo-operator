@@ -70,9 +70,42 @@ func TestValidateSpec(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "custom network with magic",
+			// custom now also requires a config bundle, and Mithril must be
+			// disabled (or given an aggregator) since a custom net has none.
+			name: "custom network with magic, configRef, mithril disabled",
 			spec: dingov1alpha1.DingoNodeSpec{
-				Role: dingov1alpha1.RoleRelay, Network: "custom", NetworkMagic: new(int64(42)),
+				Role: dingov1alpha1.RoleRelay, Network: "custom",
+				NetworkMagic: new(int64(42)), ConfigRef: "devnet-config",
+				Mithril: dingov1alpha1.MithrilSpec{Enabled: new(false)},
+			},
+		},
+		{
+			// custom has no genesis built into Dingo, so configRef is required.
+			name: "custom network without configRef",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "custom",
+				NetworkMagic: new(int64(42)),
+			},
+			wantErr: true,
+		},
+		{
+			// configRef + default Mithril (enabled) + no aggregator would
+			// crash-loop the bootstrap init container; reject at admission.
+			name: "configRef with mithril enabled but no aggregator",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "custom",
+				NetworkMagic: new(int64(42)), ConfigRef: "devnet-config",
+			},
+			wantErr: true,
+		},
+		{
+			name: "configRef with mithril aggregator set",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "custom",
+				NetworkMagic: new(int64(42)), ConfigRef: "devnet-config",
+				Mithril: dingov1alpha1.MithrilSpec{
+					AggregatorURL: "https://aggregator.example/aggregator",
+				},
 			},
 		},
 		{
