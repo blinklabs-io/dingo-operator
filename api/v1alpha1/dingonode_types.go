@@ -295,6 +295,15 @@ type MetricsSpec struct {
 // DingoNodeSpec defines the desired state of a DingoNode.
 type DingoNodeSpec struct {
 	// Role selects relay or blockProducer behaviour.
+	//
+	// Immutable: a node's identity does not change in place, and the reconciler
+	// only ever creates role-specific resources — it has no delete path. Flipping
+	// blockProducer -> relay therefore leaves the PodDisruptionBudget and the
+	// default-deny NetworkPolicy behind, still restricting a node that is no
+	// longer a forger, and freezes status.kes / status.opcert at their last
+	// block-producer values because refreshing them is gated on the role. The
+	// transition rule applies only on update; creation is unaffected.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="role is immutable"
 	Role Role `json:"role"`
 	// Network is a named Cardano network (mainnet, preprod, preview, devnet) or
 	// "custom" (with networkMagic).
