@@ -110,6 +110,21 @@ cert-manager).
   counter (guards `CounterOverIncrementedOCERT`).
 - The node already tracks the authoritative on-chain opcert counter internally;
   exposing it over an API is upstream work (see below).
+- **Genesis creation was not restartable before Dingo 0.68.0.** Killing a node
+  while it is still writing genesis into its data directory left orphaned
+  `pool_registration` / `pool_registration_owner` rows in the SQLite metadata
+  DB; every subsequent start died on `create genesis pool registration:
+  constraint failed: FOREIGN KEY constraint failed` and CrashLooped forever,
+  with the PVC unrecoverable without wiping it. Filed as dingo
+  [#2959](https://github.com/blinklabs-io/dingo/issues/2959) and **fixed in
+  0.68.0** by [#2975](https://github.com/blinklabs-io/dingo/pull/2975), which
+  made `SetGenesisStaking` idempotent.
+  - This matters to the operator because *every* rotation, config-bundle change
+    and reschedule rolls the pod, so a block producer rolled during its first
+    boot on a pre-0.68.0 image is permanently bricked. `DefaultDingoTag`
+    (`internal/resources/resources.go`) is therefore held at 0.68.0 or later —
+    a `DingoNode` that omits `spec.image.tag` gets that value. A spec that
+    *pins* an older tag is still exposed.
 
 ### OpCert rotation state machine (block producers)
 

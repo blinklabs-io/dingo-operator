@@ -15,6 +15,8 @@
 package resources
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -382,4 +384,40 @@ func TestImageRef(t *testing.T) {
 	dn.Spec.Image.Repository = "example/dingo"
 	dn.Spec.Image.Tag = "1.2.3"
 	assert.Equal(t, "example/dingo:1.2.3", imageRef(dn))
+}
+
+// TestDefaultDingoTagFloor guards the one property of DefaultDingoTag that is a
+// correctness constraint rather than a preference: Dingo releases before 0.68.0
+// permanently brick their data volume if the pod is rolled mid-genesis-write
+// (dingo #2959, fixed in 0.68.0 by #2975). A DingoNode that omits
+// spec.image.tag gets this value, and every rotation, config-bundle change and
+// reschedule rolls the pod — so drifting back below the fix would hand block
+// producers a default that can be bricked on first boot.
+//
+// TestImageRef above interpolates the const symbolically and so passes for any
+// value, and the e2e suite always sets spec.image explicitly, so without this
+// test nothing would catch such a drift.
+func TestDefaultDingoTagFloor(t *testing.T) {
+	const (
+		floorMinor = 68
+		floorText  = "0.68.0"
+	)
+
+	parts := strings.Split(DefaultDingoTag, ".")
+	require.Len(t, parts, 3, "DefaultDingoTag %q is not major.minor.patch",
+		DefaultDingoTag)
+
+	major, err := strconv.Atoi(parts[0])
+	require.NoError(t, err, "major version in %q", DefaultDingoTag)
+	minor, err := strconv.Atoi(parts[1])
+	require.NoError(t, err, "minor version in %q", DefaultDingoTag)
+
+	// Dingo is pre-1.0; a future 1.x is unambiguously past the fix.
+	if major > 0 {
+		return
+	}
+	assert.GreaterOrEqual(t, minor, floorMinor,
+		"DefaultDingoTag %q predates the genesis-restart fix in %s; see dingo "+
+			"#2959 before lowering it",
+		DefaultDingoTag, floorText)
 }
