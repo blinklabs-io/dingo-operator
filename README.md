@@ -20,7 +20,13 @@ operators.
   plus static/external relays merged into local roots.
 - **Block-producer key handling** — mounts KES/VRF/opcert from a Secret at
   `/keys` (mode `0600`), sets the `CARDANO_SHELLEY_*` env, and surfaces KES
-  period / opcert state from the node's metrics.
+  period / opcert state from the node's metrics. A delivered bundle is validated
+  (opcert signature, pool binding, KES-key binding, counter, KES period) before
+  the operator rolls the pod onto it; a refused bundle sets `KeysValid=False`
+  and `Degraded=True` and is not rolled out. Note that the running *process*
+  keeps its loaded keys, but `/keys` is a whole-Secret mount, so kubelet does
+  refresh the rejected files onto the pod's disk — any subsequent restart from
+  any cause starts the node on them.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
 - **Safe HA** — `SingleActive` (default) or `ActiveStandby` with fenced,

@@ -113,8 +113,79 @@ cert-manager).
 
 ### OpCert rotation state machine (block producers)
 
-`rotation.mode`: `MonitorOnly` (status/events only), `Assisted` (validate + roll
-an externally-delivered opcert), or `Auto`:
+`rotation.mode`: `MonitorOnly` (status/events only), `Assisted` (see below), or
+`Auto`.
+
+**Key-material validation runs for every block producer, in all three modes**
+(`internal/controller/keys.go`) — `rotation.mode` only governs who *issues* the
+certificate, never whether a delivered one is checked before it can reach the
+node. `Assisted` is therefore "validate an externally-delivered opcert and roll
+the pod onto it":
+
+- **Validated**: all three files present; `kes.skey`/`vrf.skey` are well-formed
+  text envelopes of the right kind; the opcert envelope parses and its
+  cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the signing
+  cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so another
+  pool's self-consistent certificate cannot pass — **this leg is skipped when
+  `poolId` is empty**, which the CRD permits; the delivered `kes.skey` is
+  exactly 608 bytes and its derived public key equals the certificate's KES
+  vkey, so a new opcert shipped without its matching KES key is refused rather
+  than CrashLooping the pod on Dingo's own "KES verification key mismatch";
+  `vrf.skey` is a 32-byte seed or the 64-byte cardano-cli seed||pubkey form
+  (matching `dingo/keystore/keyfile.go`); the counter does not regress below
+  `status.opcert.onDiskCounter`; and the KES window covers the node's current
+  period.
+  - The KES length check must precede the derivation: gouroboros
+    `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
+    check and panics on a short key.
+- **The KES period checks — both of them — only run once
+  `status.kes.currentPeriod > 0`.** Zero means "not scraped yet", not "period
+  0", and failing on it would refuse a healthy node's own valid keys on the
+  first reconcile. The consequence is real and worth knowing: before the
+  operator's first successful metrics scrape, an *already-expired* opcert is
+  accepted and rolled out, and Dingo's own startup check is what catches it —
+  as a CrashLoop. Once the guard is satisfied, the expiry (upper) bound is
+  unconditional, because mounting a dead opcert can only CrashLoop the one
+  forging pod. The "start period is in the future" lower bound is additionally
+  **skipped when the delivered counter advances past `onDiskCounter`**:
+  `status.kes.currentPeriod` is only as fresh as the last successful metrics
+  scrape and freezes if scraping breaks, and refusing a correct bundle against a
+  stale period would strand the node on keys it can never renew. A forward
+  counter is unambiguous evidence of a deliberate rotation, and Dingo still
+  rejects a future-dated opcert at startup.
+- **On acceptance**: `KeysValid=True`/`OpCertAccepted`, the certificate's issue
+  number is published as `status.opcert.onDiskCounter`, and the keys-checksum
+  pod annotation changes, which rolls the pod.
+- **On rejection**: `KeysValid=False`/`OpCertRejected`, `Degraded=True` (the
+  only signal in `kubectl get dingonode`, since the node keeps forging and
+  readiness stays green), plus a Warning Event. The reconcile carries the
+  checksum already on the live pod template forward so the rendered template
+  stays byte-identical and **the operator does not roll the pod**. (An empty
+  checksum would *remove* the annotation — itself a template change — and roll
+  the pod onto the rejected keys.) The reconcile does not fail: last-known-good
+  is the safe state.
+  - **What this does and does not protect.** Only the running *process* stays
+    on its loaded keys. The keys volume is a plain whole-Secret mount with no
+    `subPath` (`internal/resources/resources.go`), so kubelet refreshes `/keys`
+    in the live pod within about a minute of the Secret changing: the rejected
+    material is physically on disk. Refusing a bundle declines to *initiate* a
+    roll — it does not fence one. Any other restart (eviction, drain,
+    reschedule, OOM, image bump, a `configRef` change, `kubectl delete pod`)
+    starts the node on the rejected bundle, and Dingo's startup validation
+    turns that into a CrashLoop. Fix the Secret; do not leave a refused bundle
+    sitting in it.
+- **Not yet checked**: the authoritative on-chain counter, so over-incrementing
+  past the chain is still only caught by Dingo at startup. This is now
+  implementation work rather than an upstream wait — gouroboros
+  `GetOpCertCounters()` shipped in v0.189.0 (see "Upstream dependencies" below);
+  wiring it into validation is P2.
+
+Both legs are covered by the envtest controller suite
+(`internal/controller/dingonode_controller_test.go`): a valid bundle rolls the
+pod and publishes its counter; a bundle signed by another pool's cold key leaves
+the pod template byte-identical and marks the node Degraded.
+
+Full `Auto` rotation:
 
 1. Detect: `remainingPeriods <= renewBeforePeriods` → `RotationDue`.
 2. Resolve the authoritative counter from the node (interim: operator-tracked
@@ -159,8 +230,12 @@ on-chain opcert counter), [#2872](https://github.com/blinklabs-io/dingo/issues/2
 (`/healthz`+`/readyz`), [#2873](https://github.com/blinklabs-io/dingo/issues/2873)
 (SPO forging metrics); bursa
 [#592](https://github.com/blinklabs-io/bursa/issues/592) (opcert CBOR envelope +
-external cold-signer sign type); gouroboros
-[#1890](https://github.com/blinklabs-io/gouroboros/issues/1890) (LSQ opcert
-counter); dingoctl [#14](https://github.com/blinklabs-io/dingoctl/issues/14)
+external cold-signer sign type); dingoctl
+[#14](https://github.com/blinklabs-io/dingoctl/issues/14)
 (`reload` + readiness/leader-state); bark
 [#17](https://github.com/blinklabs-io/bark/issues/17) (LifecycleService).
+
+gouroboros [#1890](https://github.com/blinklabs-io/gouroboros/issues/1890) (LSQ
+opcert counter) is **closed and shipped in v0.189.0** — `GetOpCertCounters()` /
+`DebugChainDepState` are available, so P2's counter-safe issuance no longer waits
+on dingo #2871.

@@ -109,6 +109,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		APIReader:     mgr.GetAPIReader(),
 		Scheme:        mgr.GetScheme(),
+		Recorder:      mgr.GetEventRecorder("dingonode-controller"),
 		ForgeStatus:   forgestatus.NewHTTPFetcher(),
 		PodMonitorCRD: podMonitorInstalled(mgr),
 	}

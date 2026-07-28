@@ -31,9 +31,12 @@ spec:
     - jsonPath: .status.kes.remainingPeriods
       name: Remaining-KES
       type: integer
-    - jsonPath: .status.opcert.onChainCounter
+    - jsonPath: .status.opcert.onDiskCounter
       name: OpCert
       type: integer
+    - jsonPath: .status.conditions[?(@.type=="KeysValid")].status
+      name: Keys
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -1080,8 +1083,11 @@ spec:
                       mode:
                         default: MonitorOnly
                         description: |-
-                          RotationMode controls how aggressively the operator rotates KES keys and
-                          operational certificates.
+                          Mode selects how the operator rotates keys. Note that key-material
+                          validation is not mode-dependent: the operator validates the keys Secret
+                          (opcert signature, pool binding, counter, KES period) for every block
+                          producer, including MonitorOnly, and refuses to roll the pod onto a
+                          bundle that fails.
                         enum:
                         - Auto
                         - Assisted
