@@ -21,6 +21,7 @@ package resources
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -147,6 +148,37 @@ func imageRef(dn *dingov1alpha1.DingoNode) string {
 // omits spec.image.tag gets whatever this says.
 const DefaultDingoTag = "0.68.0"
 
+// DefaultTerminationGracePeriodSeconds is the grace period used when the spec
+// omits one. It is deliberately above Kubernetes' own 30s default: Dingo's
+// graceful shutdown is itself budgeted 30s, so on the defaults kubelet would
+// SIGKILL at the exact moment Dingo's flush deadline expires.
+const DefaultTerminationGracePeriodSeconds int64 = 60
+
+// shutdownHeadroomSeconds is how much of the grace period is reserved for
+// kubelet's own work — signalling, the container runtime, and the margin that
+// keeps Dingo's deadline strictly inside Kubernetes'. Dingo must finish first,
+// or the grace period buys nothing.
+const shutdownHeadroomSeconds int64 = 10
+
+// terminationGracePeriod returns the effective pod grace period.
+func terminationGracePeriod(dn *dingov1alpha1.DingoNode) int64 {
+	if v := dn.Spec.TerminationGracePeriodSeconds; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultTerminationGracePeriodSeconds
+}
+
+// dingoShutdownTimeout returns the value for CARDANO_SHUTDOWN_TIMEOUT: the pod's
+// grace period less the headroom kubelet needs, so Dingo always stops on its own
+// terms rather than being killed part-way through closing its database.
+//
+// The floor exists because the CRD permits a grace period smaller than the
+// headroom; a non-positive timeout would be worse than a short one.
+func dingoShutdownTimeout(dn *dingov1alpha1.DingoNode) time.Duration {
+	secs := max(terminationGracePeriod(dn)-shutdownHeadroomSeconds, 1)
+	return time.Duration(secs) * time.Second
+}
+
 // storageMode returns the effective storage mode string.
 func storageMode(dn *dingov1alpha1.DingoNode) string {
 	if dn.Spec.StorageMode == "" {
@@ -180,6 +212,14 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		{Name: "CARDANO_NETWORK", Value: dn.Spec.Network},
 		{Name: "CARDANO_DATABASE_PATH", Value: dataMountPath},
 		{Name: "DINGO_STORAGE_MODE", Value: storageMode(dn)},
+		// Keep Dingo's own shutdown deadline strictly inside the pod's grace
+		// period. The name is CARDANO_-prefixed, not DINGO_: Dingo runs a single
+		// envconfig.Process("cardano", ...), and this field has no explicit
+		// envconfig tag to alias it, unlike the DINGO_* names above.
+		{
+			Name:  "CARDANO_SHUTDOWN_TIMEOUT",
+			Value: dingoShutdownTimeout(dn).String(),
+		},
 	}
 	if dn.Spec.NetworkMagic != nil {
 		env = append(env, corev1.EnvVar{
@@ -324,15 +364,17 @@ func BuildStatefulSet(
 		ReadinessProbe:  tcpProbe(portRelay, 3, 15),
 	}
 
+	grace := terminationGracePeriod(dn)
 	podSpec := corev1.PodSpec{
-		ServiceAccountName: dn.Name,
-		SecurityContext:    podSecurityContext(dn),
-		InitContainers:     initContainers(dn, opts),
-		Containers:         []corev1.Container{container},
-		Volumes:            volumes(dn, opts),
-		NodeSelector:       dn.Spec.NodeSelector,
-		Tolerations:        dn.Spec.Tolerations,
-		Affinity:           affinity(dn),
+		ServiceAccountName:            dn.Name,
+		SecurityContext:               podSecurityContext(dn),
+		InitContainers:                initContainers(dn, opts),
+		Containers:                    []corev1.Container{container},
+		Volumes:                       volumes(dn, opts),
+		NodeSelector:                  dn.Spec.NodeSelector,
+		Tolerations:                   dn.Spec.Tolerations,
+		Affinity:                      affinity(dn),
+		TerminationGracePeriodSeconds: &grace,
 	}
 
 	return &appsv1.StatefulSet{

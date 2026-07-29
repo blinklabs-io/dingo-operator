@@ -110,6 +110,22 @@ cert-manager).
   counter (guards `CounterOverIncrementedOCERT`).
 - The node already tracks the authoritative on-chain opcert counter internally;
   exposing it over an API is upstream work (see below).
+- **Dingo's graceful shutdown is budgeted 30s by default, and so is
+  Kubernetes'.** Dingo traps SIGTERM and flushes its database with a
+  `shutdownTimeout` that defaults to 30s (`internal/config/config.go`), which is
+  exactly Kubernetes' default `terminationGracePeriodSeconds` — so on the
+  defaults kubelet SIGKILLs at the moment Dingo's own deadline expires, and a
+  flush that uses its budget is cut off. The operator therefore sets the pod's
+  grace period (default 60s, `spec.terminationGracePeriodSeconds`) and derives
+  Dingo's budget from it as `CARDANO_SHUTDOWN_TIMEOUT`, so the node's deadline is
+  always strictly inside the pod's. This matters more here than for most
+  workloads: on a block producer, restarts are routine rather than exceptional,
+  since every key rotation and config-bundle change rolls the pod.
+  - The variable is `CARDANO_`-prefixed, not `DINGO_`. Dingo runs a single
+    `envconfig.Process("cardano", ...)`; the `DINGO_*` names the operator sets
+    work only because those fields carry an explicit `envconfig:"DINGO_..."`
+    tag that envconfig falls back to. `ShutdownTimeout` has no such tag, so
+    `DINGO_SHUTDOWN_TIMEOUT` would be silently ignored.
 - **Genesis creation was not restartable before Dingo 0.68.0.** Killing a node
   while it is still writing genesis into its data directory left orphaned
   `pool_registration` / `pool_registration_owner` rows in the SQLite metadata
