@@ -223,6 +223,11 @@ type ColdSignerSpec struct {
 
 // RotationSpec configures KES/OpCert rotation behaviour.
 type RotationSpec struct {
+	// Mode selects how the operator rotates keys. Note that key-material
+	// validation is not mode-dependent: the operator validates the keys Secret
+	// (opcert signature, pool binding, counter, KES period) for every block
+	// producer, including MonitorOnly, and refuses to roll the pod onto a
+	// bundle that fails.
 	// +kubebuilder:default=MonitorOnly
 	// +optional
 	Mode RotationMode `json:"mode,omitempty"`
@@ -416,7 +421,14 @@ type DingoNodeStatus struct {
 // +kubebuilder:printcolumn:name="Network",type=string,JSONPath=`.spec.network`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Remaining-KES",type=integer,JSONPath=`.status.kes.remainingPeriods`
-// +kubebuilder:printcolumn:name="OpCert",type=integer,JSONPath=`.status.opcert.onChainCounter`
+// OpCert reports onDiskCounter: the counter of the certificate the operator
+// has accepted. onChainCounter has no producer yet (it needs the node's LSQ
+// opcert counter, P2) and a column pointed at it is always empty.
+// Keys surfaces a refused key bundle, which is otherwise invisible in the
+// default table: the node keeps forging on what its process already loaded, so
+// Phase and readiness both stay green while rotation has stopped.
+// +kubebuilder:printcolumn:name="OpCert",type=integer,JSONPath=`.status.opcert.onDiskCounter`
+// +kubebuilder:printcolumn:name="Keys",type=string,JSONPath=`.status.conditions[?(@.type=="KeysValid")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // DingoNode is the Schema for the dingonodes API.

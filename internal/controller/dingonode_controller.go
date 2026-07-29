@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,6 +47,7 @@ const (
 	condReady       = "Ready"
 	condDegraded    = "Degraded"
 	condRotationDue = "RotationDue"
+	condKeysValid   = "KeysValid"
 
 	metricsPort = 12798
 )
@@ -56,8 +58,12 @@ type DingoNodeReconciler struct {
 	// APIReader is an uncached reader used to fetch the one named keys Secret on
 	// demand. It bypasses the manager's cache so the operator never holds a
 	// cluster-wide Secret informer/watch/cache.
-	APIReader     client.Reader
-	Scheme        *runtime.Scheme
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	// Recorder surfaces refused key material as an Event on the DingoNode, so a
+	// human can see why a delivered opcert was not rolled out. Optional: a nil
+	// Recorder only loses the Event, never the status condition.
+	Recorder      events.EventRecorder
 	ForgeStatus   forgestatus.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
 }
@@ -70,6 +76,7 @@ type DingoNodeReconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
 // The operator also reads block-producer key Secrets (get-only, uncached) to
 // detect key/opcert rotation. That grant is deliberately NOT declared here:
@@ -160,7 +167,36 @@ func (r *DingoNodeReconciler) reconcileResources(
 			Namespace: dn.Namespace,
 		}
 		if err := r.APIReader.Get(ctx, key, secret); err == nil {
-			opts.KeysChecksum = keysChecksum(secret)
+			state, verr := validateKeysSecret(secret, dn)
+			if verr != nil {
+				// Refuse the delivered bundle: carry the checksum already on
+				// the live pod template forward so the rendered template stays
+				// byte-identical and nothing rolls. Leaving the checksum empty
+				// would *remove* the annotation, which is itself a template
+				// change and would roll the pod onto the rejected keys.
+				prev, err := r.liveKeysChecksum(ctx, dn)
+				if err != nil {
+					return err
+				}
+				opts.KeysChecksum = prev
+				r.rejectKeys(ctx, dn, verr)
+			} else {
+				opts.KeysChecksum = keysChecksum(secret)
+				dn.Status.OpCert.OnDiskCounter = state.Counter
+				meta.SetStatusCondition(
+					&dn.Status.Conditions,
+					metav1.Condition{
+						Type:   condKeysValid,
+						Status: metav1.ConditionTrue,
+						Reason: "OpCertAccepted",
+						Message: fmt.Sprintf(
+							"opcert counter %d, kes start period %d",
+							state.Counter, state.KESPeriod,
+						),
+						ObservedGeneration: dn.Generation,
+					},
+				)
+			}
 		} else if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("read keys secret: %w", err)
 		}
@@ -222,6 +258,93 @@ func (r *DingoNodeReconciler) reconcileResources(
 	return nil
 }
 
+// rejectKeys records that the delivered key bundle was refused: a log line, a
+// Warning Event so the reason is visible with `kubectl describe`, and a
+// KeysValid=False condition. It deliberately does not fail the reconcile:
+// the node keeps running on its last known-good keys, the safe state.
+func (r *DingoNodeReconciler) rejectKeys(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	verr error,
+) {
+	var secretRef string
+	if bp := dn.Spec.BlockProducer; bp != nil {
+		secretRef = bp.Keys.SecretRef
+	}
+	log.FromContext(ctx).Info(
+		"refusing delivered block-producer keys",
+		"secret", secretRef,
+		"error", verr.Error(),
+	)
+	if r.Recorder != nil {
+		// "%s" rather than the error text as the format string: a validation
+		// message can contain a literal % (hex/bech32 values cannot, but the
+		// wrapped errors are not ours to constrain).
+		r.Recorder.Eventf(
+			dn,
+			nil,
+			corev1.EventTypeWarning,
+			"OpCertRejected",
+			"ValidateKeys",
+			"%s",
+			verr.Error(),
+		)
+	}
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condKeysValid,
+		Status:             metav1.ConditionFalse,
+		Reason:             "OpCertRejected",
+		Message:            verr.Error(),
+		ObservedGeneration: dn.Generation,
+	})
+	// Degraded as well as KeysValid=False. The node keeps forging on the keys
+	// its process already loaded, so every readiness signal stays green and
+	// `kubectl get dingonode` would otherwise show a healthy row while
+	// rotations have silently stopped and KES marches toward expiry.
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condDegraded,
+		Status:             metav1.ConditionTrue,
+		Reason:             "OpCertRejected",
+		Message:            verr.Error(),
+		ObservedGeneration: dn.Generation,
+	})
+}
+
+// liveKeysChecksum returns the keys-checksum annotation currently on the
+// node's StatefulSet pod template. Re-rendering with this value keeps the pod
+// template unchanged, so a rejected key bundle cannot trigger a rollout.
+//
+// It reads through the same cached client controllerutil.CreateOrUpdate uses
+// below, so both see one informer's view of the StatefulSet — but they are two
+// separate cache reads with several API round-trips between them, and the cache
+// can be updated in between. The guarantee is "the same source of truth", not
+// "the same snapshot". The race needs a Secret to go bad inside the
+// cache-propagation window of the very reconcile that just accepted new keys,
+// so it is not worth restructuring for; the race-free shape, if it ever
+// matters, is a PreserveKeysChecksum flag on resources.RenderOptions that
+// copies the annotation inside the mutate func, from the object CreateOrUpdate
+// itself read.
+//
+// Only a missing StatefulSet yields "" (nothing to carry forward, and an absent
+// annotation is correct for a first render). Every other read failure is
+// returned: "" is the one value that *removes* the annotation, so on the single
+// path whose whole purpose is never rendering without the live checksum, an
+// unclassified error must not be indistinguishable from absence.
+func (r *DingoNodeReconciler) liveKeysChecksum(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (string, error) {
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read statefulset for keys checksum: %w", err)
+	}
+	return sts.Spec.Template.Annotations[resources.KeysChecksumAnnotation], nil
+}
+
 // reconcileStatus refreshes the DingoNode status from live children.
 func (r *DingoNodeReconciler) reconcileStatus(
 	ctx context.Context,
@@ -256,7 +379,14 @@ func (r *DingoNodeReconciler) reconcileStatus(
 			Message: "waiting for node to become ready", ObservedGeneration: dn.Generation,
 		})
 	}
-	meta.RemoveStatusCondition(&dn.Status.Conditions, condDegraded)
+	// Degraded is cleared here because everything that sets it earlier in the
+	// reconcile returns before reaching this point — except rejectKeys, which
+	// deliberately falls through so the rest of the resources still reconcile.
+	// A refused key bundle must survive to the status write, so keep Degraded
+	// while KeysValid is False.
+	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) {
+		meta.RemoveStatusCondition(&dn.Status.Conditions, condDegraded)
+	}
 	return r.updateStatus(ctx, dn)
 }
 

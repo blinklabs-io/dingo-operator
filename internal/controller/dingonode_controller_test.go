@@ -16,11 +16,16 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,15 +33,27 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
+
+// TestMain silences controller-runtime's logging. Without a logger set,
+// controller-runtime's delegating sink prints "log.SetLogger(...) was never
+// called" plus a stack trace the first time anything logs more than 30 seconds
+// into the run. Both envtest's own Start() and the reconciler's key-rejection
+// path trip it, which is noise in an otherwise clean test output.
+func TestMain(m *testing.M) {
+	ctrl.SetLogger(logr.Discard())
+	os.Exit(m.Run())
+}
 
 // startEnv brings up an envtest control plane with the DingoNode CRD installed.
 // It skips the test when KUBEBUILDER_ASSETS is not configured (e.g. a plain
@@ -161,14 +178,297 @@ func TestReconcileBlockProducer(t *testing.T) {
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "bp", Namespace: "bp-ns"}, &networkingv1.NetworkPolicy{}))
 }
 
+// blockProducerNode returns a MonitorOnly block producer bound to the given
+// pool and keys Secret.
+func blockProducerNode(
+	name, ns, secretRef, poolID string,
+) *dingov1alpha1.DingoNode {
+	return &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleBlockProducer,
+			Network: "preview",
+			BlockProducer: &dingov1alpha1.BlockProducerSpec{
+				PoolID:            poolID,
+				SlotsPerKESPeriod: 129600,
+				MaxKESEvolutions:  62,
+				Keys:              dingov1alpha1.KeysSpec{SecretRef: secretRef},
+				Rotation: dingov1alpha1.RotationSpec{
+					Mode: dingov1alpha1.RotationModeMonitorOnly,
+				},
+			},
+		},
+	}
+}
+
+// keysAnnotation returns the pod-template keys-checksum annotation currently on
+// the node's StatefulSet.
+func keysAnnotation(
+	t *testing.T,
+	ctx context.Context,
+	c client.Client,
+	name, ns string,
+) string {
+	t.Helper()
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: name, Namespace: ns},
+		sts,
+	))
+	return sts.Spec.Template.Annotations[resources.KeysChecksumAnnotation]
+}
+
+// podTemplate returns the node StatefulSet's pod template, so a test can assert
+// that a reconcile left it byte-identical (any change rolls the pod).
+func podTemplate(
+	t *testing.T,
+	ctx context.Context,
+	c client.Client,
+	name, ns string,
+) corev1.PodTemplateSpec {
+	t.Helper()
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: name, Namespace: ns},
+		sts,
+	))
+	return sts.Spec.Template
+}
+
 func TestBlockProducerKeysChecksumRollout(t *testing.T) {
 	c, ctx := startEnv(t)
 	createNamespace(t, ctx, c, "keys-ns")
+
+	// Real generated key material: the operator now validates the bundle
+	// before it will roll the pod onto it, so placeholder bytes would (and
+	// should) be refused.
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	data, err := keys.SecretData(0, 0)
+	require.NoError(t, err)
 
 	require.NoError(t, c.Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pool-keys",
 			Namespace: "keys-ns",
+		},
+		Data: data,
+	}))
+
+	dn := blockProducerNode(
+		"bp", "keys-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
+
+	first := keysAnnotation(t, ctx, c, "bp", "keys-ns")
+	assert.NotEmpty(
+		t,
+		first,
+		"keys-checksum annotation should be set from the Secret",
+	)
+
+	// A validated bundle also publishes its counter, which is what the
+	// assisted-rotation status surface reports.
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp", Namespace: "keys-ns"},
+		got,
+	))
+	assert.True(
+		t,
+		meta.IsStatusConditionTrue(got.Status.Conditions, condKeysValid),
+		"KeysValid should be True",
+	)
+
+	// An assisted rotation (fresh KES key, counter+1) must change the checksum
+	// so the pod rolls.
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	rotated, err := keys.SecretData(1, 0)
+	require.NoError(t, err)
+
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "pool-keys", Namespace: "keys-ns"},
+		secret,
+	))
+	secret.Data = rotated
+	require.NoError(t, c.Update(ctx, secret))
+
+	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
+	second := keysAnnotation(t, ctx, c, "bp", "keys-ns")
+	assert.NotEmpty(t, second)
+	assert.NotEqual(
+		t,
+		first,
+		second,
+		"keys-checksum must change when key material changes",
+	)
+
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp", Namespace: "keys-ns"},
+		got,
+	))
+	assert.Equal(
+		t,
+		int64(1),
+		got.Status.OpCert.OnDiskCounter,
+		"status.opcert.onDiskCounter must track the accepted certificate",
+	)
+}
+
+// TestBlockProducerRejectedKeysDoNotRoll is the load-bearing test for the
+// validation gate: an invalid bundle delivered over a known-good one must
+// leave the pod template byte-identical. Asserting only "no error" would miss
+// the failure mode that matters: dropping the keys-checksum annotation removes
+// it from the template, which is itself a change and would roll the single
+// forging pod onto the rejected keys.
+func TestBlockProducerRejectedKeysDoNotRoll(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "reject-ns")
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	good, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pool-keys",
+			Namespace: "reject-ns",
+		},
+		Data: good,
+	}))
+
+	dn := blockProducerNode(
+		"bp", "reject-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "reject-ns")
+
+	accepted := keysAnnotation(t, ctx, c, "bp", "reject-ns")
+	require.NotEmpty(t, accepted, "the good bundle must set the annotation")
+	wantTemplate := podTemplate(t, ctx, c, "bp", "reject-ns")
+
+	// Deliver a bundle that fails validation for a reason Dingo would only
+	// catch at startup: a certificate issued by a different pool's cold key.
+	other, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	foreign, err := other.SecretData(3, 0)
+	require.NoError(t, err)
+
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "pool-keys", Namespace: "reject-ns"},
+		secret,
+	))
+	secret.Data["opcert.cert"] = foreign["opcert.cert"]
+	require.NoError(t, c.Update(ctx, secret))
+
+	recorder := events.NewFakeRecorder(10)
+	r := reconcilerFor(c)
+	r.Recorder = recorder
+	reconcile(t, ctx, r, "bp", "reject-ns")
+
+	assert.Equal(
+		t,
+		accepted,
+		keysAnnotation(t, ctx, c, "bp", "reject-ns"),
+		"a rejected bundle must not change the keys-checksum annotation",
+	)
+	assert.Equal(
+		t,
+		wantTemplate,
+		podTemplate(t, ctx, c, "bp", "reject-ns"),
+		"a rejected bundle must leave the whole pod template unchanged",
+	)
+
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp", Namespace: "reject-ns"},
+		got,
+	))
+	cond := meta.FindStatusCondition(got.Status.Conditions, condKeysValid)
+	require.NotNil(t, cond, "KeysValid condition should be set")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "OpCertRejected", cond.Reason)
+	assert.Contains(t, cond.Message, "pool")
+	assert.Equal(
+		t,
+		int64(2),
+		got.Status.OpCert.OnDiskCounter,
+		"onDiskCounter must keep reporting the accepted certificate",
+	)
+	// The node keeps forging on the keys its process already loaded, so
+	// nothing else in status goes red. Degraded is the only signal that
+	// rotation has stopped.
+	deg := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	require.NotNil(t, deg, "a refused bundle must mark the node Degraded")
+	assert.Equal(t, metav1.ConditionTrue, deg.Status)
+	assert.Equal(t, "OpCertRejected", deg.Reason)
+
+	select {
+	case ev := <-recorder.Events:
+		assert.Contains(t, ev, "Warning")
+		assert.Contains(t, ev, "OpCertRejected")
+	default:
+		t.Error("no Event was recorded for the rejected key bundle")
+	}
+
+	// Recovery: a correctly signed replacement rolls as usual.
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "pool-keys", Namespace: "reject-ns"},
+		secret,
+	))
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	fixed, err := keys.SecretData(3, 0)
+	require.NoError(t, err)
+	secret.Data = fixed
+	require.NoError(t, c.Update(ctx, secret))
+
+	reconcile(t, ctx, reconcilerFor(c), "bp", "reject-ns")
+	assert.NotEqual(
+		t,
+		accepted,
+		keysAnnotation(t, ctx, c, "bp", "reject-ns"),
+		"a valid replacement bundle must roll the pod",
+	)
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp", Namespace: "reject-ns"},
+		got,
+	))
+	assert.True(
+		t,
+		meta.IsStatusConditionTrue(got.Status.Conditions, condKeysValid),
+	)
+	assert.Equal(t, int64(3), got.Status.OpCert.OnDiskCounter)
+	assert.Nil(
+		t,
+		meta.FindStatusCondition(got.Status.Conditions, condDegraded),
+		"accepting a replacement bundle must clear Degraded",
+	)
+}
+
+// TestBlockProducerFirstReconcileRejectsBadKeys covers the no-StatefulSet case:
+// there is no previous checksum to carry forward, so the annotation is simply
+// absent — and must not be a checksum of the rejected material.
+func TestBlockProducerFirstReconcileRejectsBadKeys(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "first-ns")
+
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pool-keys",
+			Namespace: "first-ns",
 		},
 		Data: map[string][]byte{
 			"kes.skey":    []byte("kes-material"),
@@ -177,61 +477,25 @@ func TestBlockProducerKeysChecksumRollout(t *testing.T) {
 		},
 	}))
 
-	dn := &dingov1alpha1.DingoNode{
-		ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: "keys-ns"},
-		Spec: dingov1alpha1.DingoNodeSpec{
-			Role:    dingov1alpha1.RoleBlockProducer,
-			Network: "preview",
-			BlockProducer: &dingov1alpha1.BlockProducerSpec{
-				SlotsPerKESPeriod: 129600,
-				MaxKESEvolutions:  62,
-				Keys:              dingov1alpha1.KeysSpec{SecretRef: "pool-keys"},
-				Rotation: dingov1alpha1.RotationSpec{
-					Mode: dingov1alpha1.RotationModeMonitorOnly,
-				},
-			},
-		},
-	}
+	dn := blockProducerNode("bp", "first-ns", "pool-keys", "")
 	require.NoError(t, c.Create(ctx, dn))
-	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
+	reconcile(t, ctx, reconcilerFor(c), "bp", "first-ns")
 
-	sts := &appsv1.StatefulSet{}
-	require.NoError(t, c.Get(
-		ctx,
-		types.NamespacedName{Name: "bp", Namespace: "keys-ns"},
-		sts,
-	))
-	first := sts.Spec.Template.Annotations["dingo.blinklabs.io/keys-checksum"]
-	assert.NotEmpty(
+	assert.Empty(
 		t,
-		first,
-		"keys-checksum annotation should be set from the Secret",
+		keysAnnotation(t, ctx, c, "bp", "first-ns"),
+		"rejected material must never reach the pod-template annotation",
 	)
-
-	// Rotating the key material must change the checksum so the pod rolls.
-	secret := &corev1.Secret{}
+	got := &dingov1alpha1.DingoNode{}
 	require.NoError(t, c.Get(
 		ctx,
-		types.NamespacedName{Name: "pool-keys", Namespace: "keys-ns"},
-		secret,
+		types.NamespacedName{Name: "bp", Namespace: "first-ns"},
+		got,
 	))
-	secret.Data["opcert.cert"] = []byte("opcert-material-ROTATED")
-	require.NoError(t, c.Update(ctx, secret))
-
-	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
-	require.NoError(t, c.Get(
-		ctx,
-		types.NamespacedName{Name: "bp", Namespace: "keys-ns"},
-		sts,
-	))
-	second := sts.Spec.Template.Annotations["dingo.blinklabs.io/keys-checksum"]
-	assert.NotEmpty(t, second)
-	assert.NotEqual(
-		t,
-		first,
-		second,
-		"keys-checksum must change when key material changes",
-	)
+	cond := meta.FindStatusCondition(got.Status.Conditions, condKeysValid)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Zero(t, got.Status.OpCert.OnDiskCounter)
 }
 
 func TestConfigRefChecksumRollout(t *testing.T) {
