@@ -18,12 +18,18 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
+	"net"
+	"strconv"
+	"sync"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
+	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/topology"
+	ouroboros "github.com/blinklabs-io/gouroboros"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -44,10 +50,11 @@ const (
 	// requeueInterval refreshes status (KES/forge state) periodically.
 	requeueInterval = 2 * time.Minute
 
-	condReady       = "Ready"
-	condDegraded    = "Degraded"
-	condRotationDue = "RotationDue"
-	condKeysValid   = "KeysValid"
+	condReady          = "Ready"
+	condDegraded       = "Degraded"
+	condRotationDue    = "RotationDue"
+	condKeysValid      = "KeysValid"
+	condOnChainCounter = "OnChainCounterAvailable"
 
 	metricsPort = 12798
 )
@@ -63,9 +70,64 @@ type DingoNodeReconciler struct {
 	// Recorder surfaces refused key material as an Event on the DingoNode, so a
 	// human can see why a delivered opcert was not rolled out. Optional: a nil
 	// Recorder only loses the Event, never the status condition.
-	Recorder      events.EventRecorder
-	ForgeStatus   forgestatus.Fetcher
+	Recorder    events.EventRecorder
+	ForgeStatus forgestatus.Fetcher
+	// OnChain reads the authoritative on-chain opcert counter from the node over
+	// node-to-client. Optional: a nil Fetcher (or a node that does not expose
+	// node-to-client) leaves status.opcert.onChainCounter unpopulated, and
+	// counter validation falls back to the operator's own last accepted counter.
+	OnChain       onchain.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
+
+	// onChainMu guards onChainAttempts.
+	onChainMu sync.Mutex
+	// onChainAttempts remembers, per node, when the operator last *attempted* an
+	// on-chain counter read and what came of it.
+	//
+	// Rate-limiting has to key off attempts, not results. Gating on
+	// status.opcert.onChainCounterAt — which only the success path writes — leaves
+	// the failing case ungated: an operator whose pod is not labelled for the
+	// node-to-client NetworkPolicy never succeeds, so the timestamp stays nil and
+	// every reconcile burns the full dial timeout again. That is the state this
+	// feature ships in until the Helm chart sets the label, and with
+	// MaxConcurrentReconciles at its default of 1 it is enough to starve every
+	// other node's rollout.
+	//
+	// Caching the last outcome also means a reconcile that skips the dial can
+	// still restore the observation into status and re-assert the condition, so a
+	// successful read is not lost when reconcileResources fails after it (the
+	// reconcile returns before reconcileStatus persists anything) and a
+	// controller-runtime backoff retry does not re-dial.
+	//
+	// In-memory on purpose: it resets on operator restart, which only means one
+	// fresh read per node, and the persisted status still carries the floor across
+	// the restart. Entries are dropped when a node is deleted (see Reconcile), so
+	// the map cannot grow without bound.
+	//
+	// The cost, stated plainly: after a transient node outage the floor is
+	// unavailable for up to one refresh interval rather than until the next
+	// reconcile, because the recovered node is not re-dialled immediately. That is
+	// well inside onChainCounterMaxAge and fails open in the same direction the
+	// check already does, which is why five minutes is the chosen trade.
+	onChainAttempts map[types.NamespacedName]onChainAttempt
+}
+
+// onChainAttempt is what the reconciler remembers between reconciles about one
+// node's on-chain counter read.
+type onChainAttempt struct {
+	// at is when the read was attempted, successful or not.
+	at time.Time
+	// reason and message are the OnChainCounterAvailable condition the attempt
+	// produced, re-asserted on reconciles that skip the dial.
+	reason  string
+	message string
+	// counter, observedAt and poolID are set only when the attempt yielded a
+	// usable counter. poolID is the normalised pool the counter belongs to.
+	counter    int64
+	observedAt time.Time
+	poolID     string
+	// ok reports whether counter/observedAt/poolID are set.
+	ok bool
 }
 
 // +kubebuilder:rbac:groups=dingo.blinklabs.io,resources=dingonodes,verbs=get;list;watch;create;update;patch;delete
@@ -97,10 +159,14 @@ func (r *DingoNodeReconciler) Reconcile(
 
 	dn := &dingov1alpha1.DingoNode{}
 	if err := r.Get(ctx, req.NamespacedName, dn); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.forgetOnChainAttempt(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !dn.DeletionTimestamp.IsZero() {
 		// Owner references handle garbage collection; nothing else to do.
+		r.forgetOnChainAttempt(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
@@ -124,6 +190,32 @@ func (r *DingoNodeReconciler) Reconcile(
 		})
 		dn.Status.Phase = "Degraded"
 		return ctrl.Result{}, r.updateStatus(ctx, dn)
+	}
+
+	// Before reconcileResources, because reconcileResources is what validates a
+	// delivered key bundle and acts on the verdict. Read the counter after it and
+	// the floor is missing on the one pass that acts.
+	//
+	// What that buys depends on whether the node already exists, and it is worth
+	// being exact because restore-from-backup is this check's primary case:
+	//   - StatefulSet already present: the refusal is a genuine roll-prevention.
+	//     The live keys-checksum is carried forward, the pod template stays
+	//     byte-identical, and the running process keeps forging on its loaded
+	//     keys.
+	//   - Fresh cluster, no StatefulSet yet: nothing is prevented.
+	//     reconcileResources applies the StatefulSet unconditionally, the keys
+	//     Secret is mounted, and Dingo CrashLoops on the below-chain opcert
+	//     exactly as it would have. What the ordering buys here is *correct
+	//     signalling* — KeysValid=False, Degraded, a Warning Event, and no
+	//     published onDiskCounter — instead of the operator reporting a healthy
+	//     rotation it had not yet checked. Same distinction as "refusing declines
+	//     to initiate a roll, it does not fence one" in CLAUDE.md.
+	//
+	// The attempt gate inside keeps this to at most one dial per node per refresh
+	// interval, so moving it ahead of resource application does not put a dead
+	// dial in front of every node's rollout.
+	if resources.IsBlockProducer(dn) {
+		r.refreshOnChainCounter(ctx, dn)
 	}
 
 	if err := r.reconcileResources(ctx, dn); err != nil {
@@ -440,6 +532,302 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			ObservedGeneration: dn.Generation,
 		})
 	}
+}
+
+// refreshOnChainCounter reads the authoritative on-chain opcert counter from
+// the node over node-to-client, publishing it as status.opcert.onChainCounter.
+//
+// Like refreshForgeStatus, every failure is non-fatal and leaves any previously
+// observed value in place. That is deliberate for two different reasons. Not
+// clearing keeps a usable floor: the on-chain counter only ever moves forward,
+// so a value read an hour ago is still a valid lower bound, whereas clearing to
+// zero would silently disable the counter check the moment the node blipped.
+// Freshness is handled where the value is *used* (see onChainFloor in keys.go),
+// not by throwing it away here.
+//
+// The OnChainCounterAvailable condition exists so this cannot fail invisibly. A
+// node whose node-to-client port is unreachable — most likely because nothing
+// carries the NetworkPolicy access label — would otherwise leave the operator
+// permanently, silently falling back to the weaker on-disk check.
+//
+// Dials are rate-limited to onChainCounterRefreshInterval per node, keyed on
+// the last *attempt* rather than the last success — see onChainAttempts for why
+// the difference matters.
+func (r *DingoNodeReconciler) refreshOnChainCounter(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) {
+	bp := dn.Spec.BlockProducer
+	if r.OnChain == nil || bp == nil {
+		return
+	}
+	// Node-to-client is off by default (Dingo binds it to loopback), so there is
+	// nothing to query. Report it as an explicit Disabled rather than removing
+	// the condition: an absent condition is indistinguishable from a feature
+	// that was never wired up, and "looked applied but wasn't" is a failure mode
+	// this repo has already been bitten by more than once.
+	if !bp.NodeToClient.Enabled {
+		r.setOnChainUnavailable(dn, "Disabled",
+			"spec.blockProducer.nodeToClient.enabled is false, so the node "+
+				"binds node-to-client to loopback and the on-chain counter "+
+				"cannot be read; opcert counters are validated against "+
+				"status.opcert.onDiskCounter only")
+		return
+	}
+
+	logger := log.FromContext(ctx)
+	key := client.ObjectKeyFromObject(dn)
+
+	// Resolve the pool first: it identifies what any stored observation is *of*,
+	// and the counter map is keyed by it.
+	var wantPool string
+	if bp.PoolID != "" {
+		parsed, err := parsePoolID(bp.PoolID)
+		if err != nil {
+			r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
+			return
+		}
+		wantPool = parsed.String()
+	}
+	// Drop an observation that belongs to a different pool the moment poolId
+	// changes, rather than letting the freshness window keep enforcing it for up
+	// to onChainCounterMaxAge. Provenance is the whole justification for that
+	// window, so an observation we know is of another pool must not survive it.
+	if got := dn.Status.OpCert.OnChainCounterPoolID; got != "" &&
+		got != wantPool {
+		logger.V(1).Info(
+			"discarding on-chain counter observed for another pool",
+			"observedFor", got, "want", wantPool,
+		)
+		dn.Status.OpCert.OnChainCounter = 0
+		dn.Status.OpCert.OnChainCounterAt = nil
+		dn.Status.OpCert.OnChainCounterPoolID = ""
+		r.forgetOnChainAttempt(key)
+	}
+	if wantPool == "" {
+		r.setOnChainUnavailable(dn, "PoolIDUnset",
+			"spec.blockProducer.poolId is required to look up the on-chain "+
+				"opcert counter (it is keyed by the pool's cold-key hash)")
+		return
+	}
+
+	// Within the interval, reuse what the last attempt learned instead of
+	// dialling: restore the observation into status (the reconcile that fetched
+	// it may have failed before persisting anything) and re-assert its condition.
+	//
+	// The pool check has to happen here too, not only against status above: a read
+	// that succeeded for the previous pool and was then lost to a failed reconcile
+	// leaves nothing in status to compare, so only the remembered attempt knows it
+	// is of the wrong pool. Dropping it re-reads the new pool now rather than
+	// after the interval, and keeps applyOnChainAttempt from publishing an
+	// Observed condition about a pool that is no longer configured.
+	if last, ok := r.lastOnChainAttempt(key); ok &&
+		time.Since(last.at) < onChainCounterRefreshInterval {
+		if last.ok && last.poolID != wantPool {
+			r.forgetOnChainAttempt(key)
+		} else {
+			r.applyOnChainAttempt(dn, last, wantPool)
+			return
+		}
+	}
+
+	magic, ok := networkMagic(dn)
+	if !ok {
+		r.setOnChainUnavailable(dn, "UnknownNetworkMagic",
+			fmt.Sprintf(
+				"network %q is not a known network; set spec.networkMagic so "+
+					"the node-to-client handshake can be attempted",
+				dn.Spec.Network,
+			))
+		return
+	}
+	addr := net.JoinHostPort(
+		fmt.Sprintf("%s.%s.svc.cluster.local", dn.Name, dn.Namespace),
+		strconv.Itoa(resources.PortNodeToClient),
+	)
+	poolID, err := parsePoolID(bp.PoolID)
+	if err != nil {
+		r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
+		return
+	}
+
+	// Record the attempt before making it, so a dial that fails — or a reconcile
+	// that errors out after it — is rate-limited exactly like a success.
+	attempt := onChainAttempt{at: time.Now()}
+	counter, err := r.OnChain.Fetch(ctx, onchain.Query{
+		Address:      addr,
+		NetworkMagic: magic,
+		PoolID:       poolID,
+	})
+	switch {
+	case err != nil:
+		logger.V(1).Info(
+			"on-chain opcert counter unavailable", "error", err.Error(),
+		)
+		attempt.reason, attempt.message = r.onChainFailureReason(ctx, dn, err)
+	case !counter.Found:
+		attempt.reason = "PoolNotOnChain"
+		attempt.message = fmt.Sprintf(
+			"the chain has no opcert counter for pool %s yet; it has not "+
+				"minted a block under an operational certificate",
+			bp.PoolID,
+		)
+	default:
+		attempt.ok = true
+		attempt.counter = counter.Value
+		attempt.observedAt = attempt.at
+		attempt.poolID = wantPool
+		attempt.reason = "Observed"
+		attempt.message = fmt.Sprintf(
+			"on-chain opcert counter %d for pool %s", counter.Value, wantPool,
+		)
+	}
+	r.recordOnChainAttempt(key, attempt)
+	r.applyOnChainAttempt(dn, attempt, wantPool)
+}
+
+// onChainFailureReason classifies a failed read. A node whose Service does not
+// exist yet is simply not up — this reconcile may be the one creating it — and
+// saying "check your NetworkPolicy label" there would be actively misleading on
+// every healthy new block producer. The dial is still attempted first: skipping
+// it until the Service exists would cost the counter on the very first pass,
+// which is the pass that validates a delivered bundle.
+func (r *DingoNodeReconciler) onChainFailureReason(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	cause error,
+) (reason, message string) {
+	svc := &corev1.Service{}
+	key := client.ObjectKeyFromObject(dn)
+	// Only an unambiguous NotFound justifies claiming the node is not up. Any
+	// other read failure (RBAC, an API hiccup) establishes nothing about the
+	// Service, so it must not be reported as if it did — fall through to the
+	// reachability message instead.
+	if err := r.Get(ctx, key, svc); apierrors.IsNotFound(err) {
+		return "NodeNotReady", fmt.Sprintf(
+			"the node's Service does not exist yet, so node-to-client cannot "+
+				"be reached (%s); the on-chain counter will be read once the "+
+				"node is up",
+			cause.Error(),
+		)
+	} else if err != nil {
+		log.FromContext(ctx).V(1).Info(
+			"unable to read node service", "error", err.Error(),
+		)
+	}
+	return "QueryFailed", fmt.Sprintf(
+		"%s; until the node's node-to-client port is reachable, opcert "+
+			"counters are only validated against status.opcert.onDiskCounter "+
+			"(a client needs the label %s=%s on its pod, and on its namespace "+
+			"when that differs from the node's)",
+		cause.Error(),
+		resources.NodeToClientAccessLabel,
+		resources.NodeToClientAccessAllowed,
+	)
+}
+
+// applyOnChainAttempt writes an attempt's outcome into status: the observation
+// when it produced one, and its condition either way.
+func (r *DingoNodeReconciler) applyOnChainAttempt(
+	dn *dingov1alpha1.DingoNode,
+	attempt onChainAttempt,
+	wantPool string,
+) {
+	// A remembered observation of another pool says nothing about this one, and
+	// its "Observed" reason would contradict a False condition. The caller drops
+	// such entries and re-reads, so this is a guard rather than a live path.
+	if attempt.ok && attempt.poolID != wantPool {
+		return
+	}
+	if attempt.ok {
+		dn.Status.OpCert.OnChainCounter = attempt.counter
+		at := metav1.NewTime(attempt.observedAt)
+		dn.Status.OpCert.OnChainCounterAt = &at
+		dn.Status.OpCert.OnChainCounterPoolID = attempt.poolID
+		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+			Type:               condOnChainCounter,
+			Status:             metav1.ConditionTrue,
+			Reason:             attempt.reason,
+			Message:            attempt.message,
+			ObservedGeneration: dn.Generation,
+		})
+		return
+	}
+	// A failed attempt leaves any previously observed counter alone. The on-chain
+	// counter only ever moves forward, so a value read an hour ago is still a
+	// valid lower bound, whereas clearing it to zero would silently disable the
+	// check the moment the node blipped. Freshness is handled where the value is
+	// *used* (onChainFloor in keys.go), not by throwing it away here.
+	if attempt.reason != "" {
+		r.setOnChainUnavailable(dn, attempt.reason, attempt.message)
+	}
+}
+
+// lastOnChainAttempt returns what the operator remembers of the last on-chain
+// counter read for a node.
+func (r *DingoNodeReconciler) lastOnChainAttempt(
+	key types.NamespacedName,
+) (onChainAttempt, bool) {
+	r.onChainMu.Lock()
+	defer r.onChainMu.Unlock()
+	attempt, ok := r.onChainAttempts[key]
+	return attempt, ok
+}
+
+// recordOnChainAttempt remembers an attempt, rate-limiting the next one.
+func (r *DingoNodeReconciler) recordOnChainAttempt(
+	key types.NamespacedName,
+	attempt onChainAttempt,
+) {
+	r.onChainMu.Lock()
+	defer r.onChainMu.Unlock()
+	if r.onChainAttempts == nil {
+		r.onChainAttempts = make(map[types.NamespacedName]onChainAttempt)
+	}
+	r.onChainAttempts[key] = attempt
+}
+
+// forgetOnChainAttempt drops a node's remembered attempt, so the map does not
+// retain deleted DingoNodes and a pool change re-reads immediately.
+func (r *DingoNodeReconciler) forgetOnChainAttempt(key types.NamespacedName) {
+	r.onChainMu.Lock()
+	defer r.onChainMu.Unlock()
+	delete(r.onChainAttempts, key)
+}
+
+// setOnChainUnavailable records that the on-chain counter could not be
+// determined. It is not Degraded: an unsynced node, or a pool that has never
+// minted, is a normal state, and validation falls back to the on-disk counter.
+func (r *DingoNodeReconciler) setOnChainUnavailable(
+	dn *dingov1alpha1.DingoNode,
+	reason, message string,
+) {
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condOnChainCounter,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: dn.Generation,
+	})
+}
+
+// networkMagic resolves the network magic the node-to-client handshake must
+// present: the explicit spec value if set, otherwise the magic of the named
+// network. A network gouroboros does not know (e.g. "devnet") without an
+// explicit magic cannot be handshaked, and reports false rather than guessing —
+// a wrong magic is refused by the node, which would look like an unreachable
+// node forever.
+func networkMagic(dn *dingov1alpha1.DingoNode) (uint32, bool) {
+	if m := dn.Spec.NetworkMagic; m != nil {
+		if *m < 0 || *m > math.MaxUint32 {
+			return 0, false
+		}
+		return uint32(*m), true
+	}
+	if network, ok := ouroboros.NetworkByName(dn.Spec.Network); ok {
+		return network.NetworkMagic, true
+	}
+	return 0, false
 }
 
 // updateStatus writes the status subresource, tracking observedGeneration.

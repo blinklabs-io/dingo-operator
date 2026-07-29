@@ -22,6 +22,7 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/controller"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
+	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/version"
 	_ "go.uber.org/automaxprocs"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -111,6 +112,7 @@ func main() {
 		Scheme:        mgr.GetScheme(),
 		Recorder:      mgr.GetEventRecorder("dingonode-controller"),
 		ForgeStatus:   forgestatus.NewHTTPFetcher(),
+		OnChain:       onchain.NewNtCFetcher(),
 		PodMonitorCRD: podMonitorInstalled(mgr),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {

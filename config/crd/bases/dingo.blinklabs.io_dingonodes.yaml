@@ -1042,6 +1042,26 @@ spec:
                     format: int64
                     minimum: 1
                     type: integer
+                  nodeToClient:
+                    description: |-
+                      NodeToClient exposes the node-to-client interface to the cluster so the
+                      operator can read the authoritative on-chain opcert counter.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled binds Dingo's node-to-client listener to all pod interfaces
+                          (CARDANO_PRIVATE_BIND_ADDR=0.0.0.0) rather than loopback. Access is still
+                          governed by the block producer's NetworkPolicy, which admits the port only
+                          from clients labelled dingo.blinklabs.io/node-to-client=allowed — declared
+                          relay peers get the node-to-node port and nothing more. The policy rule is
+                          emitted only while this is true, so the listener and the policy cannot
+                          disagree.
+
+                          While this is false the operator cannot query the on-chain opcert counter,
+                          so counter validation falls back to the operator's own last accepted
+                          counter (status.opcert.onDiskCounter).
+                        type: boolean
+                    type: object
                   poolId:
                     description: PoolID (bech32 or hex) is optional and cross-checked
                       against the keys.
@@ -1792,8 +1812,30 @@ spec:
                     format: date-time
                     type: string
                   onChainCounter:
+                    description: |-
+                      OnChainCounter is the highest opcert issue number the chain has accepted
+                      for this pool, read from the node over node-to-client local-state-query.
+                      Zero means "not observed": either the node could not be reached or the
+                      pool has no counter on chain yet (it has never minted a block under an
+                      operational certificate). Use OnChainCounterAt to tell how fresh
+                      the value is — it is never cleared on a failed read, because a stale
+                      counter is still a valid lower bound and clearing it would throw away the
+                      only floor the operator has.
                     format: int64
                     type: integer
+                  onChainCounterAt:
+                    description: OnChainCounterAt is when onChainCounter was last
+                      read successfully.
+                    format: date-time
+                    type: string
+                  onChainCounterPoolId:
+                    description: |-
+                      OnChainCounterPoolID is the pool (hex cold-key hash) onChainCounter was
+                      read for. It records the observation's provenance: a counter is only used
+                      as a validation floor for the pool it was actually read for, so editing
+                      spec.blockProducer.poolId discards it immediately instead of leaving it
+                      enforced until it ages out.
+                    type: string
                   onDiskCounter:
                     format: int64
                     type: integer

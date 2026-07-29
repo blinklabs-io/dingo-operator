@@ -27,12 +27,29 @@ operators.
   keeps its loaded keys, but `/keys` is a whole-Secret mount, so kubelet does
   refresh the rejected files onto the pod's disk — any subsequent restart from
   any cause starts the node on them.
+- **On-chain counter floor** — with `blockProducer.nodeToClient.enabled`, the
+  operator reads the pool's authoritative opcert counter from the node over
+  node-to-client local-state-query, publishes it as
+  `status.opcert.onChainCounter`, and refuses a delivered certificate numbered
+  below it (the chain would reject blocks forged with it). It fails open: an
+  unreachable or unsynced node falls back to the operator's own last accepted
+  counter, and the `OnChainCounterAvailable` condition says which applies.
+  Reaching the port also needs the label
+  `dingo.blinklabs.io/node-to-client=allowed` on the client pod — see the
+  NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
 - **Safe HA** — `SingleActive` (default) or `ActiveStandby` with fenced,
   lease-based promotion so exactly one node ever forges.
 - **Secure by default** — non-root, dropped capabilities, least-privilege RBAC,
-  and a default-deny NetworkPolicy for block producers.
+  and a default-deny NetworkPolicy for block producers. Node-to-client (port
+  3002) is closed unless a client opts in: label the client pod
+  `dingo.blinklabs.io/node-to-client=allowed`, and its namespace too when it is
+  not the node's own. That label is the only way in — peers named in
+  `topology.relayRefs` get the node-to-node port (3001) and nothing else. Dingo
+  also binds node-to-client to loopback until
+  `blockProducer.nodeToClient.enabled` is set, so both the listener and the
+  policy have to be opened deliberately.
 
 ## Installation
 
