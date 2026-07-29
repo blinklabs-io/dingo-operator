@@ -141,7 +141,11 @@ func imageRef(dn *dingov1alpha1.DingoNode) string {
 
 // DefaultDingoTag is the Dingo image tag used when the spec omits one. It should
 // track a version the operator has been tested against.
-const DefaultDingoTag = "0.51.0"
+//
+// Do not let this drift below 0.68.0: earlier releases brick their data volume
+// if the pod is rolled mid-genesis-write (dingo #2959), and a DingoNode that
+// omits spec.image.tag gets whatever this says.
+const DefaultDingoTag = "0.68.0"
 
 // storageMode returns the effective storage mode string.
 func storageMode(dn *dingov1alpha1.DingoNode) string {
