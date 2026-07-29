@@ -25,9 +25,38 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
+
+// createOrUpdateWithRetry runs controllerutil.CreateOrUpdate, retrying on
+// conflict.
+//
+// A conflict here is ordinary and self-inflicted: CreateOrUpdate reads through
+// the manager's cache, and a reconcile that has just written an object can read
+// its own pre-write revision on the next pass and submit a stale
+// resourceVersion. Without a retry the whole reconcile fails, and because
+// Reconcile returns before reconcileStatus runs, every condition that pass had
+// computed — KeysValid and Degraded among them — is discarded until the next
+// requeue. The work is idempotent, so retrying costs nothing and keeps a
+// cache-timing artifact from suppressing real status.
+//
+// RetryOnConflict only retries genuine conflicts; every other error is returned
+// unchanged. Each attempt re-enters CreateOrUpdate, which issues a fresh Get, so
+// a retry operates on current state rather than resubmitting stale bytes.
+func createOrUpdateWithRetry(
+	ctx context.Context,
+	c client.Client,
+	obj client.Object,
+	mutate controllerutil.MutateFn,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, c, obj, mutate)
+		return err
+	})
+}
 
 // objectMeta returns a minimal ObjectMeta for a CreateOrUpdate target.
 func objectMeta(name, namespace string) metav1.ObjectMeta {
@@ -42,7 +71,7 @@ func (r *DingoNodeReconciler) upsertServiceAccount(
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, sa, func() error {
 		sa.Labels = desired.Labels
 		sa.AutomountServiceAccountToken = desired.AutomountServiceAccountToken
 		return ctrl.SetControllerReference(dn, sa, r.Scheme)
@@ -58,7 +87,7 @@ func (r *DingoNodeReconciler) upsertService(
 	svc := &corev1.Service{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, svc, func() error {
 		svc.Labels = desired.Labels
 		// Preserve the API-assigned cluster IP on update (immutable).
 		clusterIP := svc.Spec.ClusterIP
@@ -90,7 +119,7 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 	cm := &corev1.ConfigMap{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, cm, func() error {
 		cm.Labels = desired.Labels
 		cm.Data = desired.Data
 		return ctrl.SetControllerReference(dn, cm, r.Scheme)
@@ -107,7 +136,7 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, sts, func() error {
 		sts.Labels = desired.Labels
 		if sts.CreationTimestamp.IsZero() {
 			// Create: set the full spec, including immutable fields.
@@ -133,7 +162,7 @@ func (r *DingoNodeReconciler) upsertPDB(
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pdb, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, pdb, func() error {
 		pdb.Labels = desired.Labels
 		if pdb.CreationTimestamp.IsZero() {
 			pdb.Spec = desired.Spec
@@ -154,7 +183,7 @@ func (r *DingoNodeReconciler) upsertNetworkPolicy(
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, np, func() error {
 		np.Labels = desired.Labels
 		np.Spec = desired.Spec
 		return ctrl.SetControllerReference(dn, np, r.Scheme)
@@ -171,7 +200,7 @@ func (r *DingoNodeReconciler) upsertPodMonitor(
 	pm.SetGroupVersionKind(resources.PodMonitorGVK)
 	pm.SetName(dn.Name)
 	pm.SetNamespace(dn.Namespace)
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pm, func() error {
+	err := createOrUpdateWithRetry(ctx, r.Client, pm, func() error {
 		pm.SetLabels(desired.GetLabels())
 		if pm.Object == nil {
 			pm.Object = make(map[string]any)
