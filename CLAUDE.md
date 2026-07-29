@@ -78,9 +78,9 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
     query, while passing tests still delete their own namespaces so a long run
     does not accumulate them. A failing test always retains its namespace
     regardless of either.
-  - Override the node image with **both** `DINGO_IMAGE` (the side-load in
-    `k3d-up.sh`) and `E2E_DINGO_IMAGE` (the pod spec). Setting only one
-    silently tests the pinned default.
+  - Override the node image with `DINGO_IMAGE`; it moves both the side-load in
+    `k3d-up.sh` and the pod spec, because the harness falls back to it.
+    `E2E_DINGO_IMAGE` still wins if set, for overriding the pod alone.
   - Budget ~15 minutes (measured: `go test` ~890s against a 30m timeout). The
     three-layer deadline budget is documented in `test/e2e/harness_test.go`.
   - **Linting the suite needs two flags, not one.** `test/e2e` is almost all

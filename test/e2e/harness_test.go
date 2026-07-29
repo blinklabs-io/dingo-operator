@@ -410,14 +410,24 @@ func (h *harness) applyDevNet(ctx context.Context) *devnet.DevNet {
 func (h *harness) applyDingoNode(ctx context.Context, dn *devnet.DevNet) {
 	h.t.Helper()
 
-	image := os.Getenv("E2E_DINGO_IMAGE")
+	// E2E_DINGO_IMAGE wins, then DINGO_IMAGE, then the pinned default.
+	// hack/e2e/k3d-up.sh reads DINGO_IMAGE to decide what to side-load, so
+	// honouring it here means one variable is enough to move both. Setting only
+	// one used to leave the pod on the pinned default while the script imported
+	// something else — a silent no-op that looked like a working override.
+	envVar := "E2E_DINGO_IMAGE"
+	image := os.Getenv(envVar)
 	if image == "" {
-		image = defaultDingoImage
+		envVar = "DINGO_IMAGE"
+		image = os.Getenv(envVar)
+	}
+	if image == "" {
+		envVar, image = "E2E_DINGO_IMAGE", defaultDingoImage
 	}
 	// Split on the last colon so a registry host:port is not mistaken for a tag.
 	sep := strings.LastIndex(image, ":")
 	require.Greater(h.t, sep, strings.LastIndex(image, "/"),
-		"E2E_DINGO_IMAGE %q must be repository:tag", image)
+		"%s %q must be repository:tag", envVar, image)
 	repo, tag := image[:sep], image[sep+1:]
 
 	node := &dingov1alpha1.DingoNode{

@@ -67,6 +67,11 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
+            # Matches the Helm chart's securityContext.readOnlyRootFilesystem
+            # default. Without it the suite would run a laxer container than
+            # the one we ship, and could not catch a change that only fails
+            # under a read-only root filesystem.
+            readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           resources:
             requests: { cpu: 50m, memory: 64Mi }

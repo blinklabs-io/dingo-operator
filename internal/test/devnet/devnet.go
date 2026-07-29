@@ -15,6 +15,7 @@
 package devnet
 
 import (
+	"fmt"
 	"io"
 	"time"
 )
@@ -34,7 +35,7 @@ type DevNet struct {
 func Generate(r io.Reader, systemStart time.Time) (*DevNet, error) {
 	keys, err := GeneratePoolKeys(r)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate pool keys: %w", err)
 	}
 	params := DefaultParams()
 	// Genesis records whole seconds, so pin Params to the instant the
@@ -42,7 +43,7 @@ func Generate(r io.Reader, systemStart time.Time) (*DevNet, error) {
 	params.SystemStart = systemStart.UTC().Truncate(time.Second)
 	files, err := RenderGenesis(params, keys)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("render genesis: %w", err)
 	}
 	return &DevNet{
 		Keys:        keys,

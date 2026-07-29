@@ -267,4 +267,3 @@ func TestRenderGenesisRejectsIncompleteInput(t *testing.T) {
 		})
 	}
 }
-

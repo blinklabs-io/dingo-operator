@@ -161,7 +161,9 @@ func newTemplateData(p Params, keys *PoolKeys) (templateData, error) {
 	}
 	vrfHash, err := keys.VRFVKeyHash()
 	if err != nil {
-		return templateData{}, err
+		return templateData{}, fmt.Errorf(
+			"hash pool VRF verification key: %w", err,
+		)
 	}
 	paymentHash, err := deriveGenesisKeyHash(
 		keys.ColdVKey, genesisPaymentKeyInfo,
