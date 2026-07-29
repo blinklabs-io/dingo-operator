@@ -1,0 +1,77 @@
+# In-cluster manager manifests for the k3d e2e suite. Deliberately does NOT
+# restate the manager's RBAC policy rules — config/rbac/role.yaml is applied
+# separately so controller-gen RBAC marker changes propagate automatically.
+# Only the Deployment shell is duplicated here.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dingo-operator
+  namespace: dingo-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dingo-operator-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dingo-operator-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: dingo-operator
+    namespace: dingo-operator-system
+---
+# The Helm chart provides this as a configurable "keys-reader"; the operator's
+# own kubebuilder markers deliberately do NOT grant cluster-wide secrets access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dingo-operator-keys-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dingo-operator-keys-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dingo-operator-keys-reader
+subjects:
+  - kind: ServiceAccount
+    name: dingo-operator
+    namespace: dingo-operator-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dingo-operator
+  namespace: dingo-operator-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dingo-operator }
+  template:
+    metadata:
+      labels: { app: dingo-operator }
+    spec:
+      serviceAccountName: dingo-operator
+      containers:
+        - name: manager
+          image: dingo-operator:latest
+          imagePullPolicy: Never
+          args: ["--leader-elect=false"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            # Matches the Helm chart's securityContext.readOnlyRootFilesystem
+            # default. Without it the suite would run a laxer container than
+            # the one we ship, and could not catch a change that only fails
+            # under a read-only root filesystem.
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }

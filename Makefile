@@ -23,8 +23,13 @@ CONTROLLER_TOOLS_VERSION ?= v0.17.3
 ENVTEST_VERSION ?= release-0.24
 ENVTEST_K8S_VERSION ?= 1.31.0
 
+# Dedicated kubeconfig for the k3d e2e cluster (hack/e2e/k3d-up.sh writes it,
+# hack/e2e/k3d-down.sh removes it). Never the user's default kubeconfig, so
+# `make e2e` cannot accidentally run against an existing cluster/context.
+E2E_KUBECONFIG ?= $(ROOT_DIR)/.e2e/kubeconfig
+
 .PHONY: all build help mod-tidy clean format golines lint test manifests generate \
-	install-crds uninstall-crds run image tools
+	install-crds uninstall-crds run image tools e2e
 
 all: format build ## Format and build (default)
 
@@ -54,6 +59,13 @@ lint: ## Run linters (golangci-lint + nilaway + modernize)
 	# mapsloop is disabled: its only hits are the controller-gen-generated
 	# deepcopy (zz_generated.deepcopy.go), which we cannot hand-edit.
 	modernize -mapsloop=false ./...
+	# test/e2e is almost entirely _test.go files behind the "e2e" build tag, and
+	# .golangci.yml sets run.tests=false, which skips _test.go regardless of
+	# tags. So the runs above see only namespace.go. Repeat all three with the
+	# tag, and pass --tests to golangci-lint, or the suite is never linted.
+	golangci-lint run --build-tags e2e --tests ./test/e2e/...
+	GOFLAGS=-tags=e2e nilaway -include-pkgs="github.com/blinklabs-io/dingo-operator" ./test/e2e/...
+	GOFLAGS=-tags=e2e modernize -mapsloop=false ./test/e2e/...
 
 test: manifests generate envtest ## Run tests (with envtest control plane)
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
@@ -99,3 +111,19 @@ envtest: $(LOCALBIN) ## Install setup-envtest locally
 	@test -x $(ENVTEST) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 
 tools: controller-gen envtest ## Install all local tooling
+
+# hack/e2e/k3d-down.sh honors two env vars that skip its teardown, for two
+# different purposes: E2E_KEEP_UP=1 leaves the cluster AND the harness's
+# per-test namespaces up (local debugging); E2E_SKIP_TEARDOWN=1 leaves only
+# the cluster up so a later step (e.g. CI's diagnostics collector) can still
+# reach it, while `go test` still deletes its own namespaces normally. See
+# the comment in hack/e2e/k3d-down.sh for the full rationale.
+#
+# -timeout is the outermost of three deadline layers (per-step, per-test
+# context, suite); see the deadline-budget comment in test/e2e/harness_test.go
+# before changing it.
+e2e: image ## Run the k3d end-to-end suite (builds and imports the image)
+	KUBECONFIG_PATH="$(E2E_KUBECONFIG)" ./hack/e2e/k3d-up.sh
+	KUBECONFIG="$(E2E_KUBECONFIG)" \
+		go test -tags e2e -timeout 30m -v ./test/e2e/... ; \
+		status=$$?; KUBECONFIG_PATH="$(E2E_KUBECONFIG)" ./hack/e2e/k3d-down.sh; exit $$status

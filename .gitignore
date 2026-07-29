@@ -45,3 +45,6 @@ testbin/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# k3d e2e cluster kubeconfig (hack/e2e/k3d-up.sh / k3d-down.sh)
+/.e2e/

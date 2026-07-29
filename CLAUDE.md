@@ -43,6 +43,7 @@ make build                # CGO_ENABLED=0 build -> ./dingo-operator
 make test                 # go test -race ./... (envtest for controller tests)
 make lint                 # golangci-lint run + nilaway + modernize
 make run                  # run against the current kubecontext
+make e2e                  # k3d + single-BP devnet end-to-end suite (~15 min)
 ```
 
 After editing anything under `api/`, run `make manifests generate` and commit
@@ -59,6 +60,35 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   Dingo repo: `internal/test/devnet/` (`run-tests.sh`). It generates fresh
   genesis + pool keys and forges blocks; point a `DingoNode` at it to validate
   rotation/forging.
+- `make e2e` is this repo's own end-to-end suite, and the only test that runs a
+  real node: envtest has no kubelet, so it never starts a pod. It needs **`k3d`
+  and Docker**, builds and side-loads the operator image, brings up a throwaway
+  cluster (`hack/e2e/k3d-up.sh`) and runs `test/e2e/` — a generated single-pool
+  devnet forging real blocks, plus the Assisted-rotation roll and rejection
+  paths. Use it for any change to key handling, rotation, or workload
+  rendering.
+  - It **cannot touch the k3s cluster above**: `k3d-up.sh` passes
+    `--kubeconfig-update-default=false` and writes a dedicated kubeconfig to
+    `.e2e/` (git-ignored), and the harness refuses to run against any context
+    but `k3d-<cluster>`.
+  - Two env vars skip teardown and are **not** interchangeable.
+    `E2E_KEEP_UP=1` leaves the cluster *and* every test's namespace up, for
+    debugging by hand. `E2E_SKIP_TEARDOWN=1` leaves only the cluster up — this
+    is what CI sets so `hack/e2e/collect-diagnostics.sh` has something to
+    query, while passing tests still delete their own namespaces so a long run
+    does not accumulate them. A failing test always retains its namespace
+    regardless of either.
+  - Override the node image with `DINGO_IMAGE`; it moves both the side-load in
+    `k3d-up.sh` and the pod spec, because the harness falls back to it.
+    `E2E_DINGO_IMAGE` still wins if set, for overriding the pod alone.
+  - Budget ~15 minutes (measured: `go test` ~890s against a 30m timeout). The
+    three-layer deadline budget is documented in `test/e2e/harness_test.go`.
+  - **Linting the suite needs two flags, not one.** `test/e2e` is almost all
+    `_test.go` behind the `e2e` build tag, and `.golangci.yml` sets
+    `run.tests=false`, which skips `_test.go` regardless of tags — so the build
+    tag alone lints nothing. `make lint` and `.github/workflows/golangci-lint.yml`
+    both pass `--build-tags e2e --tests`. `nilaway` and `modernize` accept
+    `-tags` but ignore it; `GOFLAGS=-tags=e2e` is what works for those.
 
 ## Conventions & gotchas
 
@@ -198,7 +228,10 @@ the pod onto it":
 Both legs are covered by the envtest controller suite
 (`internal/controller/dingonode_controller_test.go`): a valid bundle rolls the
 pod and publishes its counter; a bundle signed by another pool's cold key leaves
-the pod template byte-identical and marks the node Degraded.
+the pod template byte-identical and marks the node Degraded. They are also
+proven end to end against a real forging node in `test/e2e/rotation_test.go`
+(`make e2e`) — which is what establishes that the roll actually resumes forging
+on the new key, something envtest cannot show.
 
 Full `Auto` rotation:
 
