@@ -353,6 +353,23 @@ type DingoNodeSpec struct {
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+	// TerminationGracePeriodSeconds is how long kubelet waits after SIGTERM
+	// before it SIGKILLs the node.
+	//
+	// This must exceed the time Dingo needs to flush and close its database, or
+	// the node is killed mid-write and its next start pays for it with a replay
+	// — and on a block producer, restarts are routine rather than exceptional,
+	// since every key rotation and config-bundle change rolls the pod. The
+	// operator derives Dingo's own shutdown budget from this value (see
+	// CARDANO_SHUTDOWN_TIMEOUT in BuildEnv) so the two cannot drift into the
+	// default state where Kubernetes and Dingo are given the same 30s and
+	// kubelet fires exactly as Dingo's deadline expires.
+	//
+	// Raise it for a node with a large ledger, whose flush takes longer.
+	// +kubebuilder:default=60
+	// +kubebuilder:validation:Minimum=15
+	// +optional
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 	// PodSecurityContext overrides the operator's secure defaults.
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`

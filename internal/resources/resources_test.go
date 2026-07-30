@@ -421,3 +421,66 @@ func TestDefaultDingoTagFloor(t *testing.T) {
 			"#2959 before lowering it",
 		DefaultDingoTag, floorText)
 }
+
+func TestTerminationGracePeriod(t *testing.T) {
+	t.Run("default exceeds Kubernetes' own 30s", func(t *testing.T) {
+		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
+		require.NotNil(t, sts.Spec.Template.Spec.TerminationGracePeriodSeconds)
+		grace := *sts.Spec.Template.Spec.TerminationGracePeriodSeconds
+		assert.Equal(t, DefaultTerminationGracePeriodSeconds, grace)
+		// The whole point of the default: on Kubernetes' 30s, kubelet would
+		// SIGKILL exactly as Dingo's own 30s shutdown budget expired.
+		assert.Greater(t, grace, int64(30))
+	})
+
+	t.Run("spec value is honoured", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.TerminationGracePeriodSeconds = new(int64(120))
+		sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+		require.NotNil(t, sts.Spec.Template.Spec.TerminationGracePeriodSeconds)
+		assert.Equal(
+			t,
+			int64(120),
+			*sts.Spec.Template.Spec.TerminationGracePeriodSeconds,
+		)
+	})
+}
+
+// TestDingoShutdownTimeoutStaysInsideGracePeriod is the invariant that makes the
+// grace period worth setting: Dingo must stop on its own terms before kubelet
+// kills it. A timeout equal to or above the grace period buys nothing, because
+// the SIGKILL lands first.
+func TestDingoShutdownTimeoutStaysInsideGracePeriod(t *testing.T) {
+	for _, grace := range []int64{0, 15, 60, 120, 3600} {
+		t.Run(strconv.FormatInt(grace, 10), func(t *testing.T) {
+			dn := relayNode()
+			if grace > 0 {
+				dn.Spec.TerminationGracePeriodSeconds = new(grace)
+			}
+			effective := terminationGracePeriod(dn)
+			timeout := dingoShutdownTimeout(dn)
+
+			assert.Positive(t, timeout, "timeout must be usable")
+			assert.Less(
+				t,
+				int64(timeout.Seconds()),
+				effective,
+				"Dingo's deadline must fall strictly inside the grace period",
+			)
+
+			// And it must actually reach the container, under the CARDANO_
+			// prefix Dingo reads for this field.
+			env := envMap(dn, RenderOptions{})
+			assert.Equal(t, timeout.String(), env["CARDANO_SHUTDOWN_TIMEOUT"])
+		})
+	}
+}
+
+func TestShutdownTimeoutIsOverridable(t *testing.T) {
+	dn := relayNode()
+	dn.Spec.Environment = map[string]string{
+		"CARDANO_SHUTDOWN_TIMEOUT": "5m",
+	}
+	env := envMap(dn, RenderOptions{})
+	assert.Equal(t, "5m", env["CARDANO_SHUTDOWN_TIMEOUT"])
+}
