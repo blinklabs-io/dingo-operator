@@ -53,7 +53,9 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -73,6 +75,15 @@ const (
 	// operatorNamespace is where hack/e2e/k3d-up.sh installs the manager.
 	operatorNamespace  = "dingo-operator-system"
 	operatorDeployment = "dingo-operator"
+	// operatorServiceAccount is the operator's ServiceAccount. It happens to
+	// share its name with the Deployment, but the two are distinct identities:
+	// RBAC subjects and SubjectAccessReview users need this one, so keep it
+	// separate rather than reusing operatorDeployment and relying on them
+	// staying equal.
+	operatorServiceAccount = "dingo-operator"
+	// keysReaderName is the Role/RoleBinding name the chart uses for the
+	// namespaced keys-reader grant.
+	keysReaderName = "dingo-operator-keys-reader"
 
 	// nodeName is the DingoNode (and StatefulSet) name; its only pod is
 	// therefore nodeName+"-0".
@@ -349,6 +360,7 @@ func (h *harness) createNamespace(ctx context.Context) {
 	require.NoError(h.t, h.client.Create(ctx, ns),
 		"create namespace %s", h.namespace)
 	h.t.Logf("namespace %s created", h.namespace)
+	h.createKeysReaderRBAC(ctx)
 
 	h.t.Cleanup(func() {
 		// A fresh context: t.Context() is already cancelled during cleanup.
@@ -364,6 +376,108 @@ func (h *harness) createNamespace(ctx context.Context) {
 			h.t.Logf("%s — leaving namespace %s in place", kept, h.namespace)
 		}
 	})
+}
+
+// createKeysReaderRBAC grants the operator get-on-Secrets in this test's
+// namespace only, mirroring what the Helm chart renders when
+// rbac.keySecretsNamespaces is set: a Role in the workload namespace plus a
+// RoleBinding for the operator's ServiceAccount, which lives elsewhere.
+//
+// The suite deliberately installs no cluster-wide Secret grant (see
+// test/e2e/manifests/manager.yaml), so this is the operator's *only* route to
+// the keys Secret. Every test that observes a keys-checksum annotation is
+// therefore also evidence that the narrow grant is sufficient — the operator
+// reads that Secret through an uncached client, and the annotation is only
+// stamped when the read succeeds.
+func (h *harness) createKeysReaderRBAC(ctx context.Context) {
+	h.t.Helper()
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keysReaderName,
+			Namespace: h.namespace,
+		},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get"},
+		}},
+	}
+	require.NoError(h.t, h.client.Create(ctx, role),
+		"create keys-reader Role in %s", h.namespace)
+
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keysReaderName,
+			Namespace: h.namespace,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      operatorServiceAccount,
+			Namespace: operatorNamespace,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     keysReaderName,
+		},
+	}
+	require.NoError(h.t, h.client.Create(ctx, binding),
+		"create keys-reader RoleBinding in %s", h.namespace)
+	h.t.Logf("keys-reader RBAC scoped to namespace %s", h.namespace)
+}
+
+// operatorServiceAccountUser is the SA username the API server authorizes the
+// operator as, for SubjectAccessReview.
+func operatorServiceAccountUser() string {
+	return "system:serviceaccount:" + operatorNamespace + ":" +
+		operatorServiceAccount
+}
+
+// canGet asks the API server whether the operator may "get" a resource in a
+// namespace. This is the authorizer's own answer, not an inference from reading
+// the manifests back.
+func (h *harness) canGet(
+	ctx context.Context,
+	namespace, group, resource string,
+) bool {
+	h.t.Helper()
+	review := &authorizationv1.SubjectAccessReview{
+		Spec: authorizationv1.SubjectAccessReviewSpec{
+			User: operatorServiceAccountUser(),
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: namespace,
+				Verb:      "get",
+				Group:     group,
+				Resource:  resource,
+			},
+		},
+	}
+	require.NoError(h.t, h.client.Create(ctx, review),
+		"SubjectAccessReview for %s in namespace %s", resource, namespace)
+	return review.Status.Allowed
+}
+
+// canGetSecrets reports whether the operator may read Secrets in a namespace.
+func (h *harness) canGetSecrets(ctx context.Context, namespace string) bool {
+	h.t.Helper()
+	return h.canGet(ctx, namespace, "", "secrets")
+}
+
+// canGetDingoNodes reports whether the operator may read DingoNodes in a
+// namespace. That access is cluster-wide by design, so it doubles as a control:
+// if this comes back denied too, the review is not measuring what it claims.
+func (h *harness) canGetDingoNodes(
+	ctx context.Context,
+	namespace string,
+) bool {
+	h.t.Helper()
+	return h.canGet(
+		ctx,
+		namespace,
+		dingov1alpha1.GroupVersion.Group,
+		"dingonodes",
+	)
 }
 
 // applyDevNet generates a throwaway single-pool devnet and writes its config
