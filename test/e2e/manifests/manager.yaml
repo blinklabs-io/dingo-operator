@@ -21,29 +21,18 @@ subjects:
     name: dingo-operator
     namespace: dingo-operator-system
 ---
-# The Helm chart provides this as a configurable "keys-reader"; the operator's
-# own kubebuilder markers deliberately do NOT grant cluster-wide secrets access.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: dingo-operator-keys-reader
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: dingo-operator-keys-reader
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: dingo-operator-keys-reader
-subjects:
-  - kind: ServiceAccount
-    name: dingo-operator
-    namespace: dingo-operator-system
+# Deliberately no cluster-wide Secret grant here.
+#
+# The operator's own kubebuilder markers grant no Secret access at all — the
+# deployment supplies it, and the Helm chart makes that supply configurable:
+# per-namespace Role+RoleBinding when rbac.keySecretsNamespaces is set,
+# cluster-wide ClusterRole otherwise. The two are mutually exclusive.
+#
+# This suite runs the *narrow* one. Namespaced access is a strict subset of
+# cluster-wide, so proving the operator works with only a per-namespace
+# secrets:get proves it works with the broad grant too — the reverse is not
+# true. The Role and RoleBinding are created per test namespace by the harness
+# (createKeysReaderRBAC), because the namespace name is random per run.
 ---
 apiVersion: apps/v1
 kind: Deployment
