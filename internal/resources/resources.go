@@ -67,10 +67,17 @@ const (
 	configBundleMountPath  = "/cardano-config"
 	configBundleFileName   = "config.json"
 
-	portRelay   = 3001
-	portPrivate = 3002
-	portMetrics = 12798
-	metricsPath = "/metrics"
+	portRelay = 3001
+	// PortNodeToClient is the port on which Dingo serves node-to-client (the
+	// "private" container port). Dingo listens for NtC over TCP here as well as
+	// on its UNIX socket, so in-cluster clients — including the operator, which
+	// reads the authoritative on-chain opcert counter over local-state-query —
+	// can reach it without access to /ipc. Exported because both the policy
+	// builder and the reconciler need it; see NodeToClientAccessLabel for who is
+	// allowed to connect.
+	PortNodeToClient = 3002
+	portMetrics      = 12798
+	metricsPath      = "/metrics"
 
 	// dingoUID / dingoGID are the numeric uid/gid of the "dingo" user baked into
 	// the upstream Dingo image (which declares USER dingo by name). Kubernetes
@@ -240,6 +247,18 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		})
 	}
 	bp := dn.Spec.BlockProducer
+	// Dingo binds node-to-client to 127.0.0.1:3002 unless told otherwise, so it
+	// is unreachable from outside the pod no matter what the NetworkPolicy
+	// allows. Bind it to the pod network only when the spec asks for it; this is
+	// what the operator's on-chain opcert counter query needs. Set on the node
+	// regardless of whether this pod is the keyed one, so a keyless standby is
+	// queryable too.
+	if IsBlockProducer(dn) && bp != nil && bp.NodeToClient.Enabled {
+		env = append(env, corev1.EnvVar{
+			Name:  "CARDANO_PRIVATE_BIND_ADDR",
+			Value: "0.0.0.0",
+		})
+	}
 	if mountsBlockProducerKeys(dn, opts) && bp != nil {
 		env = append(
 			env,
@@ -415,7 +434,7 @@ func containerPorts() []corev1.ContainerPort {
 		{Name: "relay", ContainerPort: portRelay, Protocol: corev1.ProtocolTCP},
 		{
 			Name:          "private",
-			ContainerPort: portPrivate,
+			ContainerPort: PortNodeToClient,
 			Protocol:      corev1.ProtocolTCP,
 		},
 		{

@@ -21,6 +21,7 @@ active/standby failover. Module: `github.com/blinklabs-io/dingo-operator`.
 | `internal/resources/` | Pure builders for StatefulSet, Services, ConfigMap, PDB, NetworkPolicy, PodMonitor, ServiceAccount |
 | `internal/topology/` | Renders `topology.json` (in-cluster peering + external relays) |
 | `internal/forgestatus/` | Scrapes the node's Prometheus metrics for KES/opcert state |
+| `internal/onchain/` | Reads the authoritative on-chain opcert counter from the node over node-to-client local-state-query |
 | `internal/version/` | ldflags-injected `Version`/`CommitHash` |
 | `config/` | Generated CRD (`crd/bases`), RBAC (`rbac`), samples |
 
@@ -138,8 +139,18 @@ cert-manager).
 - Startup validation is strict: opcert not expired/future, VRF hash matches the
   pool's on-chain registration, and opcert counter ≥ the on-chain observed
   counter (guards `CounterOverIncrementedOCERT`).
-- The node already tracks the authoritative on-chain opcert counter internally;
-  exposing it over an API is upstream work (see below).
+- The authoritative on-chain opcert counter is readable **now**, over
+  node-to-client local-state-query: gouroboros
+  `localstatequery.Client.GetOpCertCounters()` returns a map keyed by pool
+  cold-key hash. Dingo serves NtC over TCP on its private port (3002) as well as
+  its UNIX socket, so the operator dials the pod and needs no access to `/ipc`.
+  Dingo's own `/ipc`-free HTTP surface for this (dingo #2871) is no longer a
+  blocker.
+  - Two things gate it, both off by default and both documented under "OpCert
+    rotation state machine": `spec.blockProducer.nodeToClient.enabled` (Dingo
+    binds NtC to `127.0.0.1` unless told otherwise) and the NetworkPolicy label
+    `dingo.blinklabs.io/node-to-client=allowed` on the client pod (and its
+    namespace, when it differs).
 - **Dingo's graceful shutdown is budgeted 30s by default, and so is
   Kubernetes'.** Dingo traps SIGTERM and flushes its database with a
   `shutdownTimeout` that defaults to 30s (`internal/config/config.go`), which is
@@ -194,8 +205,8 @@ the pod onto it":
   than CrashLooping the pod on Dingo's own "KES verification key mismatch";
   `vrf.skey` is a 32-byte seed or the 64-byte cardano-cli seed||pubkey form
   (matching `dingo/keystore/keyfile.go`); the counter does not regress below
-  `status.opcert.onDiskCounter`; and the KES window covers the node's current
-  period.
+  `status.opcert.onDiskCounter` **or below the on-chain counter** (see below);
+  and the KES window covers the node's current period.
   - The KES length check must precede the derivation: gouroboros
     `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
     check and panics on a short key.
@@ -235,11 +246,106 @@ the pod onto it":
     starts the node on the rejected bundle, and Dingo's startup validation
     turns that into a CrashLoop. Fix the Secret; do not leave a refused bundle
     sitting in it.
-- **Not yet checked**: the authoritative on-chain counter, so over-incrementing
-  past the chain is still only caught by Dingo at startup. This is now
-  implementation work rather than an upstream wait — gouroboros
-  `GetOpCertCounters()` shipped in v0.189.0 (see "Upstream dependencies" below);
-  wiring it into validation is P2.
+- **The on-chain counter floor.** `internal/onchain` dials the node's
+  node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
+  pool's counter as `status.opcert.onChainCounter` (with
+  `status.opcert.onChainCounterAt`). Validation then refuses a delivered opcert
+  whose counter is **below** that value: the chain has already accepted a higher
+  certificate, so nothing forged with this one can be adopted. A counter above
+  `onchain.MaxPlausibleCounter` is discarded rather than enforced — used as a
+  floor, a wrong-but-huge value would invert fail-open into refusing every
+  rotation.
+  - **Fail open, always.** Unknown counter → today's behaviour (the on-disk
+    floor only). Every way the counter can be missing — node absent, starting,
+    syncing, unreachable, `nodeToClient.enabled` false, pool has never minted —
+    is a normal state, not evidence against the bundle. Refusing rotations
+    whenever the node is unreachable would strand an operator mid-incident, and
+    Dingo re-checks the bound at startup regardless. Same reasoning as the
+    narrowed KES lower bound above.
+  - **Stale values are not enforced.** Only an observation newer than
+    `onChainCounterMaxAge` (15 min, ~7 requeue intervals) is a floor. The bound
+    is not about monotonicity — the counter only rises, so an old reading is
+    still a valid lower bound — but about provenance: a repoint at another
+    network or a rollback breaks the link between the stored number and the node,
+    and neither updates it. (A `poolId` edit is handled exactly rather than by
+    the age bound — see below.) A failed read never *clears* the value, for the
+    same reason `status.kes.currentPeriod` is not cleared.
+  - **Provenance is recorded, not assumed.** A successful read also stores the
+    pool it was read for in `status.opcert.onChainCounterPoolId`, and
+    `onChainFloor` enforces a counter only for the pool it names. Editing
+    `spec.blockProducer.poolId` therefore discards the observation on the next
+    reconcile instead of leaving the previous pool's counter enforced until it
+    ages out.
+  - **Ordering: the fetch runs *before* `reconcileResources`,** in `Reconcile`
+    itself — not in `reconcileStatus` with the metrics scrape, because
+    `reconcileResources` is what validates the bundle and acts on the verdict.
+    Be exact about what that buys, because it differs by case:
+    - **StatefulSet already exists** — a genuine roll-prevention: the live
+      keys-checksum is carried forward, the pod template stays byte-identical,
+      and the process keeps forging on its loaded keys.
+    - **Fresh cluster, no StatefulSet yet** — nothing is prevented.
+      `reconcileResources` applies the StatefulSet unconditionally, the keys
+      Secret is mounted, and Dingo CrashLoops on the below-chain opcert exactly
+      as it would have. What the ordering buys here is **correct signalling** —
+      `KeysValid=False`, `Degraded`, a Warning Event, no published
+      `onDiskCounter` — rather than the operator reporting a healthy rotation it
+      had not checked. Same distinction as "refusing declines to initiate a roll,
+      it does not fence one" above.
+  - **One dial per node per `onChainCounterRefreshInterval`**
+    (`onChainCounterMaxAge/3` = 5 min), keyed on the last **attempt**, held in
+    memory (`onChainAttempts`), *not* on `status.opcert.onChainCounterAt`. The
+    difference is the whole point: only the success path writes that timestamp,
+    so gating on it leaves the failing case ungated — an operator whose pod is
+    not labelled for the NetworkPolicy never succeeds, so it would re-dial every
+    pass forever, which is the state this feature ships in until the Helm chart
+    sets the label. Per-call timeouts bound one query but not the aggregate:
+    reconciles run one at a time (`MaxConcurrentReconciles` is the default 1) and
+    a default-deny CNI *drops* rather than refuses, so each attempt costs the
+    full 5s dial timeout and enough block producers starve every other node's
+    rollout. The remembered attempt also carries its outcome, so a reconcile that
+    skips the dial still restores the observation into status and re-asserts the
+    condition — which is what keeps a successful read from being lost when
+    `reconcileResources` fails after it (the reconcile returns before
+    `reconcileStatus` persists anything) and keeps a controller-runtime backoff
+    retry from re-dialling. The map is in memory on purpose: it resets on
+    operator restart (one fresh read per node, and the persisted status still
+    carries the floor), and entries are dropped when a node is deleted. The cost
+    of the gate: after a transient node outage the floor stays unavailable for up
+    to the refresh interval instead of until the next reconcile, since the
+    recovered node is not re-dialled at once. That is well inside
+    `onChainCounterMaxAge` and fails open the same way the check already does,
+    which is what makes five minutes the accepted trade.
+  - **Observability.** The `OnChainCounterAvailable` condition reports
+    `Observed` / `QueryFailed` / `NodeNotReady` / `PoolNotOnChain` /
+    `PoolIDUnset` / `InvalidPoolID` / `UnknownNetworkMagic` / `Disabled`, so the
+    check cannot be silently inert; `QueryFailed` names the NetworkPolicy label a
+    client needs. A failed read whose node has no Service yet reports
+    `NodeNotReady` instead — every healthy new block producer passes through that
+    state (the first dial happens before the reconcile creates the Service), and
+    pointing at a NetworkPolicy label there would be misleading. It is *not*
+    Degraded — an unsynced node or a pool that has never minted is normal.
+    `nodeToClient.enabled: false` reports `Disabled` rather than removing the
+    condition: an absent condition is indistinguishable from a feature that was
+    never wired up.
+  - **Reaching the port.** `spec.blockProducer.nodeToClient.enabled` sets
+    `CARDANO_PRIVATE_BIND_ADDR=0.0.0.0` (Dingo defaults to loopback, so without
+    it no NetworkPolicy change can help), and *while it is true* the block
+    producer's NetworkPolicy admits port 3002 from pods labelled
+    `dingo.blinklabs.io/node-to-client=allowed` — plus a matching label on the
+    *namespace* when the client is in another one. That label is the **only** way
+    in: declared `relayRefs` peers get the node-to-node port (3001) and nothing
+    else. Peering is not consent to drive the node as a client, and the rule is
+    gated on the spec field so the policy cannot grant a port the operator does
+    not query. Both gates are off by default, so the default posture is
+    unchanged. **The operator's own Deployment must carry that label**; it lives
+    in the `helm-charts` repo (`charts/dingo-operator/`), not here, so until the
+    chart sets it (and labels the operator's namespace) the query fails closed to
+    `QueryFailed` on any CNI that enforces NetworkPolicy.
+- **Still not checked**: over-incrementing *past* the chain
+  (`CounterOverIncrementedOCERT`). The operator knows the on-chain value but does
+  not cap the delivered counter at `on-chain + 1`, because the value it holds can
+  be stale by design and a legitimate multi-step rotation would be refused.
+  Dingo's startup validation remains the check for that.
 
 Both legs are covered by the envtest controller suite
 (`internal/controller/dingonode_controller_test.go`): a valid bundle rolls the
@@ -300,6 +406,8 @@ external cold-signer sign type); dingoctl
 [#17](https://github.com/blinklabs-io/bark/issues/17) (LifecycleService).
 
 gouroboros [#1890](https://github.com/blinklabs-io/gouroboros/issues/1890) (LSQ
-opcert counter) is **closed and shipped in v0.189.0** — `GetOpCertCounters()` /
-`DebugChainDepState` are available, so P2's counter-safe issuance no longer waits
-on dingo #2871.
+opcert counter) is **closed, shipped in v0.189.0, and now in use** —
+`internal/onchain` calls `GetOpCertCounters()` over node-to-client, so neither
+the validation floor nor P2's counter-safe issuance waits on dingo #2871. That
+issue is now a convenience (an `/ipc`-free HTTP counter would let the operator
+drop the NtC dial and the NetworkPolicy grant it needs), not a blocker.

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -118,6 +119,31 @@ func TestBuildEnv(t *testing.T) {
 		} {
 			assert.NotContains(t, env, key)
 		}
+	})
+
+	// Dingo binds node-to-client to 127.0.0.1 by default, so without this env
+	// var the operator's on-chain counter query can never connect however
+	// permissive the NetworkPolicy is — and the check would be silently inert.
+	t.Run("node-to-client bind address is opt-in", func(t *testing.T) {
+		env := envMap(bpNode(), RenderOptions{MountKeys: true})
+		assert.NotContains(t, env, "CARDANO_PRIVATE_BIND_ADDR")
+
+		dn := bpNode()
+		dn.Spec.BlockProducer.NodeToClient.Enabled = true
+		env = envMap(dn, RenderOptions{MountKeys: true})
+		assert.Equal(t, "0.0.0.0", env["CARDANO_PRIVATE_BIND_ADDR"])
+
+		// A keyless pod (standby) is still queryable.
+		env = envMap(dn, RenderOptions{})
+		assert.Equal(t, "0.0.0.0", env["CARDANO_PRIVATE_BIND_ADDR"])
+
+		// Relays get no NetworkPolicy, so they never expose it this way.
+		relay := relayNode()
+		assert.NotContains(
+			t,
+			envMap(relay, RenderOptions{}),
+			"CARDANO_PRIVATE_BIND_ADDR",
+		)
 	})
 
 	t.Run("spec environment overrides defaults", func(t *testing.T) {
@@ -338,24 +364,57 @@ func TestBuildStatefulSet(t *testing.T) {
 	})
 }
 
+// ruleForPort returns the single ingress rule that opens port, failing the test
+// if there is not exactly one.
+func ruleForPort(
+	t *testing.T,
+	policy *networkingv1.NetworkPolicy,
+	port int,
+) networkingv1.NetworkPolicyIngressRule {
+	t.Helper()
+	var found []networkingv1.NetworkPolicyIngressRule
+	for _, rule := range policy.Spec.Ingress {
+		for _, p := range rule.Ports {
+			if p.Port != nil && p.Port.IntValue() == port {
+				found = append(found, rule)
+				break
+			}
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one rule for port %d", port)
+	return found[0]
+}
+
+// rulesForPort returns every ingress rule that opens port.
+func rulesForPort(
+	policy *networkingv1.NetworkPolicy,
+	port int,
+) []networkingv1.NetworkPolicyIngressRule {
+	var found []networkingv1.NetworkPolicyIngressRule
+	for _, rule := range policy.Spec.Ingress {
+		for _, p := range rule.Ports {
+			if p.Port != nil && p.Port.IntValue() == port {
+				found = append(found, rule)
+				break
+			}
+		}
+	}
+	return found
+}
+
 func TestBuildNetworkPolicy(t *testing.T) {
-	t.Run(
-		"without relay refs only metrics ingress is allowed",
-		func(t *testing.T) {
-			policy := BuildNetworkPolicy(bpNode())
-			require.Len(t, policy.Spec.Ingress, 1)
-			require.Len(t, policy.Spec.Ingress[0].Ports, 1)
-			require.NotNil(t, policy.Spec.Ingress[0].Ports[0].Port)
-			assert.Equal(
-				t,
-				portMetrics,
-				policy.Spec.Ingress[0].Ports[0].Port.IntValue(),
-			)
-		},
-	)
+	t.Run("a plain block producer only allows metrics", func(t *testing.T) {
+		policy := BuildNetworkPolicy(bpNode())
+		require.Len(t, policy.Spec.Ingress, 1)
+		assert.Empty(t, rulesForPort(policy, portRelay))
+		assert.Empty(t, rulesForPort(policy, PortNodeToClient))
+		metrics := ruleForPort(t, policy, portMetrics)
+		require.Len(t, metrics.From, 1)
+		assert.NotNil(t, metrics.From[0].NamespaceSelector)
+	})
 
 	t.Run(
-		"with relay refs allows node ports from selected relays",
+		"with relay refs allows the node-to-node port from selected relays",
 		func(t *testing.T) {
 			dn := bpNode()
 			dn.Spec.Topology.RelayRefs = []string{"relay-a", "relay-b"}
@@ -376,6 +435,99 @@ func TestBuildNetworkPolicy(t *testing.T) {
 			)
 		},
 	)
+
+	// Peering is a node-to-node relationship and must not carry node-to-client
+	// with it. This rule used to hand relays port 3002 alongside 3001, which was
+	// invisible only because Dingo binds NtC to loopback: any pod carrying this
+	// node's NodeLabel value would have got LSQ/tx-submission/mempool access to a
+	// forging node the moment the listener was enabled, with no NtC grant.
+	t.Run("relay peers never get node-to-client", func(t *testing.T) {
+		for _, enabled := range []bool{false, true} {
+			dn := bpNode()
+			dn.Spec.Topology.RelayRefs = []string{"relay-a"}
+			dn.Spec.BlockProducer.NodeToClient.Enabled = enabled
+			policy := BuildNetworkPolicy(dn)
+
+			relayRules := rulesForPort(policy, portRelay)
+			require.Len(t, relayRules, 1)
+			for _, p := range relayRules[0].Ports {
+				require.NotNil(t, p.Port)
+				assert.NotEqual(
+					t,
+					PortNodeToClient,
+					p.Port.IntValue(),
+					"the relay-peer rule must not open node-to-client "+
+						"(nodeToClient.enabled=%v)",
+					enabled,
+				)
+			}
+			// Any rule that does open 3002 must be the label-gated one.
+			for _, rule := range rulesForPort(policy, PortNodeToClient) {
+				require.Len(t, rule.From, 2)
+				for _, peer := range rule.From {
+					require.NotNil(t, peer.PodSelector)
+					assert.Equal(
+						t,
+						NodeToClientAccessAllowed,
+						peer.PodSelector.MatchLabels[NodeToClientAccessLabel],
+					)
+				}
+			}
+		}
+	})
+
+	// The node-to-client port is the one that carries ledger queries,
+	// transaction submission and mempool inspection, so who may reach it is the
+	// load-bearing property of this policy. It must never be open to a whole
+	// namespace the way metrics is: every peer has to name the label explicitly,
+	// and a cross-namespace peer has to satisfy the pod *and* the namespace
+	// selector.
+	t.Run("node-to-client requires an explicit label", func(t *testing.T) {
+		for _, refs := range [][]string{nil, {"relay-a"}} {
+			dn := bpNode()
+			dn.Spec.Topology.RelayRefs = refs
+			dn.Spec.BlockProducer.NodeToClient.Enabled = true
+			policy := BuildNetworkPolicy(dn)
+
+			ntcRules := rulesForPort(policy, PortNodeToClient)
+			require.Len(
+				t,
+				ntcRules,
+				1,
+				"expected exactly one NtC rule with relayRefs=%v",
+				refs,
+			)
+			ntc := ntcRules[0]
+			require.Len(t, ntc.From, 2)
+			want := map[string]string{
+				NodeToClientAccessLabel: NodeToClientAccessAllowed,
+			}
+			// Same namespace: the pod label alone.
+			require.NotNil(t, ntc.From[0].PodSelector)
+			assert.Equal(t, want, ntc.From[0].PodSelector.MatchLabels)
+			assert.Nil(t, ntc.From[0].NamespaceSelector)
+			// Cross namespace: pod *and* namespace must both be labelled. An
+			// empty namespaceSelector here would silently mean "any namespace".
+			require.NotNil(t, ntc.From[1].PodSelector)
+			require.NotNil(t, ntc.From[1].NamespaceSelector)
+			assert.Equal(t, want, ntc.From[1].PodSelector.MatchLabels)
+			assert.Equal(t, want, ntc.From[1].NamespaceSelector.MatchLabels)
+		}
+	})
+
+	// The policy and the listener must not disagree in the direction that grants
+	// access: a hand-set CARDANO_PRIVATE_BIND_ADDR with the spec field off would
+	// otherwise expose the port to labelled peers that the operator itself never
+	// queries.
+	t.Run("no node-to-client rule while disabled", func(t *testing.T) {
+		dn := bpNode()
+		dn.Spec.Topology.RelayRefs = []string{"relay-a"}
+		assert.False(t, dn.Spec.BlockProducer.NodeToClient.Enabled)
+		assert.Empty(
+			t,
+			rulesForPort(BuildNetworkPolicy(dn), PortNodeToClient),
+		)
+	})
 }
 
 func TestImageRef(t *testing.T) {

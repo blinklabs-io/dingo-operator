@@ -254,6 +254,36 @@ type HASpec struct {
 	StandbyReplicas int32 `json:"standbyReplicas,omitempty"`
 }
 
+// NodeToClientSpec controls the node's node-to-client (NtC) TCP listener.
+//
+// Dingo binds NtC to 127.0.0.1:3002 by default, so nothing outside the pod can
+// reach it however permissive the NetworkPolicy is. Enabling this binds it to
+// all pod interfaces, which is what lets the operator read the authoritative
+// on-chain operational-certificate counter over local-state-query — and what
+// makes the interface reachable by anything the NetworkPolicy admits.
+//
+// It is off by default on purpose. NtC carries arbitrary ledger-state queries
+// and transaction submission, and the managed NetworkPolicy is only as good as
+// the cluster's CNI: on a CNI that does not enforce NetworkPolicy, binding this
+// to the pod network exposes it to the whole cluster. Turning it on is
+// therefore an explicit, auditable decision recorded in the spec rather than
+// an operator default.
+type NodeToClientSpec struct {
+	// Enabled binds Dingo's node-to-client listener to all pod interfaces
+	// (CARDANO_PRIVATE_BIND_ADDR=0.0.0.0) rather than loopback. Access is still
+	// governed by the block producer's NetworkPolicy, which admits the port only
+	// from clients labelled dingo.blinklabs.io/node-to-client=allowed — declared
+	// relay peers get the node-to-node port and nothing more. The policy rule is
+	// emitted only while this is true, so the listener and the policy cannot
+	// disagree.
+	//
+	// While this is false the operator cannot query the on-chain opcert counter,
+	// so counter validation falls back to the operator's own last accepted
+	// counter (status.opcert.onDiskCounter).
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 // BlockProducerSpec holds block-producer-only configuration. Required when
 // spec.role is blockProducer.
 type BlockProducerSpec struct {
@@ -280,6 +310,10 @@ type BlockProducerSpec struct {
 	Rotation RotationSpec `json:"rotation,omitempty"`
 	// +optional
 	HA HASpec `json:"ha,omitempty"`
+	// NodeToClient exposes the node-to-client interface to the cluster so the
+	// operator can read the authoritative on-chain opcert counter.
+	// +optional
+	NodeToClient NodeToClientSpec `json:"nodeToClient,omitempty"`
 }
 
 // PodMonitorSpec configures Prometheus Operator scraping.
@@ -397,8 +431,26 @@ type KESStatus struct {
 
 // OpCertStatus reports operational certificate counter state.
 type OpCertStatus struct {
-	OnDiskCounter  int64 `json:"onDiskCounter,omitempty"`
+	OnDiskCounter int64 `json:"onDiskCounter,omitempty"`
+	// OnChainCounter is the highest opcert issue number the chain has accepted
+	// for this pool, read from the node over node-to-client local-state-query.
+	// Zero means "not observed": either the node could not be reached or the
+	// pool has no counter on chain yet (it has never minted a block under an
+	// operational certificate). Use OnChainCounterAt to tell how fresh
+	// the value is — it is never cleared on a failed read, because a stale
+	// counter is still a valid lower bound and clearing it would throw away the
+	// only floor the operator has.
 	OnChainCounter int64 `json:"onChainCounter,omitempty"`
+	// OnChainCounterAt is when onChainCounter was last read successfully.
+	// +optional
+	OnChainCounterAt *metav1.Time `json:"onChainCounterAt,omitempty"`
+	// OnChainCounterPoolID is the pool (hex cold-key hash) onChainCounter was
+	// read for. It records the observation's provenance: a counter is only used
+	// as a validation floor for the pool it was actually read for, so editing
+	// spec.blockProducer.poolId discards it immediately instead of leaving it
+	// enforced until it ages out.
+	// +optional
+	OnChainCounterPoolID string `json:"onChainCounterPoolId,omitempty"`
 	// +optional
 	LastRotated *metav1.Time `json:"lastRotated,omitempty"`
 }
@@ -439,8 +491,10 @@ type DingoNodeStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Remaining-KES",type=integer,JSONPath=`.status.kes.remainingPeriods`
 // OpCert reports onDiskCounter: the counter of the certificate the operator
-// has accepted. onChainCounter has no producer yet (it needs the node's LSQ
-// opcert counter, P2) and a column pointed at it is always empty.
+// has accepted. status.opcert.onChainCounter is populated separately, from the
+// node's own node-to-client local-state-query, and is deliberately not a
+// column: it is empty until the node is reachable and the pool has minted, so a
+// column would read as broken on every healthy new pool.
 // Keys surfaces a refused key bundle, which is otherwise invisible in the
 // default table: the node keeps forging on what its process already loaded, so
 // Phase and readiness both stay green while rotation has stopped.

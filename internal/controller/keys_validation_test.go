@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"maps"
 	"testing"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
@@ -31,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // withKey returns a copy of m with k set to v. Copying matters: mutating the
@@ -60,6 +62,24 @@ func rawKeyEnvelope(t *testing.T, envType string, raw []byte) []byte {
 	})
 	require.NoError(t, err)
 	return out
+}
+
+// observedOnChain records an on-chain counter observation made age ago, for the
+// node's own pool.
+func observedOnChain(
+	dn *dingov1alpha1.DingoNode,
+	counter int64,
+	age time.Duration,
+) {
+	at := metav1.NewTime(time.Now().Add(-age))
+	dn.Status.OpCert.OnChainCounter = counter
+	dn.Status.OpCert.OnChainCounterAt = &at
+	if bp := dn.Spec.BlockProducer; bp != nil && bp.PoolID != "" {
+		id, err := parsePoolID(bp.PoolID)
+		if err == nil {
+			dn.Status.OpCert.OnChainCounterPoolID = id.String()
+		}
+	}
 }
 
 func TestValidateKeysSecret(t *testing.T) {
@@ -241,6 +261,84 @@ func TestValidateKeysSecret(t *testing.T) {
 			wantErr: "counter",
 		},
 		{
+			// The authoritative floor: the chain has already accepted counter
+			// 5, so a certificate numbered 3 cannot forge. onDiskCounter is
+			// also 3 here, so only the on-chain check can catch this.
+			name: "counter below a freshly observed on-chain counter",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				observedOnChain(dn, 5, 0)
+			}),
+			wantErr: "below the on-chain counter 5",
+		},
+		{
+			// Equal is fine: the chain accepts a re-presentation of the counter
+			// it already holds, and Dingo's own rule is counter >= on-chain.
+			name: "counter equal to the on-chain counter",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				observedOnChain(dn, 3, 0)
+			}),
+		},
+		{
+			name: "counter above the on-chain counter",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				observedOnChain(dn, 2, 0)
+			}),
+		},
+		{
+			// Fail open. An unreachable node, an unsynced node or a pool that
+			// has never minted all leave the counter unobserved, and none of
+			// them is a reason to refuse a rotation: behaviour falls back to
+			// the on-disk floor, which counter 3 satisfies.
+			name: "unknown on-chain counter falls back to the on-disk floor",
+			data: goodData,
+			dn:   node(nil),
+		},
+		{
+			// ... and the on-disk floor still bites when it should, with its
+			// own message rather than the on-chain one.
+			name: "on-disk regression still refused without an on-chain floor",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				dn.Status.OpCert.OnDiskCounter = 9
+			}),
+			wantErr: "regresses below the last observed counter 9",
+		},
+		{
+			// A counter observed before the freshness window must not wedge a
+			// legitimate rotation: the operator can no longer vouch that the
+			// number still describes this pool on this chain.
+			name: "stale on-chain counter does not wedge a rotation",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				observedOnChain(dn, 9, onChainCounterMaxAge+time.Minute)
+			}),
+		},
+		{
+			// A counter with no observation timestamp (e.g. written by an older
+			// operator version) is treated as absent for the same reason.
+			name: "on-chain counter without a timestamp is ignored",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				dn.Status.OpCert.OnChainCounter = 9
+			}),
+		},
+		{
+			// An observation of some *other* pool must not gate this pool's
+			// rotation, however fresh it is: after a poolId edit the stored
+			// number describes a pool that is no longer being validated.
+			name: "on-chain counter observed for another pool is ignored",
+			data: goodData,
+			dn: node(func(dn *dingov1alpha1.DingoNode) {
+				observedOnChain(dn, 9, 0)
+				dn.Status.OpCert.OnChainCounterPoolID = hex.EncodeToString(
+					bytes.Repeat([]byte{0xcd}, poolIDSize),
+				)
+			}),
+		},
+		{
 			// The lower (future-dated) bound only applies when the counter is
 			// not moving forward: counter 3 with onDiskCounter 3 is not a
 			// rotation, so a start period ahead of the observed one is refused.
@@ -309,6 +407,138 @@ func TestValidateKeysSecret(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Nil(t, state)
+		})
+	}
+}
+
+// TestOnChainFloor pins the fail-open contract at the boundaries, which the
+// table above exercises only through whole-bundle validation.
+func TestOnChainFloor(t *testing.T) {
+	now := time.Now()
+	at := func(age time.Duration) *metav1.Time {
+		v := metav1.NewTime(now.Add(-age))
+		return &v
+	}
+	// The node under validation, and an unrelated pool.
+	const (
+		poolHex  = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c"
+		otherHex = "1102030405060708090a0b0c0d0e0f101112131415161718191a1b1c"
+	)
+
+	tests := []struct {
+		name      string
+		specPool  string
+		status    dingov1alpha1.OpCertStatus
+		wantFloor int64
+		wantOK    bool
+	}{
+		{
+			name:     "nothing observed",
+			specPool: poolHex,
+			status:   dingov1alpha1.OpCertStatus{},
+		},
+		{
+			name:     "counter without a timestamp",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       7,
+				OnChainCounterPoolID: poolHex,
+			},
+		},
+		{
+			name:     "timestamp without a counter",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounterAt:     at(0),
+				OnChainCounterPoolID: poolHex,
+			},
+		},
+		{
+			// Zero is indistinguishable from unset on an omitempty field, and a
+			// floor of zero would reject nothing anyway.
+			name:     "zero counter is absent, not a floor of zero",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       0,
+				OnChainCounterAt:     at(0),
+				OnChainCounterPoolID: poolHex,
+			},
+		},
+		{
+			name:     "fresh observation",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       7,
+				OnChainCounterAt:     at(time.Minute),
+				OnChainCounterPoolID: poolHex,
+			},
+			wantFloor: 7,
+			wantOK:    true,
+		},
+		{
+			name:     "at the freshness limit",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       7,
+				OnChainCounterAt:     at(onChainCounterMaxAge),
+				OnChainCounterPoolID: poolHex,
+			},
+			wantFloor: 7,
+			wantOK:    true,
+		},
+		{
+			name:     "past the freshness limit",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       7,
+				OnChainCounterAt:     at(onChainCounterMaxAge + time.Second),
+				OnChainCounterPoolID: poolHex,
+			},
+		},
+		{
+			// After a poolId edit the stored counter describes a pool that is no
+			// longer being validated, however fresh it is.
+			name:     "observed for another pool",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       7,
+				OnChainCounterAt:     at(time.Minute),
+				OnChainCounterPoolID: otherHex,
+			},
+		},
+		{
+			// Written by an operator version that did not record provenance.
+			name:     "no recorded pool",
+			specPool: poolHex,
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:   7,
+				OnChainCounterAt: at(time.Minute),
+			},
+		},
+		{
+			name:     "spec has no pool id",
+			specPool: "",
+			status: dingov1alpha1.OpCertStatus{
+				OnChainCounter:       7,
+				OnChainCounterAt:     at(time.Minute),
+				OnChainCounterPoolID: poolHex,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dn := &dingov1alpha1.DingoNode{
+				Spec: dingov1alpha1.DingoNodeSpec{
+					BlockProducer: &dingov1alpha1.BlockProducerSpec{
+						PoolID: tt.specPool,
+					},
+				},
+				Status: dingov1alpha1.DingoNodeStatus{OpCert: tt.status},
+			}
+			floor, ok := onChainFloor(dn, now)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantFloor, floor)
 		})
 	}
 }

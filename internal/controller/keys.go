@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
@@ -64,16 +65,41 @@ type keyState struct {
 	KESPeriod int64
 }
 
+// onChainCounterMaxAge bounds how old an observation of the on-chain opcert
+// counter may be and still gate a rotation.
+//
+// The bound is not needed for monotonicity — the on-chain counter only ever
+// increases, so an old reading remains a valid lower bound. It exists because
+// the *pool* the reading describes may no longer be the pool being validated: a
+// spec.blockProducer.poolId edit, a repoint at another network, or a chain
+// rollback all break the link between the stored number and the current node,
+// and none of them updates the stored number. A window a few multiples of
+// requeueInterval wide means a healthy operator refreshes several times over
+// before the value ever ages out, while an operator that has not been able to
+// talk to the node for a quarter of an hour stops enforcing a number it can no
+// longer vouch for.
+const onChainCounterMaxAge = 15 * time.Minute
+
+// onChainCounterRefreshInterval is how often the operator re-reads the on-chain
+// counter. It is a third of onChainCounterMaxAge so two consecutive refreshes
+// can fail without the floor ever going stale, and it caps the aggregate cost
+// of the node-to-client dial across every managed block producer, which
+// per-call timeouts do not (see refreshOnChainCounter).
+const onChainCounterRefreshInterval = onChainCounterMaxAge / 3
+
 // validateKeysSecret checks an externally-delivered block-producer key bundle
 // before the operator rolls the pod onto it. Without this, any opcert a user
 // drops into the Secret reaches the node and is caught only by Dingo's startup
 // validation — as a CrashLoop of the one pod that forges.
 //
-// The authoritative on-chain counter check is not possible yet: it needs the
-// node's LSQ opcert counter (gouroboros GetOpCertCounters, P2). Until then the
-// operator only guards against regression below the last counter it observed on
-// disk, which still catches the common "re-delivered an older bundle" mistake
-// but cannot see a counter that over-increments past the chain.
+// Counter checks are two-tiered. The authoritative floor is the on-chain
+// counter read from the node (status.opcert.onChainCounter): the chain rejects
+// any block whose opcert issue number is below what it has already accepted, so
+// a bundle under that floor cannot forge whatever the operator does. That floor
+// exists only when the node exposes node-to-client and the pool has minted, so
+// the operator additionally — and always — guards against regression below the
+// last counter it accepted itself. Over-incrementing *past* the chain is still
+// not caught here; it remains Dingo's startup check.
 func validateKeysSecret(
 	secret *corev1.Secret,
 	dn *dingov1alpha1.DingoNode,
@@ -148,6 +174,19 @@ func validateKeysSecret(
 		return nil, err
 	}
 
+	// The chain's own floor first: it is authoritative, and its message is the
+	// more useful one when both bounds are violated.
+	if floor, ok := onChainFloor(dn, time.Now()); ok && counter < floor {
+		return nil, fmt.Errorf(
+			"opcert counter %d is below the on-chain counter %d observed from "+
+				"the node; the chain has already accepted a higher "+
+				"certificate for this pool and would reject blocks forged "+
+				"with this one; re-issue the certificate with a counter of at "+
+				"least %d",
+			counter, floor, floor,
+		)
+	}
+
 	if last := dn.Status.OpCert.OnDiskCounter; last > 0 && counter < last {
 		// status.opcert.onDiskCounter is published on acceptance, before the
 		// pod has come up on the new bundle, so an admin backing out a roll
@@ -199,6 +238,50 @@ func validateKeysSecret(
 	}
 
 	return &keyState{Counter: counter, KESPeriod: startPeriod}, nil
+}
+
+// onChainFloor returns the on-chain opcert counter to enforce against, and
+// whether there is one to enforce at all.
+//
+// It fails open — no floor rather than a rejection — whenever the counter is
+// unknown or stale. Every reason the counter can be missing is a normal state
+// of the system, not a fault of the bundle being validated: the node may be
+// absent, starting, syncing, unreachable, not exposing node-to-client, or
+// the pool may simply not have minted yet. Rejecting rotations in those states
+// would strand an operator precisely when rotation matters most — mid-incident,
+// with the node down and KES marching toward expiry — and it would do so to
+// enforce a bound the node itself re-checks at startup anyway. The same
+// reasoning already narrowed the KES lower-bound check below; see the
+// rotation-mode discussion in CLAUDE.md.
+//
+// A zero counter is treated as absent: the field is omitempty and a pool that
+// has never minted has no counter, so "0" is not distinguishable from unset —
+// and a floor of 0 rejects nothing regardless.
+//
+// The observation must also name the pool being validated. Without that, a
+// spec.blockProducer.poolId edit would leave the previous pool's counter
+// enforced until it aged out — precisely the provenance failure the age bound
+// exists to limit, and one the refresh interval would otherwise widen.
+func onChainFloor(
+	dn *dingov1alpha1.DingoNode,
+	now time.Time,
+) (int64, bool) {
+	oc := dn.Status.OpCert
+	if oc.OnChainCounter <= 0 || oc.OnChainCounterAt == nil {
+		return 0, false
+	}
+	if now.Sub(oc.OnChainCounterAt.Time) > onChainCounterMaxAge {
+		return 0, false
+	}
+	bp := dn.Spec.BlockProducer
+	if oc.OnChainCounterPoolID == "" || bp == nil || bp.PoolID == "" {
+		return 0, false
+	}
+	want, err := parsePoolID(bp.PoolID)
+	if err != nil || want.String() != oc.OnChainCounterPoolID {
+		return 0, false
+	}
+	return oc.OnChainCounter, true
 }
 
 // keyEnvelope is the subset of the cardano-cli text envelope needed to tell a

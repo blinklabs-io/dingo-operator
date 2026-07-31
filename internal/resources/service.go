@@ -31,7 +31,7 @@ func servicePorts() []corev1.ServicePort {
 		},
 		{
 			Name:       "private",
-			Port:       portPrivate,
+			Port:       PortNodeToClient,
 			TargetPort: intstr.FromString("private"),
 			Protocol:   corev1.ProtocolTCP,
 		},
