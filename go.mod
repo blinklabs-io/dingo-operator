@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.1
 
 require (
-	github.com/blinklabs-io/gouroboros v0.189.3
+	github.com/blinklabs-io/gouroboros v0.190.0
 	github.com/go-logr/logr v1.4.3
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/automaxprocs v1.6.0
