@@ -138,6 +138,10 @@ const (
 //	keysDeliveryTimeout 4m  (the operator has no Secret watch, so a delivered
 //	                         bundle is seen on the next 2m requeue)
 //	podRollTimeout     3m   (StatefulSet replaces the pod; measured ~60s)
+//	onChainCounterTimeout 8m (a rate limit, not slowness: the operator's first
+//	                          node-to-client dial always fails and the next is
+//	                          5m later, plus up to a 2m requeue; ~4m after
+//	                          forging)
 //
 // These are deliberately *not* summed to size testTimeout. An earlier revision
 // did, but the rotation tests chain eight or nine waits each, and 3x margin on
@@ -153,30 +157,46 @@ const (
 // with the pinned Dingo image:
 //
 //	TestBlockProducerForges                        260s
+//	TestKeysReaderRBACIsNamespaceScoped              0s  (SubjectAccessReview)
 //	TestFinishNamespaceRetention                     0s  (fake client)
+//	TestOnChainOpCertCounterObserved               ~400s (projected; see below)
 //	TestAssistedRotationRollsPodAndResumesForging   270s
-//	TestAssistedRotationRejectsCounterRegression    251s
+//	TestAssistedRotationRejectsCounterRegression    261s
 //	                                               -----
-//	go test                                         781s  (~13m)
+//	go test                                        ~1190s (~20m)
 //
-// against `go test -timeout 30m` in the Makefile; whole `make e2e`, including
-// the image build, k3d bring-up and teardown, measured 14m27s.
+// against `go test -timeout 45m` in the Makefile; whole `make e2e`, including
+// the image build, k3d bring-up and teardown, adds ~2m to that.
 //
-// The tests run sequentially, so what 30m has to cover is the case that
-// matters most for diagnosis: any one test burning its whole 15m context while
-// the other two run at measured pace (15 + 4.3 + 4.5 = ~24m) still reports that
-// test's own failure rather than dying on the outer timeout.
+// The on-chain figure is *projected*, not measured, and the distinction is
+// deliberate: that test has never yet completed successfully — it fails on an
+// upstream decode bug in gouroboros' DebugChainDepState client (see the test's
+// own comment), burning its full 8m step budget for a 575s run. 400s is what
+// it costs when the read succeeds: ~150s to a forging node plus the operator's
+// 5m dial rate limit and up to one 2m requeue. Re-measure when the upstream
+// fix lands; if the real figure is materially higher, the arithmetic below
+// moves with it.
 //
-// *Two* wedged tests (15 + 15 + 4.3 = ~34m) already exceed 30m — not three.
-// The loss there is bounded and deliberate: `go test -v` streams, so the first
-// wedged test has already printed its `--- FAIL` and waitFor diagnostics before
-// the outer timeout fires, and the panic dump names the goroutine of the
-// second. A run with two independently wedged tests has failed comprehensively
-// anyway; buying full attribution for it would mean a 45m+ timeout for a suite
-// that measures 13m.
+// The tests run sequentially, so what the outer timeout has to cover is the
+// case that matters most for diagnosis: any one test burning its whole 15m
+// context while the others run at measured pace still reports that test's own
+// failure rather than dying on the outer timeout. That is worst when the
+// shortest test is the one that wedges: 15m + (20 - 4.3) = ~30.5m. This is why
+// 30m no longer suffices — with four forging tests, "the others at measured
+// pace" is now ~20m rather than ~9m, so a single wedged test alone would have
+// exceeded the old budget.
 //
-// The CI job's timeout-minutes (45) clears even a full 30m `go test` plus
-// bring-up, teardown and diagnostics.
+// *Two* wedged tests (15 + 15 + 11.2 = ~41m) still fit under 45m, with ~4m to
+// spare; three (45m+ before the fourth test even starts) do not. The loss
+// there is bounded and deliberate: `go test -v` streams, so the wedged tests
+// have already printed their `--- FAIL` and waitFor diagnostics before the
+// outer timeout fires, and the panic dump names the remaining goroutines. A
+// run with three independently wedged tests has failed comprehensively anyway;
+// buying full attribution for it would mean a 65m timeout for a suite that
+// measures ~20m.
+//
+// The CI job's timeout-minutes (55) clears even a full 45m `go test` plus
+// bring-up, teardown and diagnostics (~4m measured, including k3d install).
 const (
 	pollInterval     = 5 * time.Second
 	podReadyTimeout  = 3 * time.Minute
@@ -193,6 +213,20 @@ const (
 	// podRollTimeout bounds the StatefulSet controller replacing the pod once
 	// the pod template's keys-checksum annotation changes.
 	podRollTimeout = 3 * time.Minute
+
+	// onChainCounterTimeout bounds the operator observing the on-chain opcert
+	// counter over node-to-client. It is the largest budget in the suite, and
+	// the reason is a rate limit rather than slowness: the operator dials at
+	// most once per node per onChainCounterRefreshInterval (5m), keyed on the
+	// last *attempt*, and the first attempt always fails — it happens on the
+	// very first reconcile, before that same reconcile has created the node's
+	// Service (NodeNotReady). So no successful read is possible before 5m after
+	// the DingoNode is created, and the read then waits for the next reconcile,
+	// up to one requeueInterval (2m) later. 8m is those two plus a minute.
+	//
+	// Against a devnet that is forging within ~2.5m of creation, the wait
+	// therefore resolves ~4m after waitForged returns.
+	onChainCounterTimeout = 8 * time.Minute
 
 	// operatorReadyTimeout covers cluster setup rather than test progress, so it
 	// sits outside the budget above: newHarness runs before the test's own
@@ -520,8 +554,41 @@ func (h *harness) applyDevNet(ctx context.Context) *devnet.DevNet {
 	return dn
 }
 
+// nodeOption customises the DingoNode applyDingoNode builds, before it is
+// created. Options exist so a test can opt into a feature that is off by
+// default without every other test's node changing shape: applyDingoNode with
+// no options renders exactly the spec it always did.
+//
+// It returns an error rather than mutating blindly so an option that cannot
+// apply — a spec whose BlockProducer is missing, say — fails the test loudly
+// instead of silently doing nothing and leaving the test to time out against
+// the feature it thought it had enabled.
+type nodeOption func(*dingov1alpha1.DingoNodeSpec) error
+
+// withNodeToClient enables the node's node-to-client listener, which is what
+// lets the operator read the authoritative on-chain opcert counter. Off by
+// default in the CRD (Dingo binds NtC to loopback unless told otherwise), and
+// on its own it is only half the wiring: the client also needs the
+// resources.NodeToClientAccessLabel label on its pod and — across namespaces,
+// which is always the case here — on its namespace. See
+// TestOnChainOpCertCounterObserved.
+func withNodeToClient() nodeOption {
+	return func(spec *dingov1alpha1.DingoNodeSpec) error {
+		if spec.BlockProducer == nil {
+			return errors.New(
+				"withNodeToClient needs spec.blockProducer to be set")
+		}
+		spec.BlockProducer.NodeToClient.Enabled = true
+		return nil
+	}
+}
+
 // applyDingoNode creates the block-producer DingoNode for the generated devnet.
-func (h *harness) applyDingoNode(ctx context.Context, dn *devnet.DevNet) {
+func (h *harness) applyDingoNode(
+	ctx context.Context,
+	dn *devnet.DevNet,
+	opts ...nodeOption,
+) {
 	h.t.Helper()
 
 	// E2E_DINGO_IMAGE wins, then DINGO_IMAGE, then the pinned default.
@@ -587,6 +654,10 @@ func (h *harness) applyDingoNode(ctx context.Context, dn *devnet.DevNet) {
 				},
 			},
 		},
+	}
+	for _, opt := range opts {
+		require.NoError(h.t, opt(&node.Spec),
+			"apply a DingoNode option to %s/%s", h.namespace, nodeName)
 	}
 	require.NoError(h.t, h.client.Create(ctx, node),
 		"create DingoNode %s/%s", h.namespace, nodeName)
@@ -950,6 +1021,21 @@ const (
 	condDegraded         = "Degraded"
 	reasonOpCertAccepted = "OpCertAccepted"
 	reasonOpCertRejected = "OpCertRejected"
+)
+
+// The on-chain opcert counter condition and the reasons this suite names.
+// condOnChainCounter mirrors the controller's own constant of the same name.
+//
+// Only reasonOnChainObserved means the operator got an answer. Every other
+// reason the controller can set — QueryFailed, NodeNotReady, PoolNotOnChain,
+// PoolIDUnset, InvalidPoolID, UnknownNetworkMagic, Disabled — is a flavour of
+// "no counter", so asserting the condition's *reason* rather than its mere
+// presence is what keeps TestOnChainOpCertCounterObserved from passing while
+// the node-to-client protocol is broken.
+const (
+	condOnChainCounter    = "OnChainCounterAvailable"
+	reasonOnChainObserved = "Observed"
+	reasonOnChainDisabled = "Disabled"
 )
 
 // waitEvent blocks until the operator has recorded an events.k8s.io/v1 Event
