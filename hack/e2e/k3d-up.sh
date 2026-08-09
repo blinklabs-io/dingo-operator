@@ -26,7 +26,7 @@ IMAGE="${IMAGE:-dingo-operator:latest}"
 # check below, ":main" would leave a machine that pulled once testing a stale
 # build forever, while CI silently tracked upstream. Keep in sync with
 # defaultDingoImage in test/e2e/harness_test.go.
-DINGO_IMAGE="${DINGO_IMAGE:-ghcr.io/blinklabs-io/dingo:0.68.0}"
+DINGO_IMAGE="${DINGO_IMAGE:-ghcr.io/blinklabs-io/dingo:0.69.0}"
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-dingo-operator-system}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${ROOT_DIR}/.e2e/kubeconfig}"
 
