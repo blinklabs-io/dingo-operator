@@ -153,7 +153,7 @@ func imageRef(dn *dingov1alpha1.DingoNode) string {
 // Do not let this drift below 0.68.0: earlier releases brick their data volume
 // if the pod is rolled mid-genesis-write (dingo #2959), and a DingoNode that
 // omits spec.image.tag gets whatever this says.
-const DefaultDingoTag = "0.68.0"
+const DefaultDingoTag = "0.69.0"
 
 // DefaultTerminationGracePeriodSeconds is the grace period used when the spec
 // omits one. It is deliberately above Kubernetes' own 30s default: Dingo's

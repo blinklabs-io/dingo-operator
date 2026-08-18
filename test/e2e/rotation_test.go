@@ -230,8 +230,8 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 	// genesis pool registration: constraint failed: FOREIGN KEY constraint
 	// failed", CrashLooping forever on a half-written database. That was dingo
 	// #2959 (https://github.com/blinklabs-io/dingo/issues/2959), fixed in
-	// 0.68.0 — the version this suite pins — so the wait no longer works around
-	// an upstream bug. It stays for the reason above.
+	// 0.68.0, which is at or below every version this suite pins, so the wait
+	// no longer works around an upstream bug. It stays for the reason above.
 	h.waitForged(ctx, 1)
 
 	// A regression is only expressible once the operator has observed a

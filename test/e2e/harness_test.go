@@ -119,7 +119,7 @@ const (
 	// could go red from a change nobody here made. Override with
 	// E2E_DINGO_IMAGE (and DINGO_IMAGE for hack/e2e/k3d-up.sh, which side-loads
 	// it) to try another build.
-	defaultDingoImage = "ghcr.io/blinklabs-io/dingo:0.68.0"
+	defaultDingoImage = "ghcr.io/blinklabs-io/dingo:0.69.0"
 
 	// defaultClusterName is the k3d cluster hack/e2e/k3d-up.sh creates; k3d
 	// names its kubeconfig context "k3d-<cluster>". Overridable via
