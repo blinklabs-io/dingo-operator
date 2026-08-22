@@ -1,5 +1,3 @@
-//go:build e2e
-
 // Copyright 2026 Blink Labs Software
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+//go:build e2e
 
 package e2e
 
@@ -71,13 +71,13 @@ func (h *harness) requireOperatorNtCAccess(ctx context.Context) {
 			"pod both carry it (hack/e2e/k3d-up.sh sets this one)",
 		operatorNamespace, ntcLabel, ntcAllowed)
 
-	// Listed by the label itself rather than by the operator's app label: this
-	// is the selector the NetworkPolicy peer uses, so an empty result is
-	// exactly what the policy would see.
 	pods := &corev1.PodList{}
 	require.NoError(h.t, h.client.List(ctx, pods,
 		client.InNamespace(operatorNamespace),
-		client.MatchingLabels{ntcLabel: ntcAllowed}),
+		client.MatchingLabels{
+			"app":    "dingo-operator",
+			ntcLabel: ntcAllowed,
+		}),
 		"list operator pods carrying %s", ntcLabel)
 	require.NotEmpty(h.t, pods.Items,
 		"no pod in %s carries %s=%s, so the block producer's NetworkPolicy "+
@@ -131,10 +131,10 @@ func (h *harness) requireNodeToClientExposed(ctx context.Context) {
 			continue
 		}
 		for _, peer := range rule.From {
-			if peer.PodSelector == nil {
-				continue
-			}
-			if peer.PodSelector.MatchLabels[ntcLabel] == ntcAllowed {
+			if peer.PodSelector != nil &&
+				peer.PodSelector.MatchLabels[ntcLabel] == ntcAllowed &&
+				peer.NamespaceSelector != nil &&
+				peer.NamespaceSelector.MatchLabels[ntcLabel] == ntcAllowed {
 				labelled = true
 			}
 		}
@@ -219,95 +219,60 @@ type dingoNodeSnapshot struct {
 // to mint — the chain has no counter for a pool that has never forged — and
 // then asserts the operator really got an answer back.
 //
-// # Known failure at the time of writing
-//
-// This test does not pass yet, and that is a true positive rather than a
-// wiring fault: the first run against a live node reported
-//
-//	OnChainCounterAvailable=False reason=QueryFailed
-//	  msg=query on-chain opcert counters: cbor: cannot unmarshal array into
-//	  Go value of type struct { cbor.StructAsArray; Version uint64;
-//	  Inner cbor.RawMessage }
-//
-// which is a *decode* failure — reached only after the dial, the NtC
-// handshake, GetCurrentEra, the acquire and the query round trip had all
-// succeeded, so the NetworkPolicy grant and both opt-ins demonstrably work.
-// Cardano wraps every era-dependent (QueryIfCurrent) result in a 1-element
-// array, and gouroboros unwraps it everywhere else in that client
-// (GetEpochNo decodes []int and takes [0]; GetGenesisConfig does the same;
-// StakeDistributionResult models the wrapper as a one-field StructAsArray).
-// Client.DebugChainDepState — which GetOpCertCounters is built on — decodes
-// the wrapper straight into the versioned 2-element record instead, so it
-// cannot decode a conformant node's reply. Dingo's encoder is correct
-// (ledger/queries_chaindepstate.go returns []any{versionedChainDepState{…}},
-// matching every other handler). Verified against gouroboros v0.191.2 and
-// v0.192.2, whose chain_dep_state.go files are byte-identical.
-//
-// So the operator's on-chain counter floor has never worked against any real
-// node, which is exactly the blind spot this test exists to close. Leave the
-// assertion as it is; fix gouroboros.
+// This guards the wrapped chain-dependent-state response decoding fixed by
+// gouroboros v0.193.3. A regression leaves OnChainCounterAvailable false with
+// reason QueryFailed instead of producing the pool's counter.
 func TestOnChainOpCertCounterObserved(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	defer cancel()
+	tests := []struct {
+		name string
+	}{
+		{name: "observes counter from a forging node"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(
+				context.Background(), testTimeout,
+			)
+			defer cancel()
 
-	h := newHarness(t)
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Log(h.diagnostics(ctx))
-		}
-	})
+			h := newHarness(t)
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Log(h.diagnostics(ctx))
+				}
+			})
 
-	h.requireOperatorNtCAccess(ctx)
+			h.requireOperatorNtCAccess(ctx)
 
-	dn := h.applyDevNet(ctx)
-	h.applyDingoNode(ctx, dn, withNodeToClient())
+			dn := h.applyDevNet(ctx)
+			h.applyDingoNode(ctx, dn, withNodeToClient())
 
-	pod := h.waitPodReady(ctx)
-	t.Logf("pod %s ready", pod.Name)
-	h.requireNodeToClientExposed(ctx)
+			pod := h.waitPodReady(ctx)
+			t.Logf("pod %s ready", pod.Name)
+			h.requireNodeToClientExposed(ctx)
 
-	// The counter map is populated from blocks: a pool that has never minted
-	// under an operational certificate is legitimately absent from it, which
-	// the operator reports as PoolNotOnChain. So forging first is not
-	// incidental — it is what makes an Observed result possible at all.
-	h.waitForged(ctx, 1)
+			// The counter map is populated from blocks: a pool that has never
+			// minted under an operational certificate is legitimately absent.
+			h.waitForged(ctx, 1)
 
-	snap := h.waitOnChainCounterObserved(ctx)
-	t.Logf("on-chain counter observed: counter=%d pool=%s (%s)",
-		snap.counter, snap.poolID, snap.message)
+			snap := h.waitOnChainCounterObserved(ctx)
+			t.Logf("on-chain counter observed: counter=%d pool=%s (%s)",
+				snap.counter, snap.poolID, snap.message)
 
-	// The spec field took effect. Redundant given the reason above — Disabled
-	// and Observed are mutually exclusive — but it is the assertion that would
-	// have caught the case this whole test exists to rule out being untested:
-	// a node whose nodeToClient stayed off, where the operator never dials and
-	// nothing about the protocol is exercised.
-	assert.NotEqual(t, reasonOnChainDisabled, snap.reason,
-		"spec.blockProducer.nodeToClient.enabled did not reach the node, so "+
-			"no node-to-client query was ever attempted")
-
-	// The decode proof. Observed on its own says the operator got *something*
-	// back; this says the map came back keyed by the devnet pool's cold-key
-	// hash and that the operator matched it, which is what a broken CBOR
-	// decode or a wrongly-keyed lookup would fail.
-	assert.Equal(t, hex.EncodeToString(dn.Keys.PoolID), snap.poolID,
-		"the observed counter must be recorded against the devnet's own pool")
-	assert.True(t, snap.observedAt,
-		"status.opcert.onChainCounterAt must be stamped: without it the "+
-			"counter is never fresh enough to be enforced as a floor")
-
-	// Deliberately not asserted: a non-zero counter. The devnet forges under
-	// the opcert this suite generates at counter 0, so 0 is the correct
-	// on-chain value and is also this field's zero value — an equality
-	// assertion on it would hold just as well if nothing had been read at all.
-	// "Observed" and "non-zero" are separate claims, and only the first is
-	// true here; proving the second would mean rotating the pool forward to a
-	// higher counter and waiting out another 5-minute refresh interval, for no
-	// extra coverage of the wire protocol. What is asserted instead is the
-	// range: a counter the chain cannot have produced means the decode is
-	// wrong even though the query "worked".
-	assert.GreaterOrEqual(t, snap.counter, int64(0),
-		"an opcert counter cannot be negative")
-	assert.Less(t, snap.counter, int64(10),
-		"a devnet that has just started cannot have rotated its opcert this "+
-			"many times; a large counter means the query decoded wrongly")
+			assert.NotEqual(
+				t,
+				reasonOnChainDisabled,
+				snap.reason,
+				"spec.blockProducer.nodeToClient.enabled did not reach the node",
+			)
+			assert.Equal(t, hex.EncodeToString(dn.Keys.PoolID), snap.poolID,
+				"the counter must be recorded against the devnet pool")
+			assert.True(t, snap.observedAt,
+				"status.opcert.onChainCounterAt must be stamped")
+			assert.GreaterOrEqual(t, snap.counter, int64(0),
+				"an opcert counter cannot be negative")
+			assert.Less(t, snap.counter, int64(10),
+				"a new devnet cannot have this many opcert rotations")
+		})
+	}
 }

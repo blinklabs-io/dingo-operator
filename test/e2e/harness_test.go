@@ -181,19 +181,14 @@ const (
 // case that matters most for diagnosis: any one test burning its whole 15m
 // context while the others run at measured pace still reports that test's own
 // failure rather than dying on the outer timeout. That is worst when the
-// shortest test is the one that wedges: 15m + (20 - 4.3) = ~30.5m. This is why
-// 30m no longer suffices — with four forging tests, "the others at measured
-// pace" is now ~20m rather than ~9m, so a single wedged test alone would have
-// exceeded the old budget.
+// shortest test is the one that wedges: 15m + 20m = ~35m. This is why 30m no
+// longer suffices — the other tests now measure ~20m rather than ~9m, so a
+// single wedged test alone would exceed the old budget.
 //
-// *Two* wedged tests (15 + 15 + 11.2 = ~41m) still fit under 45m, with ~4m to
-// spare; three (45m+ before the fourth test even starts) do not. The loss
-// there is bounded and deliberate: `go test -v` streams, so the wedged tests
-// have already printed their `--- FAIL` and waitFor diagnostics before the
-// outer timeout fires, and the panic dump names the remaining goroutines. A
-// run with three independently wedged tests has failed comprehensively anyway;
-// buying full attribution for it would mean a 65m timeout for a suite that
-// measures ~20m.
+// Two shortest tests wedging take 15m + 15m + 20m = ~50m and can exceed the
+// 45m outer timeout. The first has already printed its failure and diagnostics,
+// and the panic dump identifies the second. Buying full attribution for two
+// independent wedges would require a 55m+ test timeout for a ~20m suite.
 //
 // The CI job's timeout-minutes (55) clears even a full 45m `go test` plus
 // bring-up, teardown and diagnostics (~4m measured, including k3d install).
