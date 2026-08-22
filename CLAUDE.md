@@ -44,7 +44,7 @@ make build                # CGO_ENABLED=0 build -> ./dingo-operator
 make test                 # go test -race ./... (envtest for controller tests)
 make lint                 # golangci-lint run + nilaway + modernize
 make run                  # run against the current kubecontext
-make e2e                  # k3d + single-BP devnet end-to-end suite (~15 min)
+make e2e                  # k3d + single-BP devnet end-to-end suite (~25 min)
 ```
 
 After editing anything under `api/`, run `make manifests generate` and commit
@@ -82,8 +82,9 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   - Override the node image with `DINGO_IMAGE`; it moves both the side-load in
     `k3d-up.sh` and the pod spec, because the harness falls back to it.
     `E2E_DINGO_IMAGE` still wins if set, for overriding the pod alone.
-  - Budget ~15 minutes (measured: `go test` ~890s against a 30m timeout). The
-    three-layer deadline budget is documented in `test/e2e/harness_test.go`.
+  - Budget ~25 minutes (measured: `go test` 1362s, whole `make e2e` 1463s,
+    against a 55m timeout). The three-layer deadline budget is documented in
+    `test/e2e/harness_test.go`.
   - **Linting the suite needs two flags, not one.** `test/e2e` is almost all
     `_test.go` behind the `e2e` build tag, and `.golangci.yml` sets
     `run.tests=false`, which skips `_test.go` regardless of tags — so the build
