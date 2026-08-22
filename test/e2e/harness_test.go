@@ -159,7 +159,7 @@ const (
 //	TestBlockProducerForges                        260s
 //	TestKeysReaderRBACIsNamespaceScoped              0s  (SubjectAccessReview)
 //	TestFinishNamespaceRetention                     0s  (fake client)
-//	TestOnChainOpCertCounterObserved               ~400s (projected; see below)
+//	TestOnChainOpCertCounterObserved               ~400s
 //	TestAssistedRotationRollsPodAndResumesForging   270s
 //	TestAssistedRotationRejectsCounterRegression    261s
 //	                                               -----
@@ -167,15 +167,6 @@ const (
 //
 // against `go test -timeout 45m` in the Makefile; whole `make e2e`, including
 // the image build, k3d bring-up and teardown, adds ~2m to that.
-//
-// The on-chain figure is *projected*, not measured, and the distinction is
-// deliberate: that test has never yet completed successfully — it fails on an
-// upstream decode bug in gouroboros' DebugChainDepState client (see the test's
-// own comment), burning its full 8m step budget for a 575s run. 400s is what
-// it costs when the read succeeds: ~150s to a forging node plus the operator's
-// 5m dial rate limit and up to one 2m requeue. Re-measure when the upstream
-// fix lands; if the real figure is materially higher, the arithmetic below
-// moves with it.
 //
 // The tests run sequentially, so what the outer timeout has to cover is the
 // case that matters most for diagnosis: any one test burning its whole 15m
