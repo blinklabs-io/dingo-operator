@@ -167,6 +167,24 @@ cert-manager).
     work only because those fields carry an explicit `envconfig:"DINGO_..."`
     tag that envconfig falls back to. `ShutdownTimeout` has no such tag, so
     `DINGO_SHUTDOWN_TIMEOUT` would be silently ignored.
+- **A Mithril bootstrap peaks at roughly twice the node's steady-state disk.**
+  `dingo mithril sync` keeps the compressed immutable archives and the extracted
+  chain on the data volume simultaneously, reclaiming the archives only once the
+  load completes (`CleanupAfterLoad` / `DINGO_MITHRIL_CLEANUP` defaults to
+  true, so the operator need not set it). Measured on preview with Dingo 0.69.0:
+  **34Gi peak, 19Gi steady, ratio 1.8** — 15Gi of that peak was cache, reclaimed
+  to 13Mi afterwards. So `spec.persistence.size` must be sized for the peak: at
+  the 60Gi default the usable steady-state chain is about 34Gi, not 60Gi.
+  - Figures are preview only. preprod and mainnet hold far more chain and need
+    their own measurement; do not assume the default scales.
+  - Wall clock was ~50 minutes for preview on a warm local cluster
+    (~11.3k immutable chunks, then a block copy over ~4.6M blocks at
+    ~1470 blocks/sec). That is why Mithril cannot gate a pull request and needs
+    a scheduled job instead.
+  - An enforcing storage class fails the bootstrap with `ENOSPC` mid-extraction;
+    a hostpath class such as k3s `local-path` does not enforce the request and
+    consumes the node's disk instead, so undersizing shows up as a full node
+    rather than a failed pod.
 - **Genesis creation was not restartable before Dingo 0.68.0.** Killing a node
   while it is still writing genesis into its data directory left orphaned
   `pool_registration` / `pool_registration_owner` rows in the SQLite metadata
