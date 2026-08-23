@@ -116,6 +116,28 @@ type ImageSpec struct {
 
 // PersistenceSpec configures the blockchain database volume.
 type PersistenceSpec struct {
+	// Size of the node's data volume.
+	//
+	// Size for the Mithril bootstrap *peak*, not the steady-state footprint.
+	// "dingo mithril sync" holds the compressed immutable archives and the
+	// extracted chain on the volume at the same time, and only reclaims the
+	// archives once the load finishes — so the high-water mark is roughly
+	// twice what the node settles at. Measured on preview (Dingo 0.69.0,
+	// August 2026): 34Gi peak against a 19Gi steady state, a ratio of 1.8.
+	// At 60Gi that peak is the binding constraint, so the usable steady-state
+	// chain is about 34Gi rather than 60Gi.
+	//
+	// The default suits preview, which is the only network these figures were
+	// taken from. preprod and mainnet carry far more chain and need their own
+	// sizing — measure the target network rather than assuming this default
+	// scales, and remember a re-bootstrap on an existing volume pays the peak
+	// again.
+	//
+	// A storage class that enforces its request fails the bootstrap with
+	// ENOSPC part-way through extraction, which leaves a half-written volume.
+	// Hostpath-backed classes such as k3s local-path do not enforce it and
+	// will instead consume the node's disk, so an undersized request there
+	// shows up as a full node rather than a failed pod.
 	// +kubebuilder:default="60Gi"
 	// +optional
 	Size resource.Quantity `json:"size,omitempty"`
