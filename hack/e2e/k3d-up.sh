@@ -75,6 +75,17 @@ fi
 
 kubectl create namespace "${OPERATOR_NAMESPACE}" \
   --dry-run=client -o yaml | kubectl apply -f -
+
+# The other half of the node-to-client grant. A block producer's NetworkPolicy
+# admits port 3002 from a pod in another namespace only when the pod *and* its
+# namespace both carry this label (the two selectors in that peer are ANDed --
+# see nodeToClientIngress in internal/resources/policy.go). The pod half lives
+# in test/e2e/manifests/manager.yaml; without this half k3s silently drops the
+# operator's dial and the on-chain counter test would only ever see
+# OnChainCounterAvailable=False/QueryFailed. The shipped Helm chart must label
+# the operator's namespace the same way.
+kubectl label namespace "${OPERATOR_NAMESPACE}" \
+  dingo.blinklabs.io/node-to-client=allowed --overwrite
 kubectl apply -f "${ROOT_DIR}/config/crd/bases"
 kubectl apply -f "${ROOT_DIR}/config/rbac/role.yaml"
 kubectl apply -f "${ROOT_DIR}/test/e2e/manifests/manager.yaml"

@@ -42,10 +42,28 @@ metadata:
 spec:
   replicas: 1
   selector:
+    # Immutable, and deliberately narrower than the pod labels below: it must
+    # stay exactly `app: dingo-operator`. Adding the node-to-client label here
+    # would make the Deployment unpatchable in place.
     matchLabels: { app: dingo-operator }
   template:
     metadata:
-      labels: { app: dingo-operator }
+      labels:
+        app: dingo-operator
+        # Opts the operator's pod into a managed block producer's
+        # node-to-client port, which is how it reads the authoritative on-chain
+        # opcert counter (internal/onchain). The rule the operator renders
+        # (internal/resources/policy.go, nodeToClientIngress) admits a pod from
+        # another namespace only when the *namespace* carries the same label
+        # too — the two selectors are ANDed — and the operator always runs in
+        # dingo-operator-system while workloads run in per-test e2e-*
+        # namespaces. hack/e2e/k3d-up.sh labels the namespace; without both
+        # halves k3s drops the dial and the feature degrades silently to
+        # OnChainCounterAvailable=False/QueryFailed.
+        #
+        # The shipped Helm chart (helm-charts, charts/dingo-operator) must set
+        # the same pair; this manifest is the e2e suite's stand-in for it.
+        dingo.blinklabs.io/node-to-client: allowed
     spec:
       serviceAccountName: dingo-operator
       containers:
