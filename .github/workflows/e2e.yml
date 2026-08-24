@@ -32,10 +32,10 @@ jobs:
         go-version: [1.26.x]
         platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
-    # Must clear the Makefile's `go test -timeout 45m` plus the image
+    # Must clear the Makefile's `go test -timeout 55m` plus the image
     # build, k3d bring-up, teardown and diagnostics collection (~5m). See
     # the deadline-budget comment in test/e2e/harness_test.go.
-    timeout-minutes: 55
+    timeout-minutes: 65
     # `make e2e`'s trailer always runs hack/e2e/k3d-down.sh after `go test`,
     # success or failure, which deletes the cluster and the e2e kubeconfig.
     # Without this, the "Collect diagnostics" step below would run against

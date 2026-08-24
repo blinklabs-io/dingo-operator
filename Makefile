@@ -125,5 +125,5 @@ tools: controller-gen envtest ## Install all local tooling
 e2e: image ## Run the k3d end-to-end suite (builds and imports the image)
 	KUBECONFIG_PATH="$(E2E_KUBECONFIG)" ./hack/e2e/k3d-up.sh
 	KUBECONFIG="$(E2E_KUBECONFIG)" \
-		go test -tags e2e -timeout 45m -v ./test/e2e/... ; \
+		go test -tags e2e -timeout 55m -v ./test/e2e/... ; \
 		status=$$?; KUBECONFIG_PATH="$(E2E_KUBECONFIG)" ./hack/e2e/k3d-down.sh; exit $$status

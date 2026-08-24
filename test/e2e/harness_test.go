@@ -142,6 +142,14 @@ const (
 //	                          node-to-client dial always fails and the next is
 //	                          5m later, plus up to a 2m requeue; ~4m after
 //	                          forging)
+//	childrenExistTimeout 2m (deletion_test.go: every owned child goes in on a
+//	                         single reconcile pass, long before the pod is
+//	                         Ready, so this only absorbs a failed pass)
+//	childGCTimeout     2m   (deletion_test.go: the GC cascade; measured at a
+//	                         few seconds)
+//	pdbStatusTimeout   2m   (disruption_test.go: kube-controller-manager
+//	                         filling in the PDB's currentHealthy /
+//	                         disruptionsAllowed; measured at seconds)
 //
 // These are deliberately *not* summed to size testTimeout. An earlier revision
 // did, but the rotation tests chain eight or nine waits each, and 3x margin on
@@ -154,34 +162,45 @@ const (
 // the elapsed time — cross-check it against the test's own reported duration.
 //
 // testTimeout is instead sized against measured whole-test durations, on k3d
-// with the pinned Dingo image:
+// with the pinned Dingo image. All eight figures below are measured from one
+// green run of the current suite, in the order `go test` runs them:
 //
-//	TestBlockProducerForges                        260s
-//	TestKeysReaderRBACIsNamespaceScoped              0s  (SubjectAccessReview)
-//	TestFinishNamespaceRetention                     0s  (fake client)
-//	TestOnChainOpCertCounterObserved               ~400s
-//	TestAssistedRotationRollsPodAndResumesForging   270s
-//	TestAssistedRotationRejectsCounterRegression    261s
-//	                                               -----
-//	go test                                        ~1190s (~20m)
+//	TestDingoNodeDeletionReapsChildrenAndRetainsPVC   55s
+//	TestPodDisruptionBudgetProtectsForgingNode       115s
+//	TestBlockProducerForges                          270s
+//	TestKeysReaderRBACIsNamespaceScoped                0s  (SubjectAccessReview)
+//	TestFinishNamespaceRetention                       0s  (fake client)
+//	TestOnChainOpCertCounterObserved                 390s
+//	TestAssistedRotationRollsPodAndResumesForging    280s
+//	TestAssistedRotationRejectsCounterRegression     251s
+//	                                                -----
+//	go test                                         1362s (~22.7m)
 //
-// against `go test -timeout 45m` in the Makefile; whole `make e2e`, including
-// the image build, k3d bring-up and teardown, adds ~2m to that.
+// against `go test -timeout 55m` in the Makefile; whole `make e2e`, including
+// the image build, k3d bring-up and teardown, measured 1463s — ~1.7m on top of
+// `go test`.
 //
 // The tests run sequentially, so what the outer timeout has to cover is the
 // case that matters most for diagnosis: any one test burning its whole 15m
 // context while the others run at measured pace still reports that test's own
 // failure rather than dying on the outer timeout. That is worst when the
-// shortest test is the one that wedges: 15m + 20m = ~35m. This is why 30m no
-// longer suffices — the other tests now measure ~20m rather than ~9m, so a
-// single wedged test alone would exceed the old budget.
+// shortest test is the one that wedges — where "shortest" means the shortest
+// that *can* wedge. The two 0s tests cannot: one is a single
+// SubjectAccessReview, the other runs against a fake client, and neither enters
+// waitFor. The shortest that can is the deletion test at 55s, so one wedge
+// costs 15m + (22.7 - 0.9) = ~36.8m.
 //
-// Two shortest tests wedging take 15m + 15m + 20m = ~50m and can exceed the
-// 45m outer timeout. The first has already printed its failure and diagnostics,
-// and the panic dump identifies the second. Buying full attribution for two
-// independent wedges would require a 55m+ test timeout for a ~20m suite.
+// Two wedges cost 30m + (22.7 - 0.9 - 1.9) = ~49.9m, which is why 45m no longer
+// suffices: it covered two wedges against a six-test, ~20m suite, and both
+// tests added since are short enough that wedging them subtracts almost nothing
+// from the remainder. 55m keeps that guarantee with ~5m spare. Three
+// (45m + (22.7 - 7.0) = ~60.7m) does not fit, deliberately — the same trade the
+// previous budget made. The loss is bounded: `go test -v` streams, so wedged
+// tests print their `--- FAIL` and waitFor diagnostics before the outer timeout
+// fires, and the panic dump names the remaining goroutines. Buying attribution
+// for three independent wedges would mean a 75m timeout for a ~23m suite.
 //
-// The CI job's timeout-minutes (55) clears even a full 45m `go test` plus
+// The CI job's timeout-minutes (65) clears even a full 55m `go test` plus
 // bring-up, teardown and diagnostics (~4m measured, including k3d install).
 const (
 	pollInterval     = 5 * time.Second
