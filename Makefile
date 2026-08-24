@@ -91,8 +91,9 @@ run: manifests generate ## Run the operator locally against the current kubecont
 
 # Build the program binary
 # Generated code (deepcopy) is committed, so a plain build does not regenerate.
-build: mod-tidy $(GO_FILES) ## Build the operator binary
+build: $(GO_FILES) ## Build the operator binary
 	CGO_ENABLED=0 go build \
+		-mod=readonly \
 		$(GO_LDFLAGS) \
 		-o $(APPLICATION_NAME) \
 		./cmd/$(APPLICATION_NAME)
