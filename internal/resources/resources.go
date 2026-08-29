@@ -84,8 +84,8 @@ const (
 	// needs a numeric runAsUser to satisfy runAsNonRoot, and the node writes its
 	// NtC socket under /ipc (owned by this uid/gid in the image), so managed
 	// pods default to these values. Override via spec.podSecurityContext.
-	dingoUID = 100
-	dingoGID = 101
+	dingoUID = 1000
+	dingoGID = 1000
 )
 
 // IsBlockProducer reports whether the node forges blocks.

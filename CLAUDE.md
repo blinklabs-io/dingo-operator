@@ -110,11 +110,11 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
 - **Commits**: Conventional Commits, GPG-signed (required for all Blink repos
   except `skunkworks`). **Only commit when the user asks.**
 - **securityContext defaults**: managed Dingo pods run non-root as the Dingo
-  image's baked-in `dingo` user — numeric `runAsUser: 100`, `runAsGroup: 101`,
-  `fsGroup: 101` (constants `dingoUID`/`dingoGID` in `internal/resources`). The
+  image's baked-in `dingo` user — numeric `runAsUser: 1000`, `runAsGroup: 1000`,
+  `fsGroup: 1000` (constants `dingoUID`/`dingoGID` in `internal/resources`). The
   numeric UID is required because the image declares `USER dingo` by name, which
   `runAsNonRoot` alone cannot verify; `/ipc` and the data volume are owned by
-  `100:101`. Verified on k3s (relay syncs preview). Override via
+  `1000:1000`. Verified on k3s (relay syncs preview). Override via
   `spec.podSecurityContext` if a future image changes these IDs.
 - **Cold keys never enter the cluster.** The operator issues opcerts by sending
   the signable to a pluggable cold-signer (Bursa); it generates KES/VRF keys
