@@ -21,6 +21,7 @@ package resources
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -51,11 +52,14 @@ const (
 	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
 
 	containerName   = "dingo"
+	keysInitName    = "prepare-block-producer-keys"
 	mithrilInitName = "mithril-sync"
 
 	dataVolumeName = "data"
 	dataMountPath  = "/data"
 
+	keysSourceName = "block-producer-keys-source"
+	keysSourcePath = "/var/run/dingo-keys-source"
 	keysVolumeName = "block-producer-keys"
 	keysMountPath  = "/keys"
 
@@ -79,11 +83,13 @@ const (
 	portMetrics      = 12798
 	metricsPath      = "/metrics"
 
-	// dingoUID / dingoGID are the numeric uid/gid of the "dingo" user baked into
-	// the upstream Dingo image (which declares USER dingo by name). Kubernetes
-	// needs a numeric runAsUser to satisfy runAsNonRoot, and the node writes its
-	// NtC socket under /ipc (owned by this uid/gid in the image), so managed
-	// pods default to these values. Override via spec.podSecurityContext.
+	// legacyDingoUID / legacyDingoGID are the numeric uid/gid used by Dingo
+	// images before v0.70.0. Those images own /ipc as 100:101.
+	legacyDingoUID = 100
+	legacyDingoGID = 101
+
+	// dingoUID / dingoGID are the numeric uid/gid used by Dingo v0.70.0 and
+	// later. Those images own /ipc as 1000:1000.
 	dingoUID = 1000
 	dingoGID = 1000
 )
@@ -140,11 +146,40 @@ func imageRef(dn *dingov1alpha1.DingoNode) string {
 	if repo == "" {
 		repo = "ghcr.io/blinklabs-io/dingo"
 	}
-	tag := dn.Spec.Image.Tag
-	if tag == "" {
-		tag = DefaultDingoTag
+	return fmt.Sprintf("%s:%s", repo, imageTag(dn))
+}
+
+func imageTag(dn *dingov1alpha1.DingoNode) string {
+	if dn.Spec.Image.Tag != "" {
+		return dn.Spec.Image.Tag
 	}
-	return fmt.Sprintf("%s:%s", repo, tag)
+	return DefaultDingoTag
+}
+
+// usesLegacyDingoUser reports whether the selected image should use the
+// pre-v0.70.0 Dingo uid/gid. Unknown repositories and tags deliberately use
+// the legacy default: it is still non-root and preserves /ipc compatibility
+// for custom images that follow the historical layout. Users of another
+// layout can set spec.podSecurityContext explicitly.
+func usesLegacyDingoUser(dn *dingov1alpha1.DingoNode) bool {
+	repo := dn.Spec.Image.Repository
+	if repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
+		return true
+	}
+
+	parts := strings.SplitN(strings.TrimPrefix(imageTag(dn), "v"), ".", 3)
+	if len(parts) < 2 {
+		return true
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return true
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil || major < 0 || minor < 0 {
+		return true
+	}
+	return major == 0 && minor < 70
 }
 
 // DefaultDingoTag is the Dingo image tag used when the spec omits one. It should
@@ -324,11 +359,15 @@ func podSecurityContext(
 	if dn.Spec.PodSecurityContext != nil {
 		return dn.Spec.PodSecurityContext
 	}
+	uid, gid := dingoUID, dingoGID
+	if usesLegacyDingoUser(dn) {
+		uid, gid = legacyDingoUID, legacyDingoGID
+	}
 	return &corev1.PodSecurityContext{
 		RunAsNonRoot:        new(true),
-		RunAsUser:           new(int64(dingoUID)),
-		RunAsGroup:          new(int64(dingoGID)),
-		FSGroup:             new(int64(dingoGID)),
+		RunAsUser:           new(int64(uid)),
+		RunAsGroup:          new(int64(gid)),
+		FSGroup:             new(int64(gid)),
 		FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -515,15 +554,26 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 	}
 	bp := dn.Spec.BlockProducer
 	if mountsBlockProducerKeys(dn, opts) && bp != nil {
-		vols = append(vols, corev1.Volume{
-			Name: keysVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName:  bp.Keys.SecretRef,
-					DefaultMode: new(int32(0o600)),
+		vols = append(
+			vols,
+			corev1.Volume{
+				Name: keysSourceName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  bp.Keys.SecretRef,
+						DefaultMode: new(int32(0o400)),
+					},
 				},
 			},
-		})
+			corev1.Volume{
+				Name: keysVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{
+						Medium: corev1.StorageMediumMemory,
+					},
+				},
+			},
+		)
 	}
 	return vols
 }

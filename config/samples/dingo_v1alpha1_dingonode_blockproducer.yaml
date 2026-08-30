@@ -20,7 +20,7 @@ spec:
       - relay
   blockProducer:
     # A Secret holding cardano-cli text-envelope files: vrf.skey, kes.skey,
-    # opcert.cert. The operator mounts it read-only at /keys (mode 0600).
+    # opcert.cert. An init container stages them at /keys with mode 0600.
     keys:
       secretRef: producer-pool-keys
     slotsPerKESPeriod: 129600

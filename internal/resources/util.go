@@ -43,16 +43,54 @@ func mithrilEnabled(dn *dingov1alpha1.DingoNode) bool {
 	return dn.Spec.Mithril.Enabled == nil || *dn.Spec.Mithril.Enabled
 }
 
-// initContainers builds the Mithril bootstrap init container when enabled. It
-// mirrors the Dingo Helm chart: skip when a database already exists (unless a
-// force resync is requested), then bootstrap via the native "dingo mithril
-// sync" client.
+const prepareBlockProducerKeysScript = `set -eu
+source_dir="${DINGO_KEYS_SOURCE:-/var/run/dingo-keys-source}"
+destination_dir="${DINGO_KEYS_DESTINATION:-/keys}"
+umask 077
+for name in vrf.skey kes.skey opcert.cert; do
+  cp "${source_dir}/${name}" "${destination_dir}/${name}"
+done
+chmod 0600 \
+  "${destination_dir}/vrf.skey" \
+  "${destination_dir}/kes.skey" \
+  "${destination_dir}/opcert.cert"
+`
+
+// initContainers prepares private key files when mounted and builds the Mithril
+// bootstrap init container when enabled. The Secret source can be widened by a
+// pod fsGroup, so Dingo reads an owner-only copy from a memory-backed volume.
 func initContainers(
 	dn *dingov1alpha1.DingoNode,
-	_ RenderOptions,
+	opts RenderOptions,
 ) []corev1.Container {
+	var containers []corev1.Container
+	if mountsBlockProducerKeys(dn, opts) {
+		containers = append(containers, corev1.Container{
+			Name:            keysInitName,
+			Image:           imageRef(dn),
+			ImagePullPolicy: pullPolicy(dn),
+			Command: []string{
+				"/bin/sh",
+				"-c",
+				prepareBlockProducerKeysScript,
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      keysSourceName,
+					MountPath: keysSourcePath,
+					ReadOnly:  true,
+				},
+				{
+					Name:      keysVolumeName,
+					MountPath: keysMountPath,
+				},
+			},
+			SecurityContext: containerSecurityContext(),
+			Resources:       dn.Spec.Resources,
+		})
+	}
 	if !mithrilEnabled(dn) {
-		return nil
+		return containers
 	}
 	const script = `set -eu
 DB="${CARDANO_DATABASE_PATH}/metadata.sqlite"
@@ -113,8 +151,9 @@ exec dingo mithril sync
 			ReadOnly:  true,
 		})
 	}
-	return []corev1.Container{
-		{
+	return append(
+		containers,
+		corev1.Container{
 			Name:            mithrilInitName,
 			Image:           imageRef(dn),
 			ImagePullPolicy: pullPolicy(dn),
@@ -124,5 +163,5 @@ exec dingo mithril sync
 			SecurityContext: containerSecurityContext(),
 			Resources:       dn.Spec.Resources,
 		},
-	}
+	)
 }

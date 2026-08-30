@@ -109,13 +109,17 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   (self-skip when `KUBEBUILDER_ASSETS` is unset).
 - **Commits**: Conventional Commits, GPG-signed (required for all Blink repos
   except `skunkworks`). **Only commit when the user asks.**
-- **securityContext defaults**: managed Dingo pods run non-root as the Dingo
-  image's baked-in `dingo` user — numeric `runAsUser: 1000`, `runAsGroup: 1000`,
-  `fsGroup: 1000` (constants `dingoUID`/`dingoGID` in `internal/resources`). The
-  numeric UID is required because the image declares `USER dingo` by name, which
-  `runAsNonRoot` alone cannot verify; `/ipc` and the data volume are owned by
-  `1000:1000`. Verified on k3s (relay syncs preview). Override via
-  `spec.podSecurityContext` if a future image changes these IDs.
+- **securityContext defaults**: managed Dingo pods always run non-root with
+  numeric IDs because `runAsNonRoot` cannot verify the image's named `dingo`
+  user. The canonical `ghcr.io/blinklabs-io/dingo` image uses `100:101` for
+  `runAsUser:runAsGroup` and `fsGroup` through v0.69.x, including `/ipc`
+  ownership; v0.70.0 and later use `1000:1000` for both the process and `/ipc`.
+  The operator selects the matching default from the effective image tag, with
+  the omitted tag resolving to `DefaultDingoTag` (currently v0.70.2). Custom
+  repositories and unrecognized tags retain the conservative `100:101`
+  non-root compatibility default. Set `spec.podSecurityContext` when a custom
+  or unrecognized image uses different IDs; an explicit context is preserved
+  unchanged.
 - **Cold keys never enter the cluster.** The operator issues opcerts by sending
   the signable to a pluggable cold-signer (Bursa); it generates KES/VRF keys
   itself but never holds the cold key.
@@ -255,16 +259,15 @@ the pod onto it":
   checksum would *remove* the annotation — itself a template change — and roll
   the pod onto the rejected keys.) The reconcile does not fail: last-known-good
   is the safe state.
-  - **What this does and does not protect.** Only the running *process* stays
-    on its loaded keys. The keys volume is a plain whole-Secret mount with no
-    `subPath` (`internal/resources/resources.go`), so kubelet refreshes `/keys`
-    in the live pod within about a minute of the Secret changing: the rejected
-    material is physically on disk. Refusing a bundle declines to *initiate* a
-    roll — it does not fence one. Any other restart (eviction, drain,
-    reschedule, OOM, image bump, a `configRef` change, `kubectl delete pod`)
-    starts the node on the rejected bundle, and Dingo's startup validation
-    turns that into a CrashLoop. Fix the Secret; do not leave a refused bundle
-    sitting in it.
+  - **What this does and does not protect.** An init container copies the Secret
+    into a memory-backed `/keys` volume with owner-only permissions. The running
+    pod therefore keeps its staged files when kubelet refreshes the source
+    Secret, not just the keys already loaded by the process. Refusing a bundle
+    still declines only to *initiate* a roll — it does not fence pod recreation.
+    An eviction, drain, reschedule, image bump, `configRef` change, or
+    `kubectl delete pod` stages the Secret's current contents, and Dingo's
+    startup validation turns a rejected bundle into a CrashLoop. Fix the Secret;
+    do not leave a refused bundle sitting in it.
 - **The on-chain counter floor.** `internal/onchain` dials the node's
   node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
   pool's counter as `status.opcert.onChainCounter` (with
@@ -384,7 +387,8 @@ Full `Auto` rotation:
    is an equivocation guard, not a monotonic counter guard — the operator
    enforces counter anti-regression against the on-chain value itself.
 5. Assemble + verify the opcert (`VerifyOpCertSignature`); abort on mismatch.
-6. Write the new `kes.skey` + `opcert.cert` into the keys Secret (0600).
+6. Write the new `kes.skey` + `opcert.cert` into the keys Secret. An accepted
+   rollout stages them into the pod's private `/keys` volume with mode `0600`.
 7. Roll in: v1 restarts the pod (fenced for BPs); future hot-reload avoids the
    restart.
 
