@@ -18,15 +18,15 @@ operators.
   (native Go client, no external binary).
 - **Topology management** — auto-wire in-cluster block-producer/relay peering,
   plus static/external relays merged into local roots.
-- **Block-producer key handling** — mounts KES/VRF/opcert from a Secret at
-  `/keys` (mode `0600`), sets the `CARDANO_SHELLEY_*` env, and surfaces KES
-  period / opcert state from the node's metrics. A delivered bundle is validated
-  (opcert signature, pool binding, KES-key binding, counter, KES period) before
-  the operator rolls the pod onto it; a refused bundle sets `KeysValid=False`
-  and `Degraded=True` and is not rolled out. Note that the running *process*
-  keeps its loaded keys, but `/keys` is a whole-Secret mount, so kubelet does
-  refresh the rejected files onto the pod's disk — any subsequent restart from
-  any cause starts the node on them.
+- **Block-producer key handling** — stages KES/VRF/opcert from a Secret into a
+  memory-backed `/keys` volume with mode `0600`, sets the `CARDANO_SHELLEY_*`
+  env, and surfaces KES period / opcert state from the node's metrics. A
+  delivered bundle is validated (opcert signature, pool binding, KES-key
+  binding, counter, KES period) before the operator rolls the pod onto it; a
+  refused bundle sets `KeysValid=False` and `Degraded=True` and is not rolled
+  out. The live pod keeps its staged keys when the Secret changes. Any later pod
+  recreation stages the Secret's current contents, so fix a refused bundle
+  rather than leaving it in place.
 - **On-chain counter floor** — with `blockProducer.nodeToClient.enabled`, the
   operator reads the pool's authoritative opcert counter from the node over
   node-to-client local-state-query, publishes it as

@@ -45,6 +45,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -143,6 +144,58 @@ func TestReconcileRelay(t *testing.T) {
 	assert.True(t, apierrors.IsNotFound(err))
 }
 
+func TestReconcileLegacyImagePreservesSecurityContext(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+
+	dn := &dingov1alpha1.DingoNode{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: dingov1alpha1.GroupVersion.String(),
+			Kind:       "DingoNode",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: "legacy", Namespace: "legacy-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+			Image: dingov1alpha1.ImageSpec{
+				Repository: "ghcr.io/blinklabs-io/dingo",
+				Tag:        "0.69.0",
+			},
+		},
+	}
+
+	// Seed the workload produced by the previously deployed operator. The CR is
+	// pinned to the legacy image, so reconciliation must preserve its /ipc
+	// ownership contract.
+	legacy := resources.BuildStatefulSet(dn, resources.RenderOptions{Replicas: 1})
+	legacy.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+		RunAsNonRoot: new(true),
+		RunAsUser:    new(int64(100)),
+		RunAsGroup:   new(int64(101)),
+		FSGroup:      new(int64(101)),
+	}
+	legacy.CreationTimestamp = metav1.Now()
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(legacy).Build()
+	r := reconcilerFor(c)
+	require.NoError(t, r.reconcileResources(context.Background(), dn))
+
+	got := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(
+		context.Background(),
+		types.NamespacedName{Name: "legacy", Namespace: "legacy-ns"},
+		got,
+	))
+	container := got.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "ghcr.io/blinklabs-io/dingo:0.69.0", container.Image)
+	securityContext := got.Spec.Template.Spec.SecurityContext
+	require.NotNil(t, securityContext)
+	assert.Equal(t, int64(100), *securityContext.RunAsUser)
+	assert.Equal(t, int64(101), *securityContext.RunAsGroup)
+	assert.Equal(t, int64(101), *securityContext.FSGroup)
+}
+
 func TestReconcileBlockProducer(t *testing.T) {
 	c, ctx := startEnv(t)
 	createNamespace(t, ctx, c, "bp-ns")
@@ -163,18 +216,34 @@ func TestReconcileBlockProducer(t *testing.T) {
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "bp-ns")
 
-	// Block producer gets a StatefulSet that mounts the keys secret.
+	// Block producer gets a StatefulSet that stages the keys Secret into a
+	// private volume before Dingo starts.
 	sts := &appsv1.StatefulSet{}
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "bp", Namespace: "bp-ns"}, sts))
 	require.NotNil(t, sts.Spec.Replicas)
 	assert.Equal(t, int32(1), *sts.Spec.Replicas)
-	var mountsKeys bool
-	for _, v := range sts.Spec.Template.Spec.Volumes {
-		if v.Secret != nil && v.Secret.SecretName == "pool-keys" {
-			mountsKeys = true
+	var sourceVolume, keysVolume *corev1.Volume
+	for i := range sts.Spec.Template.Spec.Volumes {
+		volume := &sts.Spec.Template.Spec.Volumes[i]
+		switch volume.Name {
+		case "block-producer-keys-source":
+			sourceVolume = volume
+		case "block-producer-keys":
+			keysVolume = volume
 		}
 	}
-	assert.True(t, mountsKeys, "block producer should mount the keys secret")
+	require.NotNil(t, sourceVolume)
+	require.NotNil(t, sourceVolume.Secret)
+	assert.Equal(t, "pool-keys", sourceVolume.Secret.SecretName)
+	require.NotNil(t, keysVolume)
+	require.NotNil(t, keysVolume.EmptyDir)
+	var preparesKeys bool
+	for _, container := range sts.Spec.Template.Spec.InitContainers {
+		if container.Name == "prepare-block-producer-keys" {
+			preparesKeys = true
+		}
+	}
+	assert.True(t, preparesKeys)
 
 	// Block producer gets a PDB and a NetworkPolicy.
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "bp", Namespace: "bp-ns"}, &policyv1.PodDisruptionBudget{}))

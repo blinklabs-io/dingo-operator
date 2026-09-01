@@ -15,6 +15,9 @@
 package resources
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -202,20 +205,215 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.Equal(t, dataVolumeName, sts.Spec.VolumeClaimTemplates[0].Name)
 	})
 
-	t.Run("block producer mounts keys secret", func(t *testing.T) {
+	t.Run(
+		"default security context matches Dingo image user",
+		func(t *testing.T) {
+			sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
+			securityContext := sts.Spec.Template.Spec.SecurityContext
+			require.NotNil(t, securityContext)
+			require.NotNil(t, securityContext.RunAsNonRoot)
+			require.NotNil(t, securityContext.RunAsUser)
+			require.NotNil(t, securityContext.RunAsGroup)
+			require.NotNil(t, securityContext.FSGroup)
+			assert.True(t, *securityContext.RunAsNonRoot)
+			assert.Equal(t, int64(1000), *securityContext.RunAsUser)
+			assert.Equal(t, int64(1000), *securityContext.RunAsGroup)
+			assert.Equal(t, int64(1000), *securityContext.FSGroup)
+		},
+	)
+
+	t.Run("legacy image retains its ipc user", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Image.Tag = "0.69.0"
+		securityContext := BuildStatefulSet(
+			dn,
+			RenderOptions{Replicas: 1},
+		).Spec.Template.Spec.SecurityContext
+		require.NotNil(t, securityContext)
+		require.NotNil(t, securityContext.RunAsUser)
+		require.NotNil(t, securityContext.RunAsGroup)
+		require.NotNil(t, securityContext.FSGroup)
+		assert.Equal(t, int64(100), *securityContext.RunAsUser)
+		assert.Equal(t, int64(101), *securityContext.RunAsGroup)
+		assert.Equal(t, int64(101), *securityContext.FSGroup)
+	})
+
+	t.Run("custom image retains the safe legacy default", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Image.Repository = "example/dingo"
+		dn.Spec.Image.Tag = "custom"
+		securityContext := BuildStatefulSet(
+			dn,
+			RenderOptions{Replicas: 1},
+		).Spec.Template.Spec.SecurityContext
+		require.NotNil(t, securityContext)
+		require.NotNil(t, securityContext.RunAsUser)
+		require.NotNil(t, securityContext.RunAsGroup)
+		require.NotNil(t, securityContext.FSGroup)
+		assert.Equal(t, int64(100), *securityContext.RunAsUser)
+		assert.Equal(t, int64(101), *securityContext.RunAsGroup)
+		assert.Equal(t, int64(101), *securityContext.FSGroup)
+	})
+
+	t.Run(
+		"explicit security context overrides image defaults",
+		func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Tag = "0.69.0"
+			override := &corev1.PodSecurityContext{RunAsUser: new(int64(2000))}
+			dn.Spec.PodSecurityContext = override
+			assert.Same(
+				t,
+				override,
+				BuildStatefulSet(
+					dn,
+					RenderOptions{Replicas: 1},
+				).Spec.Template.Spec.SecurityContext,
+			)
+		},
+	)
+
+	t.Run("block producer stages private key files", func(t *testing.T) {
 		dn := bpNode()
 		sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1, MountKeys: true})
-		var found bool
-		for _, v := range sts.Spec.Template.Spec.Volumes {
-			if v.Name == keysVolumeName {
-				require.NotNil(t, v.Secret)
-				assert.Equal(t, "pool-keys", v.Secret.SecretName)
-				require.NotNil(t, v.Secret.DefaultMode)
-				assert.Equal(t, int32(0o600), *v.Secret.DefaultMode)
-				found = true
+		var sourceVolume, keysVolume *corev1.Volume
+		for i := range sts.Spec.Template.Spec.Volumes {
+			volume := &sts.Spec.Template.Spec.Volumes[i]
+			switch volume.Name {
+			case "block-producer-keys-source":
+				sourceVolume = volume
+			case keysVolumeName:
+				keysVolume = volume
 			}
 		}
-		assert.True(t, found, "expected block-producer keys volume")
+		require.NotNil(t, sourceVolume, "expected an init-only Secret volume")
+		require.NotNil(t, sourceVolume.Secret)
+		assert.Equal(t, "pool-keys", sourceVolume.Secret.SecretName)
+		require.NotNil(t, sourceVolume.Secret.DefaultMode)
+		assert.Equal(t, int32(0o400), *sourceVolume.Secret.DefaultMode)
+		require.NotNil(t, keysVolume, "expected a private keys volume")
+		require.NotNil(t, keysVolume.EmptyDir)
+		assert.Equal(t, corev1.StorageMediumMemory, keysVolume.EmptyDir.Medium)
+
+		container := sts.Spec.Template.Spec.Containers[0]
+		var destinationMounted bool
+		for _, mount := range container.VolumeMounts {
+			assert.NotEqual(
+				t,
+				"block-producer-keys-source",
+				mount.Name,
+				"the Dingo container must not see the projected Secret",
+			)
+			if mount.Name == keysVolumeName {
+				destinationMounted = true
+				assert.Equal(t, keysMountPath, mount.MountPath)
+				assert.True(t, mount.ReadOnly)
+			}
+		}
+		assert.True(t, destinationMounted)
+
+		var keyInit *corev1.Container
+		for i := range sts.Spec.Template.Spec.InitContainers {
+			container := &sts.Spec.Template.Spec.InitContainers[i]
+			if container.Name == "prepare-block-producer-keys" {
+				keyInit = container
+			}
+		}
+		require.NotNil(t, keyInit, "expected key preparation init container")
+		assert.Equal(t, imageRef(dn), keyInit.Image)
+		var sourceMounted, destinationWritable bool
+		for _, mount := range keyInit.VolumeMounts {
+			switch mount.Name {
+			case "block-producer-keys-source":
+				sourceMounted = true
+				assert.Equal(t, "/var/run/dingo-keys-source", mount.MountPath)
+				assert.True(t, mount.ReadOnly)
+			case keysVolumeName:
+				destinationWritable = true
+				assert.Equal(t, keysMountPath, mount.MountPath)
+				assert.False(t, mount.ReadOnly)
+			}
+		}
+		assert.True(t, sourceMounted)
+		assert.True(t, destinationWritable)
+	})
+
+	t.Run(
+		"key staging makes fsGroup-widened files private",
+		func(t *testing.T) {
+			dn := bpNode()
+			sts := BuildStatefulSet(
+				dn,
+				RenderOptions{Replicas: 1, MountKeys: true},
+			)
+			var keyInit *corev1.Container
+			for i := range sts.Spec.Template.Spec.InitContainers {
+				container := &sts.Spec.Template.Spec.InitContainers[i]
+				if container.Name == "prepare-block-producer-keys" {
+					keyInit = container
+				}
+			}
+			require.NotNil(
+				t,
+				keyInit,
+				"expected key preparation init container",
+			)
+			require.Len(t, keyInit.Command, 3)
+
+			sourceDir := filepath.Join(t.TempDir(), "source")
+			destinationDir := filepath.Join(t.TempDir(), "destination")
+			require.NoError(t, os.Mkdir(sourceDir, 0o700))
+			require.NoError(t, os.Mkdir(destinationDir, 0o700))
+			for _, name := range []string{"vrf.skey", "kes.skey", "opcert.cert"} {
+				path := filepath.Join(sourceDir, name)
+				require.NoError(
+					t,
+					os.WriteFile(path, []byte("secret-"+name), 0o600),
+				)
+				require.NoError(t, os.Chmod(path, 0o640))
+			}
+
+			command := exec.Command(keyInit.Command[0], keyInit.Command[1:]...)
+			command.Env = append(
+				os.Environ(),
+				"DINGO_KEYS_SOURCE="+sourceDir,
+				"DINGO_KEYS_DESTINATION="+destinationDir,
+			)
+			output, err := command.CombinedOutput()
+			require.NoError(t, err, string(output))
+
+			for _, name := range []string{"vrf.skey", "kes.skey", "opcert.cert"} {
+				path := filepath.Join(destinationDir, name)
+				contents, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, "secret-"+name, string(contents))
+				info, err := os.Stat(path)
+				require.NoError(t, err)
+				assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			}
+		},
+	)
+
+	t.Run("legacy image prepares keys as its own user", func(t *testing.T) {
+		dn := bpNode()
+		dn.Spec.Image.Tag = "0.69.0"
+		sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1, MountKeys: true})
+		securityContext := sts.Spec.Template.Spec.SecurityContext
+		require.NotNil(t, securityContext)
+		require.NotNil(t, securityContext.RunAsUser)
+		require.NotNil(t, securityContext.RunAsGroup)
+		assert.Equal(t, int64(100), *securityContext.RunAsUser)
+		assert.Equal(t, int64(101), *securityContext.RunAsGroup)
+
+		var keyInit *corev1.Container
+		for i := range sts.Spec.Template.Spec.InitContainers {
+			container := &sts.Spec.Template.Spec.InitContainers[i]
+			if container.Name == "prepare-block-producer-keys" {
+				keyInit = container
+			}
+		}
+		require.NotNil(t, keyInit)
+		assert.Equal(t, "ghcr.io/blinklabs-io/dingo:0.69.0", keyInit.Image)
 	})
 
 	t.Run("keys checksum stamps a rollout annotation", func(t *testing.T) {
@@ -246,7 +444,11 @@ func TestBuildStatefulSet(t *testing.T) {
 			RenderOptions{Replicas: 1, MountKeys: true},
 		)
 		for _, volume := range sts.Spec.Template.Spec.Volumes {
+			assert.NotEqual(t, "block-producer-keys-source", volume.Name)
 			assert.NotEqual(t, keysVolumeName, volume.Name)
+		}
+		for _, container := range sts.Spec.Template.Spec.InitContainers {
+			assert.NotEqual(t, "prepare-block-producer-keys", container.Name)
 		}
 		env := envMap(dn, RenderOptions{MountKeys: true})
 		assert.NotContains(t, env, "CARDANO_BLOCK_PRODUCER")
@@ -333,16 +535,19 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.True(t, mounted, "init container must mount the config bundle")
 	})
 
-	t.Run("init container omits config bundle without a ref", func(t *testing.T) {
-		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
-		ic := sts.Spec.Template.Spec.InitContainers[0]
-		for _, e := range ic.Env {
-			assert.NotEqual(t, "CARDANO_CONFIG", e.Name)
-		}
-		for _, m := range ic.VolumeMounts {
-			assert.NotEqual(t, configBundleVolumeName, m.Name)
-		}
-	})
+	t.Run(
+		"init container omits config bundle without a ref",
+		func(t *testing.T) {
+			sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
+			ic := sts.Spec.Template.Spec.InitContainers[0]
+			for _, e := range ic.Env {
+				assert.NotEqual(t, "CARDANO_CONFIG", e.Name)
+			}
+			for _, m := range ic.VolumeMounts {
+				assert.NotEqual(t, configBundleVolumeName, m.Name)
+			}
+		},
+	)
 
 	t.Run("config checksum stamps a rollout annotation", func(t *testing.T) {
 		dn := relayNode()
