@@ -37,6 +37,10 @@ commands, toolchain) see [CLAUDE.md](CLAUDE.md).
 - **Generated code**: after any `api/` change run `make manifests generate` and
   include the regenerated `config/crd`, `config/rbac`, and
   `zz_generated.deepcopy.go` in the same change.
+- **Comments**: an invariant, a non-obvious algorithm, or a gotcha only. Delete
+  comments that restate the code, label sections, or narrate a change's
+  history. Doc comments on exported identifiers are published API
+  documentation: keep them accurate and in `// Name ...` form.
 
 ## Testing standards
 
