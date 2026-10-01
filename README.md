@@ -14,6 +14,10 @@ operators.
 - **One CRD, two roles.** `DingoNode` runs as a `relay` or a `blockProducer`.
 - **Env-var-driven Dingo workloads** as StatefulSets with a persistent DB
   volume, headless + client Services, and an optional PodMonitor.
+- **Node health probes** use Dingo's dedicated listener: liveness stays healthy
+  during sync, while readiness waits until the chain tip is within Dingo's
+  configured slot-gap tolerance. Catching-up or stalled nodes are removed from
+  client Services without being restarted.
 - **Mithril bootstrap** via an init container running `dingo mithril sync`
   (native Go client, no external binary).
 - **Topology management** — auto-wire in-cluster block-producer/relay peering,
@@ -27,6 +31,10 @@ operators.
   out. The live pod keeps its staged keys when the Secret changes. Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
+- **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
+  Prometheus endpoint, including blockfetch delay and fetch duration, ledger
+  block-apply batch latency, and the KES/opcert metrics used for status and
+  rotation monitoring.
 - **On-chain counter floor** — with `blockProducer.nodeToClient.enabled`, the
   operator reads the pool's authoritative opcert counter from the node over
   node-to-client local-state-query, publishes it as

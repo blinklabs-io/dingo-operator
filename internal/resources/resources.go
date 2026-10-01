@@ -81,6 +81,7 @@ const (
 	// allowed to connect.
 	PortNodeToClient = 3002
 	portMetrics      = 12798
+	portHealth       = 12799
 	metricsPath      = "/metrics"
 
 	// legacyDingoUID / legacyDingoGID are the numeric uid/gid used by Dingo
@@ -182,13 +183,34 @@ func usesLegacyDingoUser(dn *dingov1alpha1.DingoNode) bool {
 	return major == 0 && minor < 70
 }
 
+// supportsHealthProbes reports whether the canonical image serves Dingo's
+// dedicated health listener. Older and custom images keep the TCP probes.
+func supportsHealthProbes(dn *dingov1alpha1.DingoNode) bool {
+	repo := dn.Spec.Image.Repository
+	if repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
+		return false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(imageTag(dn), "v"), ".", 3)
+	if len(parts) != 3 {
+		return false
+	}
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	patch, patchErr := strconv.Atoi(strings.SplitN(parts[2], "-", 2)[0])
+	if majorErr != nil || minorErr != nil || patchErr != nil ||
+		major < 0 || minor < 0 || patch < 0 {
+		return false
+	}
+	return major > 0 || minor > 70 || minor == 70 && patch >= 13
+}
+
 // DefaultDingoTag is the Dingo image tag used when the spec omits one. It should
 // track a version the operator has been tested against.
 //
 // Do not let this drift below 0.68.0: earlier releases brick their data volume
 // if the pod is rolled mid-genesis-write (dingo #2959), and a DingoNode that
 // omits spec.image.tag gets whatever this says.
-const DefaultDingoTag = "0.70.2"
+const DefaultDingoTag = "0.75.0"
 
 // DefaultTerminationGracePeriodSeconds is the grace period used when the spec
 // omits one. It is deliberately above Kubernetes' own 30s default: Dingo's
@@ -413,13 +435,13 @@ func BuildStatefulSet(
 		Image:           imageRef(dn),
 		ImagePullPolicy: pullPolicy(dn),
 		Env:             BuildEnv(dn, opts),
-		Ports:           containerPorts(),
+		Ports:           containerPorts(dn),
 		VolumeMounts:    volumeMounts(dn, opts),
 		Resources:       dn.Spec.Resources,
 		SecurityContext: containerSecurityContext(),
-		StartupProbe:    tcpProbe(portMetrics, 30, 10),
-		LivenessProbe:   tcpProbe(portMetrics, 3, 30),
-		ReadinessProbe:  tcpProbe(portRelay, 3, 15),
+		StartupProbe:    startupProbe(dn),
+		LivenessProbe:   livenessProbe(dn),
+		ReadinessProbe:  readinessProbe(dn),
 	}
 
 	grace := terminationGracePeriod(dn)
@@ -468,8 +490,8 @@ func pullPolicy(dn *dingov1alpha1.DingoNode) corev1.PullPolicy {
 	return corev1.PullIfNotPresent
 }
 
-func containerPorts() []corev1.ContainerPort {
-	return []corev1.ContainerPort{
+func containerPorts(dn *dingov1alpha1.DingoNode) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{
 		{Name: "relay", ContainerPort: portRelay, Protocol: corev1.ProtocolTCP},
 		{
 			Name:          "private",
@@ -482,12 +504,59 @@ func containerPorts() []corev1.ContainerPort {
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
+	if supportsHealthProbes(dn) {
+		ports = append(ports, corev1.ContainerPort{
+			Name:          "health",
+			ContainerPort: portHealth,
+			Protocol:      corev1.ProtocolTCP,
+		})
+	}
+	return ports
 }
 
-func tcpProbe(port int32, failureThreshold, periodSeconds int32) *corev1.Probe {
+func startupProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
+	if supportsHealthProbes(dn) {
+		return httpProbe(portHealth, "/healthz", 30, 10)
+	}
+	return tcpProbe(portMetrics, 30, 10)
+}
+
+func livenessProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
+	if supportsHealthProbes(dn) {
+		return httpProbe(portHealth, "/healthz", 3, 30)
+	}
+	return tcpProbe(portMetrics, 3, 30)
+}
+
+func readinessProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
+	if supportsHealthProbes(dn) {
+		return httpProbe(portHealth, "/readyz", 3, 15)
+	}
+	return tcpProbe(portRelay, 3, 15)
+}
+
+func tcpProbe(port, failureThreshold, periodSeconds int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(port)},
+		},
+		PeriodSeconds:    periodSeconds,
+		FailureThreshold: failureThreshold,
+		TimeoutSeconds:   5,
+	}
+}
+
+func httpProbe(
+	port int32,
+	path string,
+	failureThreshold, periodSeconds int32,
+) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: path,
+				Port: intstr.FromInt32(port),
+			},
 		},
 		PeriodSeconds:    periodSeconds,
 		FailureThreshold: failureThreshold,
