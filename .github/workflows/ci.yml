@@ -1,0 +1,40 @@
+# Generated automatically by org-governance-bot. Do not edit manually.
+name: "CI"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - v*.*.*
+
+jobs:
+  go-test:
+    uses: blinklabs-io/actions/.github/workflows/reuseable-go-test.yml@main
+    with:
+      golangci-extra-args: --build-tags e2e --tests ./test/e2e/...
+      nilaway-include-pkgs: github.com/blinklabs-io/dingo-operator
+      nilaway-version: latest
+      run-golangci-lint: true
+      run-nilaway: true
+      test-flags: -race
+  publish:
+    needs: [go-test]
+    if: github.event_name == 'push'
+    uses: blinklabs-io/actions/.github/workflows/reuseable-publish.yml@main
+    permissions:
+      actions: write
+      attestations: write
+      checks: write
+      contents: write
+      id-token: write
+      packages: write
+      statuses: write
+    secrets:
+      docker-password: ${{ secrets.DOCKER_PASSWORD }}
+    with:
+      binary-name: dingo-operator
+      description: Kubernetes operator for Dingo Cardano nodes
+      docker-image: blinklabs/dingo-operator
+      update-go-proxy: true
