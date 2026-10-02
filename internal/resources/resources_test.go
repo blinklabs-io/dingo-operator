@@ -743,6 +743,104 @@ func TestImageRef(t *testing.T) {
 	assert.Equal(t, "example/dingo:1.2.3", imageRef(dn))
 }
 
+func TestSupportsHealthProbes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		repo  string
+		tag   string
+		wants bool
+	}{
+		{name: "default tag", wants: true},
+		{name: "first release with the listener", tag: "0.70.13", wants: true},
+		{name: "v prefix", tag: "v0.70.13", wants: true},
+		{name: "one patch below", tag: "0.70.12"},
+		{name: "older minor", tag: "0.69.9"},
+		{name: "later minor", tag: "0.71.0", wants: true},
+		{name: "major above zero", tag: "1.0.0", wants: true},
+		{name: "pre-release at boundary", tag: "0.70.13-rc1", wants: true},
+		{name: "pre-release below boundary", tag: "0.70.12-rc1"},
+		{name: "branch tag", tag: "main"},
+		{name: "latest", tag: "latest"},
+		{name: "two parts", tag: "0.75"},
+		{name: "digest", tag: "sha256:0123456789abcdef"},
+		{name: "non-numeric", tag: "a.b.c"},
+		{name: "negative part", tag: "0.-70.13"},
+		{
+			name:  "canonical repository spelled out",
+			repo:  "ghcr.io/blinklabs-io/dingo",
+			tag:   "0.75.0",
+			wants: true,
+		},
+		{name: "custom repository", repo: "example/dingo", tag: "0.75.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Repository = tc.repo
+			dn.Spec.Image.Tag = tc.tag
+			assert.Equal(t, tc.wants, supportsHealthProbes(dn))
+		})
+	}
+}
+
+func TestHealthProbeSelection(t *testing.T) {
+	healthPort := func(ports []corev1.ContainerPort) bool {
+		for _, p := range ports {
+			if p.Name == "health" && p.ContainerPort == portHealth {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("health listener", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Image.Tag = "0.70.13"
+
+		for name, probe := range map[string]*corev1.Probe{
+			"startup":  startupProbe(dn),
+			"liveness": livenessProbe(dn),
+		} {
+			require.NotNil(t, probe.HTTPGet, name)
+			assert.Equal(t, "/healthz", probe.HTTPGet.Path, name)
+			assert.EqualValues(t, portHealth, probe.HTTPGet.Port.IntVal, name)
+			assert.Nil(t, probe.TCPSocket, name)
+		}
+		ready := readinessProbe(dn)
+		require.NotNil(t, ready.HTTPGet)
+		assert.Equal(t, "/readyz", ready.HTTPGet.Path)
+		assert.EqualValues(t, portHealth, ready.HTTPGet.Port.IntVal)
+		assert.True(t, healthPort(containerPorts(dn)),
+			"the health port must be exposed when the probes target it")
+	})
+
+	t.Run("tcp fallback", func(t *testing.T) {
+		for _, set := range []func(*dingov1alpha1.DingoNode){
+			func(dn *dingov1alpha1.DingoNode) { dn.Spec.Image.Tag = "0.70.12" },
+			func(dn *dingov1alpha1.DingoNode) {
+				dn.Spec.Image.Repository = "example/dingo"
+			},
+		} {
+			dn := relayNode()
+			set(dn)
+
+			for name, tc := range map[string]struct {
+				probe *corev1.Probe
+				port  int32
+			}{
+				"startup":   {startupProbe(dn), portMetrics},
+				"liveness":  {livenessProbe(dn), portMetrics},
+				"readiness": {readinessProbe(dn), portRelay},
+			} {
+				require.NotNil(t, tc.probe.TCPSocket, name)
+				assert.EqualValues(t, tc.port, tc.probe.TCPSocket.Port.IntVal, name)
+				assert.Nil(t, tc.probe.HTTPGet, name)
+			}
+			assert.False(t, healthPort(containerPorts(dn)),
+				"images without the listener must not advertise its port")
+		}
+	})
+}
+
 // TestDefaultDingoTagFloor guards the one property of DefaultDingoTag that is a
 // correctness constraint rather than a preference: Dingo releases before 0.68.0
 // permanently brick their data volume if the pod is rolled mid-genesis-write

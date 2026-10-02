@@ -115,7 +115,7 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   `runAsUser:runAsGroup` and `fsGroup` through v0.69.x, including `/ipc`
   ownership; v0.70.0 and later use `1000:1000` for both the process and `/ipc`.
   The operator selects the matching default from the effective image tag, with
-  the omitted tag resolving to `DefaultDingoTag` (currently v0.70.2). Custom
+  the omitted tag resolving to `DefaultDingoTag` (currently v0.75.0). Custom
   repositories and unrecognized tags retain the conservative `100:101`
   non-root compatibility default. Set `spec.podSecurityContext` when a custom
   or unrecognized image uses different IDs; an explicit context is preserved
@@ -172,6 +172,18 @@ cert-manager).
     work only because those fields carry an explicit `envconfig:"DINGO_..."`
     tag that envconfig falls back to. `ShutdownTimeout` has no such tag, so
     `DINGO_SHUTDOWN_TIMEOUT` would be silently ignored.
+- **Dingo v0.70.13+ health probes distinguish process health from chain
+  readiness.** The operator uses `/healthz` for startup and liveness, so a
+  node remains alive while it bootstraps or catches up. `/readyz` drives pod
+  readiness and returns ready only when the chain tip is within Dingo's
+  `healthReadyGapSlots` tolerance (default 1000 slots). This removes stale
+  nodes from client Services without restarting them. The dedicated listener
+  is on port 12799 and is not added to either Service.
+- **Dingo v0.75.0 adds useful sync diagnostics to Prometheus.** The existing
+  PodMonitor already scrapes `/metrics`, so blockfetch recent delay and fetch
+  duration, plus ledger block-apply batch latency, are available without an
+  operator API change. These complement the KES/opcert metrics used for status
+  and rotation checks.
 - **A Mithril bootstrap peaks at roughly twice the node's steady-state disk.**
   `dingo mithril sync` keeps the compressed immutable archives and the extracted
   chain on the data volume simultaneously, reclaiming the archives only once the
@@ -416,11 +428,13 @@ rotation-due monitoring are already in place.
 
 ### Upstream dependencies (filed)
 
-Refs to pin as they land: dingo
+Upstream support now shipped: Dingo
+[#2872](https://github.com/blinklabs-io/dingo/issues/2872) (`/healthz` and
+`/readyz`), and Dingo v0.75.0's blockfetch and ledger latency metrics are wired
+through the existing PodMonitor. Remaining Dingo dependencies: dingo
 [#2870](https://github.com/blinklabs-io/dingo/issues/2870) (credential
 hot-reload), [#2871](https://github.com/blinklabs-io/dingo/issues/2871) (expose
-on-chain opcert counter), [#2872](https://github.com/blinklabs-io/dingo/issues/2872)
-(`/healthz`+`/readyz`), [#2873](https://github.com/blinklabs-io/dingo/issues/2873)
+on-chain opcert counter), [#2873](https://github.com/blinklabs-io/dingo/issues/2873)
 (SPO forging metrics); bursa
 [#592](https://github.com/blinklabs-io/bursa/issues/592) (opcert CBOR envelope +
 external cold-signer sign type); dingoctl
