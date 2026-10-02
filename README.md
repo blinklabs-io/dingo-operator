@@ -14,10 +14,12 @@ operators.
 - **One CRD, two roles.** `DingoNode` runs as a `relay` or a `blockProducer`.
 - **Env-var-driven Dingo workloads** as StatefulSets with a persistent DB
   volume, headless + client Services, and an optional PodMonitor.
-- **Node health probes** use Dingo's dedicated listener: liveness stays healthy
-  during sync, while readiness waits until the chain tip is within Dingo's
-  configured slot-gap tolerance. Catching-up or stalled nodes are removed from
-  client Services without being restarted.
+- **Node health probes** use Dingo's dedicated listener on canonical
+  `ghcr.io/blinklabs-io/dingo` images v0.70.13 and later: liveness stays
+  healthy during sync, while readiness waits until the chain tip is within
+  Dingo's configured slot-gap tolerance. Catching-up or stalled nodes are
+  removed from client Services without being restarted. Older and custom
+  images keep TCP probes.
 - **Mithril bootstrap** via an init container running `dingo mithril sync`
   (native Go client, no external binary).
 - **Topology management** — auto-wire in-cluster block-producer/relay peering,
