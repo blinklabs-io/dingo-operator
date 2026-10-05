@@ -608,15 +608,25 @@ func rulesForPort(
 }
 
 func TestBuildNetworkPolicy(t *testing.T) {
-	t.Run("a plain block producer only allows metrics", func(t *testing.T) {
-		policy := BuildNetworkPolicy(bpNode())
-		require.Len(t, policy.Spec.Ingress, 1)
-		assert.Empty(t, rulesForPort(policy, portRelay))
-		assert.Empty(t, rulesForPort(policy, PortNodeToClient))
-		metrics := ruleForPort(t, policy, portMetrics)
-		require.Len(t, metrics.From, 1)
-		assert.NotNil(t, metrics.From[0].NamespaceSelector)
-	})
+	t.Run(
+		"a plain block producer only allows labelled metrics clients",
+		func(t *testing.T) {
+			policy := BuildNetworkPolicy(bpNode())
+			require.Len(t, policy.Spec.Ingress, 1)
+			assert.Empty(t, rulesForPort(policy, portRelay))
+			assert.Empty(t, rulesForPort(policy, PortNodeToClient))
+			metrics := ruleForPort(t, policy, portMetrics)
+			require.Len(t, metrics.From, 2)
+			want := map[string]string{MetricsAccessLabel: "allowed"}
+			require.NotNil(t, metrics.From[0].PodSelector)
+			assert.Equal(t, want, metrics.From[0].PodSelector.MatchLabels)
+			assert.Nil(t, metrics.From[0].NamespaceSelector)
+			require.NotNil(t, metrics.From[1].PodSelector)
+			require.NotNil(t, metrics.From[1].NamespaceSelector)
+			assert.Equal(t, want, metrics.From[1].PodSelector.MatchLabels)
+			assert.Equal(t, want, metrics.From[1].NamespaceSelector.MatchLabels)
+		},
+	)
 
 	t.Run(
 		"with relay refs allows the node-to-node port from selected relays",
@@ -684,7 +694,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	// The node-to-client port is the one that carries ledger queries,
 	// transaction submission and mempool inspection, so who may reach it is the
 	// load-bearing property of this policy. It must never be open to a whole
-	// namespace the way metrics is: every peer has to name the label explicitly,
+	// namespace: every peer has to name the label explicitly,
 	// and a cross-namespace peer has to satisfy the pod *and* the namespace
 	// selector.
 	t.Run("node-to-client requires an explicit label", func(t *testing.T) {
@@ -741,6 +751,57 @@ func TestImageRef(t *testing.T) {
 	dn.Spec.Image.Repository = "example/dingo"
 	dn.Spec.Image.Tag = "1.2.3"
 	assert.Equal(t, "example/dingo:1.2.3", imageRef(dn))
+	dn.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+	sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+	for _, container := range append(
+		sts.Spec.Template.Spec.Containers,
+		sts.Spec.Template.Spec.InitContainers...,
+	) {
+		assert.Equal(t, "example/dingo@"+dn.Spec.Image.Digest, container.Image)
+	}
+}
+
+func TestStatefulSetSecurityProfile(t *testing.T) {
+	for _, dn := range []*dingov1alpha1.DingoNode{relayNode(), bpNode()} {
+		t.Run(dn.Name, func(t *testing.T) {
+			sts := BuildStatefulSet(dn, RenderOptions{
+				Replicas: 1, MountKeys: IsBlockProducer(dn),
+			})
+			pod := sts.Spec.Template.Spec
+			require.NotNil(t, pod.AutomountServiceAccountToken)
+			assert.False(t, *pod.AutomountServiceAccountToken)
+			vols := map[string]corev1.Volume{}
+			for _, volume := range pod.Volumes {
+				vols[volume.Name] = volume
+			}
+			for _, container := range append(
+				pod.Containers, pod.InitContainers...,
+			) {
+				security := container.SecurityContext
+				require.NotNil(t, security)
+				require.NotNil(t, security.ReadOnlyRootFilesystem)
+				assert.True(t, *security.ReadOnlyRootFilesystem)
+				require.NotNil(t, security.RunAsNonRoot)
+				assert.True(t, *security.RunAsNonRoot)
+				require.NotNil(t, security.AllowPrivilegeEscalation)
+				assert.False(t, *security.AllowPrivilegeEscalation)
+				assert.Equal(t, []corev1.Capability{"ALL"},
+					security.Capabilities.Drop)
+				mounts := map[string]corev1.VolumeMount{}
+				for _, mount := range container.VolumeMounts {
+					mounts[mount.MountPath] = mount
+				}
+				if container.Name != keysInitName {
+					require.Contains(t, mounts, "/tmp")
+					require.NotNil(t, vols[mounts["/tmp"].Name].EmptyDir)
+				}
+				if container.Name == containerName {
+					require.Contains(t, mounts, "/ipc")
+					require.NotNil(t, vols[mounts["/ipc"].Name].EmptyDir)
+				}
+			}
+		})
+	}
 }
 
 func TestSupportsHealthProbes(t *testing.T) {
@@ -832,7 +893,12 @@ func TestHealthProbeSelection(t *testing.T) {
 				"readiness": {readinessProbe(dn), portRelay},
 			} {
 				require.NotNil(t, tc.probe.TCPSocket, name)
-				assert.EqualValues(t, tc.port, tc.probe.TCPSocket.Port.IntVal, name)
+				assert.EqualValues(
+					t,
+					tc.port,
+					tc.probe.TCPSocket.Port.IntVal,
+					name,
+				)
 				assert.Nil(t, tc.probe.HTTPGet, name)
 			}
 			assert.False(t, healthPort(containerPorts(dn)),

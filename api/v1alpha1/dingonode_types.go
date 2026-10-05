@@ -108,6 +108,11 @@ type ImageSpec struct {
 	// Tag defaults to the operator-tested version when empty.
 	// +optional
 	Tag string `json:"tag,omitempty"`
+	// Digest pins immutable image content and takes precedence over Tag.
+	// Keep Tag set to the corresponding version for UID and probe selection.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	// +optional
+	Digest string `json:"digest,omitempty"`
 	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
 	// +kubebuilder:default=IfNotPresent
 	// +optional
