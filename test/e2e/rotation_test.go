@@ -237,16 +237,19 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 	// A regression is only expressible once the operator has observed a
 	// counter above zero: status.opcert.onDiskCounter starts at 0, and the
 	// anti-regression check has nothing below that to reject. So roll forward
-	// to counter 2 first. Unlike the roll test there is no need to wait for the
-	// KES period to leave 0 — the discriminator here is the counter.
-	h.deliverOpCert(ctx, dn, 2, h.currentKESPeriod(ctx))
-	h.waitKeysAccepted(ctx, 2)
+	// to counter 1 first. It must be exactly 1: Dingo refuses to start on a
+	// counter that skips ahead of the last one seen on chain (a gapped
+	// rotation), and this pool has only ever forged on counter 0. Unlike the
+	// roll test there is no need to wait for the KES period to leave 0 — the
+	// discriminator here is the counter.
+	h.deliverOpCert(ctx, dn, 1, h.currentKESPeriod(ctx))
+	h.waitKeysAccepted(ctx, 1)
 	goodPod := h.waitPodReplaced(ctx, firstUID)
 	h.waitForged(ctx, 1)
 
 	good := h.scrapeMetrics(ctx)
 	require.Positive(t, good.ForgedBlocks,
-		"the counter-2 pod must be forging before the rejection, or "+
+		"the counter-1 pod must be forging before the rejection, or "+
 			"\"forging continues\" below means nothing")
 
 	checksum, err := h.stsKeysChecksum(ctx)
@@ -256,7 +259,7 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 	// Now the bad bundle: freshly minted, cold-signed by the same pool, dated
 	// to a period the node is in — its only fault is the counter going
 	// backwards.
-	h.deliverOpCert(ctx, dn, 1, h.currentKESPeriod(ctx))
+	h.deliverOpCert(ctx, dn, 0, h.currentKESPeriod(ctx))
 
 	h.waitFor(ctx, keysDeliveryTimeout,
 		"the operator to refuse the counter-regressed opcert",
@@ -270,7 +273,7 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 		})
 
 	node := h.getNode(ctx)
-	assert.Equal(t, int64(2), node.Status.OpCert.OnDiskCounter,
+	assert.Equal(t, int64(1), node.Status.OpCert.OnDiskCounter,
 		"a refused bundle must not overwrite the last accepted counter")
 
 	// Degraded is the only thing that shows in `kubectl get dingonode`: the
