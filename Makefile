@@ -9,6 +9,9 @@ GOMODULE=$(shell grep ^module $(ROOT_DIR)/go.mod | awk '{ print $$2 }')
 
 # Application name
 APPLICATION_NAME=dingo-operator
+GOOS ?= $(shell go env GOOS)
+BINARY_SUFFIX := $(if $(filter windows,$(GOOS)),.exe,)
+BINARY_OUTPUT := $(APPLICATION_NAME)$(BINARY_SUFFIX)
 
 # Set version strings: use env vars if set, else git
 VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null)
@@ -40,7 +43,7 @@ mod-tidy: ## Fetch and tidy module dependencies
 	go mod tidy
 
 clean: ## Remove build artifacts
-	rm -f $(APPLICATION_NAME)
+	rm -f $(BINARY_OUTPUT)
 
 # Uses only the Go-provided formatters so a clean checkout can run the default
 # `make` target without installing extra tooling. Full formatting (gofumpt, gci,
@@ -95,7 +98,7 @@ build: $(GO_FILES) ## Build the operator binary
 	CGO_ENABLED=0 go build \
 		-mod=readonly \
 		$(GO_LDFLAGS) \
-		-o $(APPLICATION_NAME) \
+		-o $(BINARY_OUTPUT) \
 		./cmd/$(APPLICATION_NAME)
 
 # Build docker image
