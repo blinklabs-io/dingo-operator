@@ -63,12 +63,16 @@ const NodeToClientAccessLabel = "dingo.blinklabs.io/node-to-client"
 // `kubectl get pods --show-labels` and leaves room for future values.
 const NodeToClientAccessAllowed = "allowed"
 
+// MetricsAccessLabel grants a client access to block-producer metrics. Clients
+// in another namespace must label both their pod and namespace.
+const MetricsAccessLabel = "dingo.blinklabs.io/metrics"
+
 // BuildNetworkPolicy restricts inbound traffic to a block producer. When relay
 // refs are declared, node-to-node ingress (port 3001 only) is limited to those
 // relays; the node-to-client port is admitted only for clients carrying
 // NodeToClientAccessLabel, and only when the node actually serves NtC; metrics
-// scraping is allowed from any namespace (the operator and Prometheus normally
-// run outside the node's own namespace). Egress is left open so the node can
+// scraping requires MetricsAccessLabel on clients and their namespace when
+// accessing another namespace. Egress is left open so the node can
 // reach DNS, peers, and Mithril aggregators.
 func BuildNetworkPolicy(
 	dn *dingov1alpha1.DingoNode,
@@ -77,16 +81,7 @@ func BuildNetworkPolicy(
 	metricsPort := intstr.FromInt32(portMetrics)
 
 	metricsIngress := networkingv1.NetworkPolicyIngressRule{
-		// Metrics scraping is allowed from any namespace: the cluster-scoped
-		// operator (which scrapes KES/opcert state to drive rotation) and
-		// Prometheus normally run outside the node's namespace, so a
-		// same-namespace-only rule would silently break KES monitoring. Only the
-		// metrics port is opened this way; the node-to-node port stays
-		// restricted to declared relays below, and node-to-client to labelled
-		// clients.
-		From: []networkingv1.NetworkPolicyPeer{
-			{NamespaceSelector: &metav1.LabelSelector{}},
-		},
+		From: labelledClientPeers(MetricsAccessLabel),
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Protocol: &tcp, Port: &metricsPort},
 		},
@@ -167,25 +162,29 @@ func nodeToClientIngress(
 	tcp corev1.Protocol,
 ) networkingv1.NetworkPolicyIngressRule {
 	port := intstr.FromInt32(PortNodeToClient)
+	return networkingv1.NetworkPolicyIngressRule{
+		From: labelledClientPeers(NodeToClientAccessLabel),
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &port},
+		},
+	}
+}
+
+func labelledClientPeers(label string) []networkingv1.NetworkPolicyPeer {
 	// A fresh selector per field: sharing one pointer across three selector
 	// fields would make any later mutation of one silently change the others.
 	allowed := func() *metav1.LabelSelector {
 		return &metav1.LabelSelector{
 			MatchLabels: map[string]string{
-				NodeToClientAccessLabel: NodeToClientAccessAllowed,
+				label: "allowed",
 			},
 		}
 	}
-	return networkingv1.NetworkPolicyIngressRule{
-		From: []networkingv1.NetworkPolicyPeer{
-			{PodSelector: allowed()},
-			{
-				NamespaceSelector: allowed(),
-				PodSelector:       allowed(),
-			},
-		},
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: &port},
+	return []networkingv1.NetworkPolicyPeer{
+		{PodSelector: allowed()},
+		{
+			NamespaceSelector: allowed(),
+			PodSelector:       allowed(),
 		},
 	}
 }

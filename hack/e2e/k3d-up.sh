@@ -86,9 +86,13 @@ kubectl create namespace "${OPERATOR_NAMESPACE}" \
 # the operator's namespace the same way.
 kubectl label namespace "${OPERATOR_NAMESPACE}" \
   dingo.blinklabs.io/node-to-client=allowed --overwrite
+kubectl label namespace "${OPERATOR_NAMESPACE}" \
+  dingo.blinklabs.io/metrics=allowed --overwrite
 kubectl apply -f "${ROOT_DIR}/config/crd/bases"
 kubectl apply -f "${ROOT_DIR}/config/rbac/role.yaml"
 kubectl apply -f "${ROOT_DIR}/test/e2e/manifests/manager.yaml"
+kubectl -n "${OPERATOR_NAMESPACE}" set image deployment/dingo-operator \
+  "manager=${IMAGE}"
 
 # `k3d image import` replaces the image in containerd but never restarts a
 # running pod, so on a reused cluster the manager would keep serving the
