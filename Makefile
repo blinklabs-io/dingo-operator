@@ -43,7 +43,7 @@ mod-tidy: ## Fetch and tidy module dependencies
 	go mod tidy
 
 clean: ## Remove build artifacts
-	rm -f $(BINARY_OUTPUT)
+	rm -f $(APPLICATION_NAME) $(APPLICATION_NAME).exe
 
 # Uses only the Go-provided formatters so a clean checkout can run the default
 # `make` target without installing extra tooling. Full formatting (gofumpt, gci,
