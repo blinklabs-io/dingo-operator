@@ -124,6 +124,22 @@ func TestBuildEnv(t *testing.T) {
 		}
 	})
 
+	// Dingo v0.81.0 moved the Prometheus listener to loopback. Without this env
+	// var the PodMonitor and the operator's KES scrape both fail across the pod
+	// boundary, and the node reports RotationDue=Unknown forever rather than
+	// failing loudly. Relays are scraped too, so this is not block-producer only.
+	t.Run("metrics bind address is always set", func(t *testing.T) {
+		for name, dn := range map[string]*dingov1alpha1.DingoNode{
+			"block producer": bpNode(),
+			"relay":          relayNode(),
+		} {
+			t.Run(name, func(t *testing.T) {
+				env := envMap(dn, RenderOptions{})
+				assert.Equal(t, "0.0.0.0", env["DINGO_METRICS_BIND_ADDR"])
+			})
+		}
+	})
+
 	// Dingo binds node-to-client to 127.0.0.1 by default, so without this env
 	// var the operator's on-chain counter query can never connect however
 	// permissive the NetworkPolicy is — and the check would be silently inert.
