@@ -101,7 +101,7 @@ const (
 )
 
 // ImageSpec configures the Dingo container image.
-// +kubebuilder:validation:XValidation:rule="!has(self.digest) || (has(self.tag) && self.tag != '')",message="tag must be set when digest is set"
+// +kubebuilder:validation:XValidation:rule="!has(self.digest) || (has(self.tag) && size(self.tag) > 0)",message="tag must be set when digest is set"
 type ImageSpec struct {
 	// +kubebuilder:default="ghcr.io/blinklabs-io/dingo"
 	// +optional
