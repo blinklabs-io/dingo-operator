@@ -19,7 +19,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-dingo-operator-e2e}"
 K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.31.5-k3s1}"
-IMAGE="${IMAGE:-dingo-operator:latest}"
+OPERATOR_IMAGE="${OPERATOR_IMAGE:-dingo-operator:latest}"
 # The Dingo build the suite's block producer runs. Side-loaded so a fresh
 # cluster does not re-pull ~600 MB from ghcr.io on every run. Pinned to a
 # concrete release, not a floating tag: combined with the pull-only-if-absent
@@ -49,8 +49,8 @@ if ! docker image inspect "${DINGO_IMAGE}" >/dev/null 2>&1; then
   docker pull "${DINGO_IMAGE}"
 fi
 
-echo "[e2e] importing ${IMAGE} and ${DINGO_IMAGE}"
-k3d image import "${IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
+echo "[e2e] importing ${OPERATOR_IMAGE} and ${DINGO_IMAGE}"
+k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
 
 echo "[e2e] writing kubeconfig to ${KUBECONFIG_PATH}"
 k3d kubeconfig write "${CLUSTER_NAME}" \
@@ -92,7 +92,7 @@ kubectl apply -f "${ROOT_DIR}/config/crd/bases"
 kubectl apply -f "${ROOT_DIR}/config/rbac/role.yaml"
 kubectl apply -f "${ROOT_DIR}/test/e2e/manifests/manager.yaml"
 kubectl -n "${OPERATOR_NAMESPACE}" set image deployment/dingo-operator \
-  "manager=${IMAGE}"
+  "manager=${OPERATOR_IMAGE}"
 
 # `k3d image import` replaces the image in containerd but never restarts a
 # running pod, so on a reused cluster the manager would keep serving the

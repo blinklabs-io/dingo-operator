@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -31,6 +32,14 @@ func TestValidateSpec(t *testing.T) {
 		{
 			name: "valid relay",
 			spec: dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleRelay, Network: "mainnet"},
+		},
+		{
+			name: "digest without tag",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+				Image: dingov1alpha1.ImageSpec{Digest: "sha256:" + strings.Repeat("a", 64)},
+			},
+			wantErr: true,
 		},
 		{
 			// A bare `kind: DingoNode` with no spec must be rejected, not

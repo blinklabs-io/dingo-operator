@@ -176,7 +176,7 @@ func labelledClientPeers(label string) []networkingv1.NetworkPolicyPeer {
 	allowed := func() *metav1.LabelSelector {
 		return &metav1.LabelSelector{
 			MatchLabels: map[string]string{
-				label: "allowed",
+				label: NodeToClientAccessAllowed,
 			},
 		}
 	}

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
 	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
@@ -48,6 +49,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
+
+type fakeForgeStatusFetcher struct {
+	err error
+}
+
+func (f fakeForgeStatusFetcher) Fetch(context.Context, string) (*forgestatus.Status, error) {
+	return nil, f.err
+}
 
 // TestMain silences controller-runtime's logging. Without a logger set,
 // controller-runtime's delegating sink prints "log.SetLogger(...) was never
@@ -271,6 +280,23 @@ func blockProducerNode(
 			},
 		},
 	}
+}
+
+func TestRefreshForgeStatusMarksRotationUnknownWhenMetricsFail(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse, Reason: "KESHealthy",
+		Message: "old scrape", ObservedGeneration: dn.Generation,
+	})
+	r := &DingoNodeReconciler{ForgeStatus: fakeForgeStatusFetcher{err: errors.New("denied")}}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	condition := meta.FindStatusCondition(dn.Status.Conditions, condRotationDue)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionUnknown, condition.Status)
+	assert.Equal(t, "MetricsUnavailable", condition.Reason)
+	assert.NotEqual(t, "old scrape", condition.Message)
 }
 
 // keysAnnotation returns the pod-template keys-checksum annotation currently on

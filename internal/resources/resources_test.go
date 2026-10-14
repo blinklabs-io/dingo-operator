@@ -793,10 +793,12 @@ func TestStatefulSetSecurityProfile(t *testing.T) {
 				}
 				if container.Name != keysInitName {
 					require.Contains(t, mounts, "/tmp")
+					assert.False(t, mounts["/tmp"].ReadOnly)
 					require.NotNil(t, vols[mounts["/tmp"].Name].EmptyDir)
 				}
 				if container.Name == containerName {
 					require.Contains(t, mounts, "/ipc")
+					assert.False(t, mounts["/ipc"].ReadOnly)
 					require.NotNil(t, vols[mounts["/ipc"].Name].EmptyDir)
 				}
 			}

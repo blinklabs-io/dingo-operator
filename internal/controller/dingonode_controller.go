@@ -483,13 +483,17 @@ func (r *DingoNodeReconciler) reconcileStatus(
 }
 
 // refreshForgeStatus scrapes the node's metrics to populate KES status. Errors
-// are non-fatal: a not-yet-ready node simply has no metrics.
+// are non-fatal, but mark rotation status Unknown so stale KES data is visible.
 func (r *DingoNodeReconciler) refreshForgeStatus(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) {
 	bp := dn.Spec.BlockProducer
-	if r.ForgeStatus == nil || bp == nil {
+	if bp == nil {
+		return
+	}
+	if r.ForgeStatus == nil {
+		setRotationDueUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
 		return
 	}
 	logger := log.FromContext(ctx)
@@ -502,9 +506,11 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	st, err := r.ForgeStatus.Fetch(ctx, url)
 	if err != nil {
 		logger.V(1).Info("forge status unavailable", "error", err.Error())
+		setRotationDueUnknown(dn, "MetricsUnavailable", "forge status metrics could not be fetched")
 		return
 	}
-	if !st.HasKESData {
+	if st == nil || !st.HasKESData {
+		setRotationDueUnknown(dn, "KESMetricsUnavailable", "KES metrics are not available")
 		return
 	}
 	dn.Status.KES = dingov1alpha1.KESStatus{
@@ -532,6 +538,13 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			ObservedGeneration: dn.Generation,
 		})
 	}
+}
+
+func setRotationDueUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionUnknown, Reason: reason,
+		Message: message, ObservedGeneration: dn.Generation,
+	})
 }
 
 // refreshOnChainCounter reads the authoritative on-chain opcert counter from

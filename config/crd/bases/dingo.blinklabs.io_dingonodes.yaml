@@ -1151,7 +1151,7 @@ spec:
                   digest:
                     description: |-
                       Digest pins immutable image content and takes precedence over Tag.
-                      Keep Tag set to the corresponding version for UID and probe selection.
+                      Tag is required with Digest for UID and probe selection.
                     pattern: ^sha256:[a-f0-9]{64}$
                     type: string
                   pullPolicy:
@@ -1171,6 +1171,9 @@ spec:
                       empty.
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: tag must be set when digest is set
+                  rule: '!has(self.digest) || (has(self.tag) && self.tag != ”)'
               metrics:
                 description: MetricsSpec configures metrics exposure for the managed
                   node.

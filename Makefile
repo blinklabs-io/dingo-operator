@@ -9,7 +9,7 @@ GOMODULE=$(shell grep ^module $(ROOT_DIR)/go.mod | awk '{ print $$2 }')
 
 # Application name
 APPLICATION_NAME=dingo-operator
-IMAGE ?= $(APPLICATION_NAME):latest
+OPERATOR_IMAGE ?= $(APPLICATION_NAME):latest
 GOOS ?= $(shell go env GOOS)
 BINARY_SUFFIX := $(if $(filter windows,$(GOOS)),.exe,)
 BINARY_OUTPUT := $(APPLICATION_NAME)$(BINARY_SUFFIX)
@@ -104,7 +104,7 @@ build: $(GO_FILES) ## Build the operator binary
 
 # Build docker image
 image: build ## Build the operator container image
-	docker build -t $(IMAGE) .
+	docker build -t $(OPERATOR_IMAGE) .
 
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
