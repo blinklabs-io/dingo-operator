@@ -184,6 +184,37 @@ cert-manager).
   duration, plus ledger block-apply batch latency, are available without an
   operator API change. These complement the KES/opcert metrics used for status
   and rotation checks.
+- **Probes cannot see a wedged node, so the controller watches Dingo's own
+  wedge gauges.** A ledger pipeline that stops following the chain keeps the
+  process live and the pod Ready; a block producer in that state goes on
+  forging at its leader slots and nobody adopts the result.
+  `dingo_ledger_pipeline_stuck` and `dingo_ledger_pipeline_halted` (halted is
+  terminal) are scraped for every node, relays included, and drive the
+  `LedgerPipelineHealthy` condition plus `Degraded`. `Ready` deliberately still
+  reports StatefulSet truth: the pod really is ready and the chain really is not
+  advancing, and collapsing the two would hide which one failed. An unreadable
+  scrape sets the condition `Unknown`, never True — reading a failed fetch as
+  "no wedge reported" is how this detection goes blind exactly when it matters.
+- **The metrics listener must be bound explicitly.** Dingo defaults
+  `metricsBindAddr` to loopback as of v0.81.0, so the operator sets
+  `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and
+  the operator's own KES and wedge scrapes all fail across the pod boundary and
+  the node reports `RotationDue=Unknown` indefinitely. Exposure stays bounded by
+  the NetworkPolicy. The scrape goes through the *headless* Service: the client
+  Service gates endpoints on readiness, which would hide KES and wedge state
+  precisely while a node is behind, stalled or catching up.
+- **Mithril completion is tracked by markers, not by the database file.**
+  `.mithril-bootstrap-started` and `.mithril-bootstrap-complete` live in the data
+  dir. A restore interrupted after `metadata.sqlite` appears but before the chain
+  is complete is indistinguishable from success by file existence, and the init
+  container used to take the skip branch and hand the node a partial database.
+  Resuming is safe: `dingo mithril sync` pins its artifact and records
+  per-immutable-file progress, so it continues rather than restarting. Re-running
+  unconditionally is not an option, because catch-up against a complete database
+  is core-storage-mode only. A volume holding a database and no markers predates
+  them and is adopted as complete. `dingo serve` independently refuses to start
+  on an incomplete sync, so a marker bug fails loudly rather than forging on
+  partial state.
 - **A Mithril bootstrap peaks at roughly twice the node's steady-state disk.**
   `dingo mithril sync` keeps the compressed immutable archives and the extracted
   chain on the data volume simultaneously, reclaiming the archives only once the
