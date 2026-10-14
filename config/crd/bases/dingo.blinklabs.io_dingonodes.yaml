@@ -1173,7 +1173,7 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: tag must be set when digest is set
-                  rule: '!has(self.digest) || (has(self.tag) && self.tag != ”)'
+                  rule: '!has(self.digest) || (has(self.tag) && self.tag != '''')'
               metrics:
                 description: MetricsSpec configures metrics exposure for the managed
                   node.
