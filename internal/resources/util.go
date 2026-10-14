@@ -92,18 +92,49 @@ func initContainers(
 	if !mithrilEnabled(dn) {
 		return containers
 	}
+	// Completion is tracked by an explicit marker pair, not by the presence of
+	// the database file. A restore interrupted after metadata.sqlite appears
+	// but before the chain is complete is indistinguishable from success by
+	// file existence alone, and the old check took that branch and handed the
+	// node a partial database.
+	//
+	// The started marker separates the two cases the completion marker cannot:
+	// a volume written by an operator version that predates these markers
+	// (adopted as complete, preserving its behaviour) versus a bootstrap this
+	// container began and did not finish (resumed). Resuming is safe and cheap
+	// -- dingo mithril sync pins its artifact and records per-immutable-file
+	// progress, so it continues rather than restarting, and no-ops once the
+	// marker is at the latest artifact. Re-running unconditionally is not an
+	// option: catch-up against a complete database is core-storage-mode only.
+	//
+	// dingo serve independently refuses to start on an incomplete sync, so a
+	// marker bug fails loudly at startup rather than forging on partial state.
 	const script = `set -eu
 DB="${CARDANO_DATABASE_PATH}/metadata.sqlite"
-if [ -f "$DB" ] && [ "${FORCE_RESYNC:-false}" != "true" ]; then
-  echo "dingo database present; skipping mithril bootstrap"
-  exit 0
-fi
+DONE="${CARDANO_DATABASE_PATH}/.mithril-bootstrap-complete"
+STARTED="${CARDANO_DATABASE_PATH}/.mithril-bootstrap-started"
 if [ "${FORCE_RESYNC:-false}" = "true" ]; then
   echo "force resync requested; removing existing database"
   rm -rf "${CARDANO_DATABASE_PATH:?}/"* || true
 fi
-echo "bootstrapping via dingo mithril sync"
-exec dingo mithril sync
+if [ -f "$DONE" ]; then
+  echo "mithril bootstrap already complete; skipping"
+  exit 0
+fi
+if [ -f "$DB" ] && [ ! -f "$STARTED" ]; then
+  echo "pre-existing database with no bootstrap marker; adopting as complete"
+  touch "$DONE"
+  exit 0
+fi
+if [ -f "$STARTED" ]; then
+  echo "previous mithril bootstrap did not complete; resuming"
+else
+  echo "bootstrapping via dingo mithril sync"
+fi
+touch "$STARTED"
+dingo mithril sync
+touch "$DONE"
+echo "mithril bootstrap complete"
 `
 	verify := dn.Spec.Mithril.VerifyCertificates == nil ||
 		*dn.Spec.Mithril.VerifyCertificates
