@@ -37,6 +37,12 @@ const (
 	metricOpCertStartKESPeriod  = "cardano_node_metrics_operationalCertificateStartKESPeriod_int"
 	metricOpCertExpiryKESPeriod = "cardano_node_metrics_operationalCertificateExpiryKESPeriod_int"
 	metricForgedBlocks          = "cardano_node_metrics_Forge_forged_int"
+	// Dingo's own wedge indicators. The ledger pipeline can stop following the
+	// chain while the process stays live and the probes keep answering, so
+	// neither kubelet probes nor pod state reveal it. Both gauges mean
+	// operator intervention is required; halted is terminal.
+	metricPipelineStuck  = "dingo_ledger_pipeline_stuck"
+	metricPipelineHalted = "dingo_ledger_pipeline_halted"
 )
 
 // Status is the observed forge/KES state of a node.
@@ -49,6 +55,13 @@ type Status struct {
 	// HasKESData is true when KES metrics were present (i.e. the node is a
 	// forging block producer with credentials loaded).
 	HasKESData bool
+	// PipelineStuck is set when the ledger pipeline has restarted without tip
+	// progress often enough to be treated as stuck on a deterministic failure.
+	PipelineStuck bool
+	// PipelineHalted is set when the ledger pipeline has stopped retrying on an
+	// unrepairable validation failure. Terminal: the node no longer follows the
+	// chain, and a block producer in this state forges on a dead chain.
+	PipelineHalted bool
 }
 
 // Fetcher retrieves forge status from a node's metrics endpoint.
@@ -126,6 +139,10 @@ func Parse(r io.Reader) (*Status, error) {
 			s.OpCertExpiryKESPeriod = int64(v)
 		case metricForgedBlocks:
 			s.ForgedBlocks = int64(v)
+		case metricPipelineStuck:
+			s.PipelineStuck = v != 0
+		case metricPipelineHalted:
+			s.PipelineHalted = v != 0
 		}
 	}
 	if err := scanner.Err(); err != nil {

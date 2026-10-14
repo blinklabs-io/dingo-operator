@@ -58,6 +58,19 @@ func (f fakeForgeStatusFetcher) Fetch(context.Context, string) (*forgestatus.Sta
 	return nil, f.err
 }
 
+// urlRecordingFetcher captures the scrape URL the reconciler builds.
+type urlRecordingFetcher struct {
+	url string
+}
+
+func (f *urlRecordingFetcher) Fetch(
+	_ context.Context,
+	metricsURL string,
+) (*forgestatus.Status, error) {
+	f.url = metricsURL
+	return nil, errors.New("unused")
+}
+
 // TestMain silences controller-runtime's logging. Without a logger set,
 // controller-runtime's delegating sink prints "log.SetLogger(...) was never
 // called" plus a stack trace the first time anything logs more than 30 seconds
@@ -280,6 +293,24 @@ func blockProducerNode(
 			},
 		},
 	}
+}
+
+// KES status must stay observable while a node is unready. The client Service
+// gates endpoints on readiness, so scraping it would blind the operator exactly
+// when a node is behind, stalled or catching up -- when remaining KES periods
+// matter most. The headless Service publishes not-ready addresses.
+func TestRefreshForgeStatusScrapesHeadlessService(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	fetcher := &urlRecordingFetcher{}
+	r := &DingoNodeReconciler{ForgeStatus: fetcher}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Equal(
+		t,
+		"http://bp-headless.bp-ns.svc.cluster.local:12798/metrics",
+		fetcher.url,
+	)
 }
 
 func TestRefreshForgeStatusMarksRotationUnknownWhenMetricsFail(t *testing.T) {
@@ -1232,4 +1263,114 @@ func TestReconcileInvalidSpecSetsDegraded(t *testing.T) {
 	// No StatefulSet should have been created for an invalid spec.
 	err := c.Get(ctx, types.NamespacedName{Name: "bad", Namespace: "bad-ns"}, &appsv1.StatefulSet{})
 	assert.True(t, apierrors.IsNotFound(err))
+}
+
+func relayNodeForStatus(name, ns string) *dingov1alpha1.DingoNode {
+	return &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+}
+
+// statusFetcher returns a fixed Status, standing in for a live scrape.
+type statusFetcher struct {
+	st *forgestatus.Status
+}
+
+func (f *statusFetcher) Fetch(
+	context.Context,
+	string,
+) (*forgestatus.Status, error) {
+	return f.st, nil
+}
+
+// A wedged ledger pipeline keeps the process live and the pod Ready, so it is
+// invisible to pod state and to the kubelet probes. It must surface as an
+// explicit condition, and as Degraded, or a block producer goes on forging
+// blocks nobody adopts.
+func TestRefreshForgeStatusReportsPipelineWedge(t *testing.T) {
+	tests := []struct {
+		name       string
+		st         *forgestatus.Status
+		wantStatus metav1.ConditionStatus
+		wantReason string
+		degraded   bool
+	}{
+		{
+			name:       "following",
+			st:         &forgestatus.Status{},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: "Following",
+		},
+		{
+			name:       "stuck",
+			st:         &forgestatus.Status{PipelineStuck: true},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: "LedgerPipelineStuck",
+			degraded:   true,
+		},
+		{
+			name: "halted outranks stuck",
+			st: &forgestatus.Status{
+				PipelineStuck:  true,
+				PipelineHalted: true,
+			},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: "LedgerPipelineHalted",
+			degraded:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+			r := &DingoNodeReconciler{ForgeStatus: &statusFetcher{st: tt.st}}
+
+			r.refreshForgeStatus(context.Background(), dn)
+
+			cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(
+				t,
+				tt.degraded,
+				meta.IsStatusConditionTrue(dn.Status.Conditions, condDegraded),
+			)
+		})
+	}
+}
+
+// Relays wedge too, and a relay serving a stale chain is the thing every
+// downstream client reads.
+func TestRefreshForgeStatusWatchesRelays(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	r := &DingoNodeReconciler{
+		ForgeStatus: &statusFetcher{st: &forgestatus.Status{PipelineHalted: true}},
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.True(
+		t,
+		meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy),
+	)
+}
+
+// An unreadable scrape is unknown, never healthy. Reading a failed fetch as
+// "no wedge reported" is how wedge detection goes blind precisely when a node
+// is in trouble.
+func TestRefreshForgeStatusUnreadableMetricsAreNotHealthy(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	r := &DingoNodeReconciler{
+		ForgeStatus: fakeForgeStatusFetcher{err: errors.New("connection refused")},
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
 }
