@@ -44,6 +44,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 	if dn.Spec.Network == "" {
 		return errors.New("spec.network is required")
 	}
+	if dn.Spec.Image.Digest != "" && dn.Spec.Image.Tag == "" {
+		return errors.New("spec.image.tag is required when spec.image.digest is set")
+	}
 
 	if dn.Spec.Network == "custom" && dn.Spec.NetworkMagic == nil {
 		return errors.New("network \"custom\" requires spec.networkMagic")

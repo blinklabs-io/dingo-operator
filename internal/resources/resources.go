@@ -57,6 +57,8 @@ const (
 
 	dataVolumeName = "data"
 	dataMountPath  = "/data"
+	tmpVolumeName  = "tmp"
+	ipcVolumeName  = "ipc"
 
 	keysSourceName = "block-producer-keys-source"
 	keysSourcePath = "/var/run/dingo-keys-source"
@@ -146,6 +148,9 @@ func imageRef(dn *dingov1alpha1.DingoNode) string {
 	repo := dn.Spec.Image.Repository
 	if repo == "" {
 		repo = "ghcr.io/blinklabs-io/dingo"
+	}
+	if dn.Spec.Image.Digest != "" {
+		return repo + "@" + dn.Spec.Image.Digest
 	}
 	return fmt.Sprintf("%s:%s", repo, imageTag(dn))
 }
@@ -401,9 +406,8 @@ func podSecurityContext(
 func containerSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: new(false),
-		// Dingo writes its NtC socket and scratch files to the container
-		// filesystem, so the root FS cannot be fully read-only yet.
-		ReadOnlyRootFilesystem: new(false),
+		ReadOnlyRootFilesystem:   new(true),
+		RunAsNonRoot:             new(true),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
@@ -446,6 +450,7 @@ func BuildStatefulSet(
 
 	grace := terminationGracePeriod(dn)
 	podSpec := corev1.PodSpec{
+		AutomountServiceAccountToken:  new(false),
 		ServiceAccountName:            dn.Name,
 		SecurityContext:               podSecurityContext(dn),
 		InitContainers:                initContainers(dn, opts),
@@ -570,6 +575,8 @@ func volumeMounts(
 ) []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{
 		{Name: dataVolumeName, MountPath: dataMountPath},
+		{Name: tmpVolumeName, MountPath: "/tmp"},
+		{Name: ipcVolumeName, MountPath: "/ipc"},
 	}
 	if opts.HasTopology {
 		mounts = append(mounts, corev1.VolumeMount{
@@ -596,7 +603,20 @@ func volumeMounts(
 }
 
 func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
-	var vols []corev1.Volume
+	vols := []corev1.Volume{
+		{
+			Name: tmpVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: ipcVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
 	if opts.HasTopology {
 		vols = append(vols, corev1.Volume{
 			Name: topologyVolumeName,

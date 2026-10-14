@@ -64,6 +64,7 @@ spec:
         # The shipped Helm chart (helm-charts, charts/dingo-operator) must set
         # the same pair; this manifest is the e2e suite's stand-in for it.
         dingo.blinklabs.io/node-to-client: allowed
+        dingo.blinklabs.io/metrics: allowed
     spec:
       serviceAccountName: dingo-operator
       containers:

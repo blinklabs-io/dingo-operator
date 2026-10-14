@@ -101,6 +101,7 @@ const (
 )
 
 // ImageSpec configures the Dingo container image.
+// +kubebuilder:validation:XValidation:rule="!has(self.digest) || (has(self.tag) && size(self.tag) > 0)",message="tag must be set when digest is set"
 type ImageSpec struct {
 	// +kubebuilder:default="ghcr.io/blinklabs-io/dingo"
 	// +optional
@@ -108,6 +109,11 @@ type ImageSpec struct {
 	// Tag defaults to the operator-tested version when empty.
 	// +optional
 	Tag string `json:"tag,omitempty"`
+	// Digest pins immutable image content and takes precedence over Tag.
+	// Tag is required with Digest for UID and probe selection.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	// +optional
+	Digest string `json:"digest,omitempty"`
 	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
 	// +kubebuilder:default=IfNotPresent
 	// +optional

@@ -51,7 +51,9 @@ operators.
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
 - **Safe HA** — `SingleActive` (default) or `ActiveStandby` with fenced,
   lease-based promotion so exactly one node ever forges.
-- **Secure by default** — non-root, dropped capabilities, least-privilege RBAC,
+- **Secure by default** — non-root, read-only root filesystem with writable
+  `/tmp` and `/ipc` volumes, dropped capabilities, no privilege escalation,
+  RuntimeDefault seccomp, no node service-account token, least-privilege RBAC,
   and a default-deny NetworkPolicy for block producers. Node-to-client (port
   3002) is closed unless a client opts in: label the client pod
   `dingo.blinklabs.io/node-to-client=allowed`, and its namespace too when it is
@@ -60,6 +62,14 @@ operators.
   also binds node-to-client to loopback until
   `blockProducer.nodeToClient.enabled` is set, so both the listener and the
   policy have to be opened deliberately.
+  Metrics also require an explicit grant: label the operator and Prometheus
+  client pods `dingo.blinklabs.io/metrics=allowed`, and their namespaces too
+  when they differ from the node's. Apply these labels before upgrading;
+  otherwise status and KES monitoring cannot scrape block producers. Metrics
+  access does not grant node-to-client access.
+  Set `spec.image.digest` to pin immutable image content; it overrides the
+  tag in container references. Keep `spec.image.tag` set to the pinned image's
+  version because the operator uses it to select the UID and health probes.
 
 ## Installation
 

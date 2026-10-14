@@ -139,6 +139,7 @@ exec dingo mithril sync
 	// container; otherwise it fails to load config.json before bootstrap.
 	mounts := []corev1.VolumeMount{
 		{Name: dataVolumeName, MountPath: dataMountPath},
+		{Name: tmpVolumeName, MountPath: "/tmp"},
 	}
 	if dn.Spec.ConfigRef != "" {
 		env = append(env, corev1.EnvVar{
