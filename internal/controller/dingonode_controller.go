@@ -55,6 +55,10 @@ const (
 	condRotationDue    = "RotationDue"
 	condKeysValid      = "KeysValid"
 	condOnChainCounter = "OnChainCounterAvailable"
+	// condPipelineHealthy reports whether the node is still following the
+	// chain. A wedged ledger pipeline keeps the process live and the probes
+	// green, so neither pod state nor Ready can express it.
+	condPipelineHealthy = "LedgerPipelineHealthy"
 
 	metricsPort = 12798
 )
@@ -332,9 +336,9 @@ func (r *DingoNodeReconciler) reconcileResources(
 		if err := r.upsertPDB(ctx, dn); err != nil {
 			return fmt.Errorf("apply poddisruptionbudget: %w", err)
 		}
-		if err := r.upsertNetworkPolicy(ctx, dn); err != nil {
-			return fmt.Errorf("apply networkpolicy: %w", err)
-		}
+	}
+	if err := r.upsertNetworkPolicy(ctx, dn); err != nil {
+		return fmt.Errorf("apply networkpolicy: %w", err)
 	}
 
 	// PodMonitor is best-effort and skipped when the CRD is absent.
@@ -451,11 +455,23 @@ func (r *DingoNodeReconciler) reconcileStatus(
 		return err
 	}
 
-	if resources.IsBlockProducer(dn) {
-		r.refreshForgeStatus(ctx, dn)
-	}
+	// Scraped for every node, not just block producers: a relay that stops
+	// following the chain serves stale answers to everything downstream.
+	r.refreshForgeStatus(ctx, dn)
 
-	if ready {
+	// A wedged node keeps its pod Ready, so Ready alone would report it
+	// healthy. Phase is downgraded to Degraded while the pipeline is unhealthy,
+	// but Ready still reports StatefulSet truth -- conflating the two would
+	// hide which of the two failed.
+	wedged := meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy)
+	switch {
+	case ready && wedged:
+		dn.Status.Phase = "Degraded"
+		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+			Type: condReady, Status: metav1.ConditionTrue, Reason: "StatefulSetReady",
+			Message: "node is ready", ObservedGeneration: dn.Generation,
+		})
+	case ready:
 		dn.Status.Phase = "Ready"
 		if resources.IsBlockProducer(dn) && dn.Status.KES.RemainingPeriods > 0 {
 			dn.Status.Phase = "Forging"
@@ -464,7 +480,7 @@ func (r *DingoNodeReconciler) reconcileStatus(
 			Type: condReady, Status: metav1.ConditionTrue, Reason: "StatefulSetReady",
 			Message: "node is ready", ObservedGeneration: dn.Generation,
 		})
-	} else {
+	default:
 		dn.Status.Phase = "Pending"
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type: condReady, Status: metav1.ConditionFalse, Reason: "StatefulSetNotReady",
@@ -475,41 +491,94 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	// reconcile returns before reaching this point — except rejectKeys, which
 	// deliberately falls through so the rest of the resources still reconcile.
 	// A refused key bundle must survive to the status write, so keep Degraded
-	// while KeysValid is False.
-	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) {
+	// while KeysValid is False. A wedged pipeline is kept for the same reason:
+	// it is set during this reconcile, after everything that returns early.
+	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) && !wedged {
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condDegraded)
 	}
 	return r.updateStatus(ctx, dn)
 }
 
-// refreshForgeStatus scrapes the node's metrics to populate KES status. Errors
-// are non-fatal, but mark rotation status Unknown so stale KES data is visible.
+// refreshForgeStatus scrapes the node's metrics to populate KES and ledger
+// pipeline status. Errors are non-fatal, but mark the derived conditions
+// Unknown so stale data is never mistaken for a fresh observation.
 func (r *DingoNodeReconciler) refreshForgeStatus(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) {
 	bp := dn.Spec.BlockProducer
-	if bp == nil {
+	isBP := bp != nil
+	if desiredReplicas(dn) == 0 {
+		// There is no running node whose pipeline can be observed. Drop an old
+		// result from before scale-down, then report the current state as unknown.
+		meta.RemoveStatusCondition(&dn.Status.Conditions, condPipelineHealthy)
+		setPipelineUnknown(dn, "NoReplicas", "node has no desired replicas")
 		return
 	}
 	if r.ForgeStatus == nil {
-		setRotationDueUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
+		setPipelineUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
+		if isBP {
+			setRotationDueUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
+		}
 		return
 	}
 	logger := log.FromContext(ctx)
-	url := fmt.Sprintf(
-		"http://%s.%s.svc.cluster.local:%d/metrics",
-		dn.Name,
-		dn.Namespace,
-		metricsPort,
-	)
-	st, err := r.ForgeStatus.Fetch(ctx, url)
-	if err != nil {
-		logger.V(1).Info("forge status unavailable", "error", err.Error())
-		setRotationDueUnknown(dn, "MetricsUnavailable", "forge status metrics could not be fetched")
+	// Scrape through the headless Service, not the client Service. The client
+	// Service gates its endpoints on readiness, so KES status would disappear
+	// exactly when /readyz fails -- a node behind, stalled or catching up is
+	// when its remaining KES periods matter most. The headless Service sets
+	// PublishNotReadyAddresses, so an unready node stays scrapable.
+	var statuses []*forgestatus.Status
+	var scrapeFailed bool
+	for replica := range desiredReplicas(dn) {
+		podName := fmt.Sprintf("%s-%d", dn.Name, replica)
+		url := fmt.Sprintf(
+			"http://%s.%s.%s.svc.cluster.local:%d/metrics",
+			podName,
+			resources.HeadlessServiceName(dn),
+			dn.Namespace,
+			metricsPort,
+		)
+		st, err := r.ForgeStatus.Fetch(ctx, url)
+		if err != nil {
+			logger.V(1).Info("forge status unavailable", "pod", podName, "error", err.Error())
+			scrapeFailed = true
+			continue
+		}
+		if st == nil {
+			logger.V(1).Info("forge status unavailable", "pod", podName, "error", "empty metrics")
+			scrapeFailed = true
+			continue
+		}
+		statuses = append(statuses, st)
+	}
+	if scrapeFailed || len(statuses) != int(desiredReplicas(dn)) {
+		setPipelineUnknown(dn, "MetricsUnavailable", "metrics could not be fetched from every node replica")
+		if isBP {
+			setRotationDueUnknown(dn, "MetricsUnavailable", "forge status metrics could not be fetched")
+		}
 		return
 	}
-	if st == nil || !st.HasKESData {
+	aggregate := &forgestatus.Status{
+		HasPipelineStuckMetric:  true,
+		HasPipelineHaltedMetric: true,
+	}
+	for _, st := range statuses {
+		aggregate.PipelineStuck = aggregate.PipelineStuck || st.PipelineStuck
+		aggregate.PipelineHalted = aggregate.PipelineHalted || st.PipelineHalted
+		aggregate.HasPipelineStuckMetric =
+			aggregate.HasPipelineStuckMetric && st.HasPipelineStuckMetric
+		aggregate.HasPipelineHaltedMetric =
+			aggregate.HasPipelineHaltedMetric && st.HasPipelineHaltedMetric
+	}
+	setPipelineCondition(dn, aggregate)
+	if !isBP {
+		return
+	}
+	// Block producers have one replica in v1; keep KES status tied to that
+	// replica's keys rather than an aggregate pipeline observation.
+	st := statuses[0]
+	if !st.HasKESData {
 		setRotationDueUnknown(dn, "KESMetricsUnavailable", "KES metrics are not available")
 		return
 	}
@@ -545,6 +614,62 @@ func setRotationDueUnknown(dn *dingov1alpha1.DingoNode, reason, message string) 
 		Type: condRotationDue, Status: metav1.ConditionUnknown, Reason: reason,
 		Message: message, ObservedGeneration: dn.Generation,
 	})
+}
+
+func setPipelineUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
+	// Keep a confirmed unhealthy observation until a successful scrape includes
+	// both gauges. A transient scrape failure or an older node without the
+	// gauges must not erase a known wedge and clear Degraded.
+	if meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy) {
+		return
+	}
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type: condPipelineHealthy, Status: metav1.ConditionUnknown, Reason: reason,
+		Message: message, ObservedGeneration: dn.Generation,
+	})
+}
+
+// setPipelineCondition reports whether the node is still following the chain.
+//
+// Both gauges mean the node keeps running while no longer applying blocks. A
+// block producer in that state goes on forging at its leader slots and nobody
+// adopts the result, so the condition is surfaced rather than folded into
+// Ready: the pod is genuinely ready, and the chain is genuinely not advancing.
+// Halted is terminal and ranks above stuck.
+func setPipelineCondition(dn *dingov1alpha1.DingoNode, st *forgestatus.Status) {
+	cond := metav1.Condition{
+		Type: condPipelineHealthy, Status: metav1.ConditionTrue,
+		Reason: "Following", Message: "ledger pipeline is following the chain",
+		ObservedGeneration: dn.Generation,
+	}
+	switch {
+	case st.PipelineHalted:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "LedgerPipelineHalted"
+		cond.Message = "ledger pipeline stopped on an unrepairable validation " +
+			"failure; the node is no longer following the chain and requires " +
+			"operator intervention"
+	case st.PipelineStuck:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "LedgerPipelineStuck"
+		cond.Message = "ledger pipeline is restarting without tip progress and " +
+			"requires operator intervention"
+	case !st.HasPipelineStuckMetric || !st.HasPipelineHaltedMetric:
+		setPipelineUnknown(
+			dn,
+			"PipelineMetricsUnavailable",
+			"node metrics do not include ledger pipeline health gauges",
+		)
+		return
+	}
+	if cond.Status == metav1.ConditionFalse {
+		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+			Type: condDegraded, Status: metav1.ConditionTrue,
+			Reason: cond.Reason, Message: cond.Message,
+			ObservedGeneration: dn.Generation,
+		})
+	}
+	meta.SetStatusCondition(&dn.Status.Conditions, cond)
 }
 
 // refreshOnChainCounter reads the authoritative on-chain opcert counter from

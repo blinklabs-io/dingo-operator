@@ -289,6 +289,14 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 			Name:  "CARDANO_SHUTDOWN_TIMEOUT",
 			Value: dingoShutdownTimeout(dn).String(),
 		},
+		// Dingo binds the Prometheus listener to loopback by default as of
+		// v0.81.0 (dingo #4922), so metrics are unreachable across the pod
+		// boundary unless this is set. The PodMonitor and the operator's own
+		// KES scrape both read this port over the network, and a node that
+		// serves no metrics reports RotationDue=Unknown indefinitely instead
+		// of failing loudly. Exposure stays bounded by the NetworkPolicy,
+		// which admits only clients labelled for metrics access.
+		{Name: "DINGO_METRICS_BIND_ADDR", Value: "0.0.0.0"},
 	}
 	if dn.Spec.NetworkMagic != nil {
 		env = append(env, corev1.EnvVar{

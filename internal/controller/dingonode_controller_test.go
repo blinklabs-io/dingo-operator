@@ -58,6 +58,19 @@ func (f fakeForgeStatusFetcher) Fetch(context.Context, string) (*forgestatus.Sta
 	return nil, f.err
 }
 
+// urlRecordingFetcher captures the scrape URL the reconciler builds.
+type urlRecordingFetcher struct {
+	url string
+}
+
+func (f *urlRecordingFetcher) Fetch(
+	_ context.Context,
+	metricsURL string,
+) (*forgestatus.Status, error) {
+	f.url = metricsURL
+	return nil, errors.New("unused")
+}
+
 // TestMain silences controller-runtime's logging. Without a logger set,
 // controller-runtime's delegating sink prints "log.SetLogger(...) was never
 // called" plus a stack trace the first time anything logs more than 30 seconds
@@ -148,9 +161,11 @@ func TestReconcileRelay(t *testing.T) {
 	assert.Equal(t, wantIPFamilies, svc.Spec.IPFamilies)
 	assert.Equal(t, wantIPFamilyPolicy, svc.Spec.IPFamilyPolicy)
 
-	// A relay must NOT get a block-producer PDB or NetworkPolicy.
+	// A relay gets no block-producer PDB, but its metrics listener is
+	// restricted by a NetworkPolicy.
 	err := c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &policyv1.PodDisruptionBudget{})
 	assert.True(t, apierrors.IsNotFound(err))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &networkingv1.NetworkPolicy{}))
 }
 
 func TestReconcileLegacyImagePreservesSecurityContext(t *testing.T) {
@@ -280,6 +295,24 @@ func blockProducerNode(
 			},
 		},
 	}
+}
+
+// KES status must stay observable while a node is unready. The client Service
+// gates endpoints on readiness, so scraping it would blind the operator exactly
+// when a node is behind, stalled or catching up -- when remaining KES periods
+// matter most. The headless Service publishes not-ready addresses.
+func TestRefreshForgeStatusScrapesHeadlessService(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	fetcher := &urlRecordingFetcher{}
+	r := &DingoNodeReconciler{ForgeStatus: fetcher}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Equal(
+		t,
+		"http://bp-0.bp-headless.bp-ns.svc.cluster.local:12798/metrics",
+		fetcher.url,
+	)
 }
 
 func TestRefreshForgeStatusMarksRotationUnknownWhenMetricsFail(t *testing.T) {
@@ -1232,4 +1265,201 @@ func TestReconcileInvalidSpecSetsDegraded(t *testing.T) {
 	// No StatefulSet should have been created for an invalid spec.
 	err := c.Get(ctx, types.NamespacedName{Name: "bad", Namespace: "bad-ns"}, &appsv1.StatefulSet{})
 	assert.True(t, apierrors.IsNotFound(err))
+}
+
+func relayNodeForStatus(name, ns string) *dingov1alpha1.DingoNode {
+	return &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+}
+
+// statusFetcher returns a fixed Status, standing in for a live scrape.
+type statusFetcher struct {
+	st       *forgestatus.Status
+	sequence []*forgestatus.Status
+	urls     []string
+}
+
+func (f *statusFetcher) Fetch(
+	_ context.Context,
+	url string,
+) (*forgestatus.Status, error) {
+	f.urls = append(f.urls, url)
+	if len(f.sequence) > 0 {
+		idx := len(f.urls) - 1
+		if idx < len(f.sequence) {
+			return f.sequence[idx], nil
+		}
+	}
+	return f.st, nil
+}
+
+// A wedged ledger pipeline keeps the process live and the pod Ready, so it is
+// invisible to pod state and to the kubelet probes. It must surface as an
+// explicit condition, and as Degraded, or a block producer goes on forging
+// blocks nobody adopts.
+func TestRefreshForgeStatusReportsPipelineWedge(t *testing.T) {
+	tests := []struct {
+		name       string
+		st         *forgestatus.Status
+		wantStatus metav1.ConditionStatus
+		wantReason string
+		degraded   bool
+	}{
+		{
+			name: "following",
+			st: &forgestatus.Status{
+				HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+			},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: "Following",
+		},
+		{
+			name:       "stuck",
+			st:         &forgestatus.Status{PipelineStuck: true},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: "LedgerPipelineStuck",
+			degraded:   true,
+		},
+		{
+			name: "halted outranks stuck",
+			st: &forgestatus.Status{
+				PipelineStuck:  true,
+				PipelineHalted: true,
+			},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: "LedgerPipelineHalted",
+			degraded:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+			r := &DingoNodeReconciler{ForgeStatus: &statusFetcher{st: tt.st}}
+
+			r.refreshForgeStatus(context.Background(), dn)
+
+			cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(
+				t,
+				tt.degraded,
+				meta.IsStatusConditionTrue(dn.Status.Conditions, condDegraded),
+			)
+		})
+	}
+}
+
+// Relays wedge too, and a relay serving a stale chain is the thing every
+// downstream client reads.
+func TestRefreshForgeStatusWatchesRelays(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	r := &DingoNodeReconciler{
+		ForgeStatus: &statusFetcher{st: &forgestatus.Status{
+			PipelineHalted:         true,
+			HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+		}},
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.True(
+		t,
+		meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy),
+	)
+}
+
+func TestRefreshForgeStatusAggregatesRelayReplicas(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	dn.Spec.Replicas = new(int32(2))
+	fetcher := &statusFetcher{sequence: []*forgestatus.Status{
+		{HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true},
+		{
+			HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+			PipelineStuck: true,
+		},
+	}}
+	r := &DingoNodeReconciler{ForgeStatus: fetcher}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Equal(t, []string{
+		"http://relay-0.relay-headless.relay-ns.svc.cluster.local:12798/metrics",
+		"http://relay-1.relay-headless.relay-ns.svc.cluster.local:12798/metrics",
+	}, fetcher.urls)
+	assert.True(t, meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy))
+}
+
+func TestRefreshForgeStatusZeroRelayReplicasIsUnknown(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	dn.Spec.Replicas = new(int32(0))
+	fetcher := &statusFetcher{st: &forgestatus.Status{
+		HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+	}}
+	r := &DingoNodeReconciler{ForgeStatus: fetcher}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Empty(t, fetcher.urls, "there are no replicas to scrape")
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+	assert.Equal(t, "NoReplicas", cond.Reason)
+}
+
+func TestRefreshForgeStatusMissingPipelineGaugesIsUnknown(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	r := &DingoNodeReconciler{ForgeStatus: &statusFetcher{st: &forgestatus.Status{}}}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+	assert.Equal(t, "PipelineMetricsUnavailable", cond.Reason)
+}
+
+// An unreadable scrape is unknown, never healthy. Reading a failed fetch as
+// "no wedge reported" is how wedge detection goes blind precisely when a node
+// is in trouble.
+func TestRefreshForgeStatusUnreadableMetricsAreNotHealthy(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	r := &DingoNodeReconciler{
+		ForgeStatus: fakeForgeStatusFetcher{err: errors.New("connection refused")},
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+}
+
+func TestRefreshForgeStatusScrapeFailurePreservesUnhealthyCondition(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	dn.Status.Conditions = append(dn.Status.Conditions, metav1.Condition{
+		Type: condPipelineHealthy, Status: metav1.ConditionFalse,
+		Reason: "LedgerPipelineHalted", Message: "terminal pipeline failure",
+	})
+	dn.Status.Conditions = append(dn.Status.Conditions, metav1.Condition{
+		Type: condDegraded, Status: metav1.ConditionTrue,
+		Reason: "LedgerPipelineHalted", Message: "terminal pipeline failure",
+	})
+	r := &DingoNodeReconciler{
+		ForgeStatus: fakeForgeStatusFetcher{err: errors.New("connection refused")},
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "LedgerPipelineHalted", cond.Reason)
+	assert.True(t, meta.IsStatusConditionTrue(dn.Status.Conditions, condDegraded))
 }

@@ -30,8 +30,8 @@ The operator Helm chart lives in the separate `helm-charts` repo under
 
 ## Toolchain (important)
 
-- The module targets **`go 1.26.0`**; the default `go` on this machine may be
-  older. Use **`go1.26.1`** explicitly, or prepend its GOROOT to `PATH`:
+- The module targets `go 1.26.0`; the default `go` on this machine may be
+  older. Use `go1.26.1` explicitly, or prepend its GOROOT to `PATH`:
   `export PATH="$(go1.26.1 env GOROOT)/bin:$PATH"` so `controller-gen`'s
   `go list` and `golangci-lint` use the right toolchain.
 - `make tools` installs `controller-gen` and `setup-envtest` into `./bin`.
@@ -53,26 +53,26 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
 
 ## Testing on the local cluster
 
-- A single-node **k3s** cluster is available (`kubectl` context `default`).
-  It has `local-path` storage only and **no cert-manager, prometheus-operator,
-  or external-secrets** — so PodMonitor creation is gated on CRD presence and
+- A single-node k3s cluster is available (`kubectl` context `default`).
+  It has `local-path` storage only and no cert-manager, prometheus-operator,
+  or external-secrets — so PodMonitor creation is gated on CRD presence and
   there are no admission webhooks in v1.
-- For end-to-end block production, use the Dingo **two-pool devnet** in the
+- For end-to-end block production, use the Dingo two-pool devnet in the
   Dingo repo: `internal/test/devnet/` (`run-tests.sh`). It generates fresh
   genesis + pool keys and forges blocks; point a `DingoNode` at it to validate
   rotation/forging.
 - `make e2e` is this repo's own end-to-end suite, and the only test that runs a
-  real node: envtest has no kubelet, so it never starts a pod. It needs **`k3d`
-  and Docker**, builds and side-loads the operator image, brings up a throwaway
+  real node: envtest has no kubelet, so it never starts a pod. It needs `k3d`
+  and Docker, builds and side-loads the operator image, brings up a throwaway
   cluster (`hack/e2e/k3d-up.sh`) and runs `test/e2e/` — a generated single-pool
   devnet forging real blocks, plus the Assisted-rotation roll and rejection
   paths. Use it for any change to key handling, rotation, or workload
   rendering.
-  - It **cannot touch the k3s cluster above**: `k3d-up.sh` passes
+  - It cannot touch the k3s cluster above: `k3d-up.sh` passes
     `--kubeconfig-update-default=false` and writes a dedicated kubeconfig to
     `.e2e/` (git-ignored), and the harness refuses to run against any context
     but `k3d-<cluster>`.
-  - Two env vars skip teardown and are **not** interchangeable.
+  - Two env vars skip teardown and are not interchangeable.
     `E2E_KEEP_UP=1` leaves the cluster *and* every test's namespace up, for
     debugging by hand. `E2E_SKIP_TEARDOWN=1` leaves only the cluster up — this
     is what CI sets so `hack/e2e/collect-diagnostics.sh` has something to
@@ -85,7 +85,7 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   - Budget ~25 minutes (measured: `go test` 1362s, whole `make e2e` 1463s,
     against a 55m timeout). The three-layer deadline budget is documented in
     `test/e2e/harness_test.go`.
-  - **Linting the suite needs two flags, not one.** `test/e2e` is almost all
+  - Linting the suite needs two flags, not one. `test/e2e` is almost all
     `_test.go` behind the `e2e` build tag, and `.golangci.yml` sets
     `run.tests=false`, which skips `_test.go` regardless of tags — so the build
     tag alone lints nothing. `make lint` and `.github/workflows/golangci-lint.yml`
@@ -94,22 +94,22 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
 
 ## Conventions & gotchas
 
-- **License header**: every `.go` file starts with the 13-line Apache 2.0 block
+- License header: every `.go` file starts with the 13-line Apache 2.0 block
   (`// Copyright 2026 Blink Labs Software`, no SPDX). Generated files use
   `hack/boilerplate.go.txt`.
-- **Formatting**: `golangci-lint fmt` (gci, gofmt, gofumpt, goimports) then
+- Formatting: `golangci-lint fmt` (gci, gofmt, gofumpt, goimports) then
   `golines --max-len=80`. Import order: stdlib, then everything else
   alphabetically (blinklabs before k8s.io before sigs.k8s.io).
-- **Lint is strict**: `golangci-lint` config schema v2; staticcheck **SA1019
-  (deprecations) fails the build** — do not use deprecated APIs. This is why
+- Lint is strict: `golangci-lint` config schema v2; staticcheck SA1019
+  (deprecations) fails the build — do not use deprecated APIs. This is why
   resource application uses `controllerutil.CreateOrUpdate` (with explicit
   immutable-field handling) rather than the deprecated `client.Apply` patch
   type. `nilaway` and `modernize` run separately.
-- **Tests**: table-driven with `testify`; controller tests use `envtest`
+- Tests: table-driven with `testify`; controller tests use `envtest`
   (self-skip when `KUBEBUILDER_ASSETS` is unset).
-- **Commits**: Conventional Commits, GPG-signed (required for all Blink repos
-  except `skunkworks`). **Only commit when the user asks.**
-- **securityContext defaults**: managed Dingo pods always run non-root with
+- Commits: Conventional Commits, GPG-signed (required for all Blink repos
+  except `skunkworks`). Only commit when the user asks.
+- securityContext defaults: managed Dingo pods always run non-root with
   numeric IDs because `runAsNonRoot` cannot verify the image's named `dingo`
   user. The canonical `ghcr.io/blinklabs-io/dingo` image uses `100:101` for
   `runAsUser:runAsGroup` and `fsGroup` through v0.69.x, including `/ipc`
@@ -120,7 +120,7 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   non-root compatibility default. Set `spec.podSecurityContext` when a custom
   or unrecognized image uses different IDs; an explicit context is preserved
   unchanged.
-- **Cold keys never enter the cluster.** The operator issues opcerts by sending
+- Cold keys never enter the cluster. The operator issues opcerts by sending
   the signable to a pluggable cold-signer (Bursa); it generates KES/VRF keys
   itself but never holds the cold key.
 
@@ -132,7 +132,7 @@ concerns (keys, rotation, HA) run behind dedicated internal paths. Each node is
 a StatefulSet (+ PVC) with a `dingo mithril sync` init container, headless +
 client Services, a topology ConfigMap, and — for block producers — a PDB and a
 default-deny NetworkPolicy. Validation is CRD OpenAPI schema + controller-side
-checks + status conditions; **no admission webhooks in v1** (k3s has no
+checks + status conditions; no admission webhooks in v1 (k3s has no
 cert-manager).
 
 ### Dingo constraints that shape the design
@@ -140,11 +140,11 @@ cert-manager).
 - KES auto-evolves in memory while forging — no action within an opcert's
   ~93-day window.
 - OpCert rotation today = new KES key + new opcert (counter+1, cold-signed) →
-  replace mounted files → **restart the pod**. Dingo has no SIGHUP/hot-reload.
+  replace mounted files → restart the pod. Dingo has no SIGHUP/hot-reload.
 - Startup validation is strict: opcert not expired/future, VRF hash matches the
   pool's on-chain registration, and opcert counter ≥ the on-chain observed
   counter (guards `CounterOverIncrementedOCERT`).
-- The authoritative on-chain opcert counter is readable **now**, over
+- The authoritative on-chain opcert counter is readable now, over
   node-to-client local-state-query: gouroboros
   `localstatequery.Client.GetOpCertCounters()` returns a map keyed by pool
   cold-key hash. Dingo serves NtC over TCP on its private port (3002) as well as
@@ -156,8 +156,8 @@ cert-manager).
     binds NtC to `127.0.0.1` unless told otherwise) and the NetworkPolicy label
     `dingo.blinklabs.io/node-to-client=allowed` on the client pod (and its
     namespace, when it differs).
-- **Dingo's graceful shutdown is budgeted 30s by default, and so is
-  Kubernetes'.** Dingo traps SIGTERM and flushes its database with a
+- Dingo's graceful shutdown is budgeted 30s by default, and so is
+  Kubernetes'. Dingo traps SIGTERM and flushes its database with a
   `shutdownTimeout` that defaults to 30s (`internal/config/config.go`), which is
   exactly Kubernetes' default `terminationGracePeriodSeconds` — so on the
   defaults kubelet SIGKILLs at the moment Dingo's own deadline expires, and a
@@ -172,24 +172,56 @@ cert-manager).
     work only because those fields carry an explicit `envconfig:"DINGO_..."`
     tag that envconfig falls back to. `ShutdownTimeout` has no such tag, so
     `DINGO_SHUTDOWN_TIMEOUT` would be silently ignored.
-- **Dingo v0.70.13+ health probes distinguish process health from chain
-  readiness.** The operator uses `/healthz` for startup and liveness, so a
+- Dingo v0.70.13+ health probes distinguish process health from chain
+  readiness. The operator uses `/healthz` for startup and liveness, so a
   node remains alive while it bootstraps or catches up. `/readyz` drives pod
   readiness and returns ready only when the chain tip is within Dingo's
   `healthReadyGapSlots` tolerance (default 1000 slots). This removes stale
   nodes from client Services without restarting them. The dedicated listener
   is on port 12799 and is not added to either Service.
-- **Dingo v0.75.0 adds useful sync diagnostics to Prometheus.** The existing
+- Dingo v0.75.0 adds useful sync diagnostics to Prometheus. The existing
   PodMonitor already scrapes `/metrics`, so blockfetch recent delay and fetch
   duration, plus ledger block-apply batch latency, are available without an
   operator API change. These complement the KES/opcert metrics used for status
   and rotation checks.
-- **A Mithril bootstrap peaks at roughly twice the node's steady-state disk.**
+- Probes cannot see a wedged node, so the controller watches Dingo's own
+  wedge gauges. A ledger pipeline that stops following the chain keeps the
+  process live and the pod Ready; a block producer in that state goes on
+  forging at its leader slots and nobody adopts the result.
+  `dingo_ledger_pipeline_stuck` and `dingo_ledger_pipeline_halted` (halted is
+  terminal) are scraped for every node, relays included, and drive the
+  `LedgerPipelineHealthy` condition plus `Degraded`. `Ready` deliberately still
+  reports StatefulSet truth: the pod really is ready and the chain really is not
+  advancing, and collapsing the two would hide which one failed. An unreadable
+  scrape sets the condition `Unknown`, never True — reading a failed fetch as
+  "no wedge reported" is how this detection goes blind exactly when it matters.
+- The metrics listener must be bound explicitly. Dingo defaults
+  `metricsBindAddr` to loopback as of v0.81.0, so the operator sets
+  `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and
+  the operator's own KES and wedge scrapes all fail across the pod boundary and
+  the node reports `RotationDue=Unknown` indefinitely. The block-producer and
+  relay policies allow this listener only to clients carrying the metrics
+  access label. The scrape goes through the *headless* Service: the client
+  Service gates endpoints on readiness, which would hide KES and wedge state
+  precisely while a node is behind, stalled or catching up.
+- Mithril completion is tracked by markers, not by the database file.
+  `.mithril-bootstrap-started` and `.mithril-bootstrap-complete` live in the data
+  dir. A restore interrupted after `metadata.sqlite` appears but before the chain
+  is complete is indistinguishable from success by file existence, and the init
+  container used to take the skip branch and hand the node a partial database.
+  Resuming is safe: `dingo mithril sync` pins its artifact and records
+  per-immutable-file progress, so it continues rather than restarting. Re-running
+  unconditionally is not an option, because catch-up against a complete database
+  is core-storage-mode only. A volume holding a database and no markers predates
+  them and is adopted as complete. `dingo serve` independently refuses to start
+  on an incomplete sync, so a marker bug fails loudly rather than forging on
+  partial state.
+- A Mithril bootstrap peaks at roughly twice the node's steady-state disk.
   `dingo mithril sync` keeps the compressed immutable archives and the extracted
   chain on the data volume simultaneously, reclaiming the archives only once the
   load completes (`CleanupAfterLoad` / `DINGO_MITHRIL_CLEANUP` defaults to
   true, so the operator need not set it). Measured on preview with Dingo 0.69.0:
-  **34Gi peak, 19Gi steady, ratio 1.8** — 15Gi of that peak was cache, reclaimed
+  34Gi peak, 19Gi steady, ratio 1.8 — 15Gi of that peak was cache, reclaimed
   to 13Mi afterwards. So `spec.persistence.size` must be sized for the peak: at
   the 60Gi default the usable steady-state chain is about 34Gi, not 60Gi.
   - Figures are preview only. preprod and mainnet hold far more chain and need
@@ -202,14 +234,14 @@ cert-manager).
     a hostpath class such as k3s `local-path` does not enforce the request and
     consumes the node's disk instead, so undersizing shows up as a full node
     rather than a failed pod.
-- **Genesis creation was not restartable before Dingo 0.68.0.** Killing a node
+- Genesis creation was not restartable before Dingo 0.68.0. Killing a node
   while it is still writing genesis into its data directory left orphaned
   `pool_registration` / `pool_registration_owner` rows in the SQLite metadata
   DB; every subsequent start died on `create genesis pool registration:
   constraint failed: FOREIGN KEY constraint failed` and CrashLooped forever,
   with the PVC unrecoverable without wiping it. Filed as dingo
-  [#2959](https://github.com/blinklabs-io/dingo/issues/2959) and **fixed in
-  0.68.0** by [#2975](https://github.com/blinklabs-io/dingo/pull/2975), which
+  [#2959](https://github.com/blinklabs-io/dingo/issues/2959) and fixed in
+  0.68.0 by [#2975](https://github.com/blinklabs-io/dingo/pull/2975), which
   made `SetGenesisStaking` idempotent.
   - This matters to the operator because *every* rotation, config-bundle change
     and reschedule rolls the pod, so a block producer rolled during its first
@@ -223,30 +255,30 @@ cert-manager).
 `rotation.mode`: `MonitorOnly` (status/events only), `Assisted` (see below), or
 `Auto`.
 
-**Key-material validation runs for every block producer, in all three modes**
+Key-material validation runs for every block producer, in all three modes
 (`internal/controller/keys.go`) — `rotation.mode` only governs who *issues* the
 certificate, never whether a delivered one is checked before it can reach the
 node. `Assisted` is therefore "validate an externally-delivered opcert and roll
 the pod onto it":
 
-- **Validated**: all three files present; `kes.skey`/`vrf.skey` are well-formed
+- Validated: all three files present; `kes.skey`/`vrf.skey` are well-formed
   text envelopes of the right kind; the opcert envelope parses and its
   cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the signing
   cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so another
-  pool's self-consistent certificate cannot pass — **this leg is skipped when
-  `poolId` is empty**, which the CRD permits; the delivered `kes.skey` is
+  pool's self-consistent certificate cannot pass — this leg is skipped when
+  `poolId` is empty, which the CRD permits; the delivered `kes.skey` is
   exactly 608 bytes and its derived public key equals the certificate's KES
   vkey, so a new opcert shipped without its matching KES key is refused rather
   than CrashLooping the pod on Dingo's own "KES verification key mismatch";
   `vrf.skey` is a 32-byte seed or the 64-byte cardano-cli seed||pubkey form
   (matching `dingo/keystore/keyfile.go`); the counter does not regress below
-  `status.opcert.onDiskCounter` **or below the on-chain counter** (see below);
+  `status.opcert.onDiskCounter` or below the on-chain counter (see below);
   and the KES window covers the node's current period.
   - The KES length check must precede the derivation: gouroboros
     `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
     check and panics on a short key.
-- **The KES period checks — both of them — only run once
-  `status.kes.currentPeriod > 0`.** Zero means "not scraped yet", not "period
+- The KES period checks — both of them — only run once
+  `status.kes.currentPeriod > 0`. Zero means "not scraped yet", not "period
   0", and failing on it would refuse a healthy node's own valid keys on the
   first reconcile. The consequence is real and worth knowing: before the
   operator's first successful metrics scrape, an *already-expired* opcert is
@@ -254,24 +286,24 @@ the pod onto it":
   as a CrashLoop. Once the guard is satisfied, the expiry (upper) bound is
   unconditional, because mounting a dead opcert can only CrashLoop the one
   forging pod. The "start period is in the future" lower bound is additionally
-  **skipped when the delivered counter advances past `onDiskCounter`**:
+  skipped when the delivered counter advances past `onDiskCounter`:
   `status.kes.currentPeriod` is only as fresh as the last successful metrics
   scrape and freezes if scraping breaks, and refusing a correct bundle against a
   stale period would strand the node on keys it can never renew. A forward
   counter is unambiguous evidence of a deliberate rotation, and Dingo still
   rejects a future-dated opcert at startup.
-- **On acceptance**: `KeysValid=True`/`OpCertAccepted`, the certificate's issue
+- On acceptance: `KeysValid=True`/`OpCertAccepted`, the certificate's issue
   number is published as `status.opcert.onDiskCounter`, and the keys-checksum
   pod annotation changes, which rolls the pod.
-- **On rejection**: `KeysValid=False`/`OpCertRejected`, `Degraded=True` (the
+- On rejection: `KeysValid=False`/`OpCertRejected`, `Degraded=True` (the
   only signal in `kubectl get dingonode`, since the node keeps forging and
   readiness stays green), plus a Warning Event. The reconcile carries the
   checksum already on the live pod template forward so the rendered template
-  stays byte-identical and **the operator does not roll the pod**. (An empty
+  stays byte-identical and the operator does not roll the pod. (An empty
   checksum would *remove* the annotation — itself a template change — and roll
   the pod onto the rejected keys.) The reconcile does not fail: last-known-good
   is the safe state.
-  - **What this does and does not protect.** An init container copies the Secret
+  - What this does and does not protect. An init container copies the Secret
     into a memory-backed `/keys` volume with owner-only permissions. The running
     pod therefore keeps its staged files when kubelet refreshes the source
     Secret, not just the keys already loaded by the process. Refusing a bundle
@@ -280,23 +312,23 @@ the pod onto it":
     `kubectl delete pod` stages the Secret's current contents, and Dingo's
     startup validation turns a rejected bundle into a CrashLoop. Fix the Secret;
     do not leave a refused bundle sitting in it.
-- **The on-chain counter floor.** `internal/onchain` dials the node's
+- The on-chain counter floor. `internal/onchain` dials the node's
   node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
   pool's counter as `status.opcert.onChainCounter` (with
   `status.opcert.onChainCounterAt`). Validation then refuses a delivered opcert
-  whose counter is **below** that value: the chain has already accepted a higher
+  whose counter is below that value: the chain has already accepted a higher
   certificate, so nothing forged with this one can be adopted. A counter above
   `onchain.MaxPlausibleCounter` is discarded rather than enforced — used as a
   floor, a wrong-but-huge value would invert fail-open into refusing every
   rotation.
-  - **Fail open, always.** Unknown counter → today's behaviour (the on-disk
+  - Fail open, always. Unknown counter → today's behaviour (the on-disk
     floor only). Every way the counter can be missing — node absent, starting,
     syncing, unreachable, `nodeToClient.enabled` false, pool has never minted —
     is a normal state, not evidence against the bundle. Refusing rotations
     whenever the node is unreachable would strand an operator mid-incident, and
     Dingo re-checks the bound at startup regardless. Same reasoning as the
     narrowed KES lower bound above.
-  - **Stale values are not enforced.** Only an observation newer than
+  - Stale values are not enforced. Only an observation newer than
     `onChainCounterMaxAge` (15 min, ~7 requeue intervals) is a floor. The bound
     is not about monotonicity — the counter only rises, so an old reading is
     still a valid lower bound — but about provenance: a repoint at another
@@ -304,29 +336,29 @@ the pod onto it":
     and neither updates it. (A `poolId` edit is handled exactly rather than by
     the age bound — see below.) A failed read never *clears* the value, for the
     same reason `status.kes.currentPeriod` is not cleared.
-  - **Provenance is recorded, not assumed.** A successful read also stores the
+  - Provenance is recorded, not assumed. A successful read also stores the
     pool it was read for in `status.opcert.onChainCounterPoolId`, and
     `onChainFloor` enforces a counter only for the pool it names. Editing
     `spec.blockProducer.poolId` therefore discards the observation on the next
     reconcile instead of leaving the previous pool's counter enforced until it
     ages out.
-  - **Ordering: the fetch runs *before* `reconcileResources`,** in `Reconcile`
+  - Ordering: the fetch runs *before* `reconcileResources`, in `Reconcile`
     itself — not in `reconcileStatus` with the metrics scrape, because
     `reconcileResources` is what validates the bundle and acts on the verdict.
     Be exact about what that buys, because it differs by case:
-    - **StatefulSet already exists** — a genuine roll-prevention: the live
+    - StatefulSet already exists — a genuine roll-prevention: the live
       keys-checksum is carried forward, the pod template stays byte-identical,
       and the process keeps forging on its loaded keys.
-    - **Fresh cluster, no StatefulSet yet** — nothing is prevented.
+    - Fresh cluster, no StatefulSet yet — nothing is prevented.
       `reconcileResources` applies the StatefulSet unconditionally, the keys
       Secret is mounted, and Dingo CrashLoops on the below-chain opcert exactly
-      as it would have. What the ordering buys here is **correct signalling** —
+      as it would have. What the ordering buys here is correct signalling —
       `KeysValid=False`, `Degraded`, a Warning Event, no published
       `onDiskCounter` — rather than the operator reporting a healthy rotation it
       had not checked. Same distinction as "refusing declines to initiate a roll,
       it does not fence one" above.
-  - **One dial per node per `onChainCounterRefreshInterval`**
-    (`onChainCounterMaxAge/3` = 5 min), keyed on the last **attempt**, held in
+  - One dial per node per `onChainCounterRefreshInterval`
+    (`onChainCounterMaxAge/3` = 5 min), keyed on the last attempt, held in
     memory (`onChainAttempts`), *not* on `status.opcert.onChainCounterAt`. The
     difference is the whole point: only the success path writes that timestamp,
     so gating on it leaves the failing case ungated — an operator whose pod is
@@ -349,7 +381,7 @@ the pod onto it":
     recovered node is not re-dialled at once. That is well inside
     `onChainCounterMaxAge` and fails open the same way the check already does,
     which is what makes five minutes the accepted trade.
-  - **Observability.** The `OnChainCounterAvailable` condition reports
+  - Observability. The `OnChainCounterAvailable` condition reports
     `Observed` / `QueryFailed` / `NodeNotReady` / `PoolNotOnChain` /
     `PoolIDUnset` / `InvalidPoolID` / `UnknownNetworkMagic` / `Disabled`, so the
     check cannot be silently inert; `QueryFailed` names the NetworkPolicy label a
@@ -361,21 +393,21 @@ the pod onto it":
     `nodeToClient.enabled: false` reports `Disabled` rather than removing the
     condition: an absent condition is indistinguishable from a feature that was
     never wired up.
-  - **Reaching the port.** `spec.blockProducer.nodeToClient.enabled` sets
+  - Reaching the port. `spec.blockProducer.nodeToClient.enabled` sets
     `CARDANO_PRIVATE_BIND_ADDR=0.0.0.0` (Dingo defaults to loopback, so without
     it no NetworkPolicy change can help), and *while it is true* the block
     producer's NetworkPolicy admits port 3002 from pods labelled
     `dingo.blinklabs.io/node-to-client=allowed` — plus a matching label on the
-    *namespace* when the client is in another one. That label is the **only** way
+    *namespace* when the client is in another one. That label is the only way
     in: declared `relayRefs` peers get the node-to-node port (3001) and nothing
     else. Peering is not consent to drive the node as a client, and the rule is
     gated on the spec field so the policy cannot grant a port the operator does
     not query. Both gates are off by default, so the default posture is
-    unchanged. **The operator's own Deployment must carry that label**; it lives
+    unchanged. The operator's own Deployment must carry that label; it lives
     in the `helm-charts` repo (`charts/dingo-operator/`), not here, so until the
     chart sets it (and labels the operator's namespace) the query fails closed to
     `QueryFailed` on any CNI that enforces NetworkPolicy.
-- **Still not checked**: over-incrementing *past* the chain
+- Still not checked: over-incrementing *past* the chain
   (`CounterOverIncrementedOCERT`). The operator knows the on-chain value but does
   not cap the delivered counter at `on-chain + 1`, because the value it holds can
   be stale by design and a legitimate multi-step rotation would be refused.
@@ -409,19 +441,19 @@ Full `Auto` rotation:
 - `SingleActive` (default): `replicas: 1` + pod anti-affinity + PDB +
   NetworkPolicy → exactly one forger; rely on reschedule.
 - `ActiveStandby`: keyless hot standby; the operator holds a Lease and only the
-  holder is keyed. Promotion is **fenced** (old primary confirmed down/keyless)
+  holder is keyed. Promotion is fenced (old primary confirmed down/keyless)
   so two nodes can never forge. `failover: Automatic | Manual` (default
   Automatic).
 
 ### Delivery phases (all on one review branch)
 
-- **P0 (done)** — scaffold + relays: CRD, manager, workloads, topology (incl.
+- P0 (done) — scaffold + relays: CRD, manager, workloads, topology (incl.
   external relays), Mithril, full CI + Helm chart.
-- **P1 (done)** — block producers: key mounting, KES/opcert status from metrics,
+- P1 (done) — block producers: key mounting, KES/opcert status from metrics,
   `MonitorOnly`/`Assisted` rotation, `SingleActive` HA.
-- **P2** — full auto rotation: Bursa cold-signer, counter-safe issuance, `Auto`
+- P2 — full auto rotation: Bursa cold-signer, counter-safe issuance, `Auto`
   mode (pod-restart rollout).
-- **P3** — `ActiveStandby` + credential hot-reload.
+- P3 — `ActiveStandby` + credential hot-reload.
 
 P2/P3 depend on the upstream work below; the cold-signer interface and
 rotation-due monitoring are already in place.
@@ -443,7 +475,7 @@ external cold-signer sign type); dingoctl
 [#17](https://github.com/blinklabs-io/bark/issues/17) (LifecycleService).
 
 gouroboros [#1890](https://github.com/blinklabs-io/gouroboros/issues/1890) (LSQ
-opcert counter) is **closed, shipped in v0.189.0, and now in use** —
+opcert counter) is closed, shipped in v0.189.0, and now in use —
 `internal/onchain` calls `GetOpCertCounters()` over node-to-client, so neither
 the validation floor nor P2's counter-safe issuance waits on dingo #2871. That
 issue is now a convenience (an `/ipc`-free HTTP counter would let the operator

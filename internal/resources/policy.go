@@ -67,13 +67,11 @@ const NodeToClientAccessAllowed = "allowed"
 // in another namespace must label both their pod and namespace.
 const MetricsAccessLabel = "dingo.blinklabs.io/metrics"
 
-// BuildNetworkPolicy restricts inbound traffic to a block producer. When relay
-// refs are declared, node-to-node ingress (port 3001 only) is limited to those
-// relays; the node-to-client port is admitted only for clients carrying
-// NodeToClientAccessLabel, and only when the node actually serves NtC; metrics
-// scraping requires MetricsAccessLabel on clients and their namespace when
-// accessing another namespace. Egress is left open so the node can
-// reach DNS, peers, and Mithril aggregators.
+// BuildNetworkPolicy restricts inbound traffic to managed nodes. Relays accept
+// node-to-node traffic on port 3001 and metrics only from labelled clients.
+// Block producers additionally limit node-to-node ingress to declared relays,
+// and admit node-to-client only for opted-in clients when NtC is enabled.
+// Egress is left open so the node can reach DNS, peers, and Mithril aggregators.
 func BuildNetworkPolicy(
 	dn *dingov1alpha1.DingoNode,
 ) *networkingv1.NetworkPolicy {
@@ -88,7 +86,15 @@ func BuildNetworkPolicy(
 	}
 
 	var ingress []networkingv1.NetworkPolicyIngressRule
-	if refs := dn.Spec.Topology.RelayRefs; len(refs) > 0 {
+	if !IsBlockProducer(dn) {
+		relayPort := intstr.FromInt32(portRelay)
+		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{
+				Protocol: &tcp,
+				Port:     &relayPort,
+			}},
+		})
+	} else if refs := dn.Spec.Topology.RelayRefs; len(refs) > 0 {
 		// Relay peers get the node-to-node port and nothing else. They used to
 		// be handed the node-to-client port in the same rule, which was inert
 		// only because Dingo binds NtC to loopback: enabling the listener would
