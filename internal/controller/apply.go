@@ -148,6 +148,8 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			sts.Spec.Template = desired.Spec.Template
 			sts.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
 			sts.Spec.MinReadySeconds = desired.Spec.MinReadySeconds
+			retention := desired.Spec.PersistentVolumeClaimRetentionPolicy
+			sts.Spec.PersistentVolumeClaimRetentionPolicy = retention
 		}
 		return ctrl.SetControllerReference(dn, sts, r.Scheme)
 	})

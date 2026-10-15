@@ -146,3 +146,58 @@ Requires Go 1.26+. A local Cardano devnet for end-to-end testing lives in the
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+## Storage operations
+
+Increase `spec.persistence.size` to grow existing node data volumes:
+
+```yaml
+spec:
+  persistence:
+    size: 120Gi
+```
+
+The operator patches data PVC requests without replacing the StatefulSet, pods,
+PVCs, or bound volumes. The StorageClass and provisioner must support expansion.
+Kubernetes and the CSI driver control block-device and filesystem resizing; some
+drivers require a pod restart. The operator does not restart a producer to finish
+resizing.
+
+`StorageReady` reports capacity independently of pod readiness:
+
+| Reason | Meaning |
+| --- | --- |
+| `VolumesReady` | Existing data claims have their requested capacity. |
+| `ClaimsPending` | An active replica's data claim has not appeared yet. |
+| `ExpansionPending` | Capacity or filesystem resizing is pending. |
+| `VolumeResizeFailed` | A claim could not be read or expanded; the condition carries the API error. |
+
+Inspect the condition and PVC events when expansion is refused. Unsupported
+StorageClasses are not replaced. Decreasing the spec never shrinks existing
+volumes; reducing capacity requires a separate data migration.
+
+Claims are retained when replicas scale down or a DingoNode is deleted. Retained
+ordinals are included in later size reconciliations. PVCs do not acquire a
+DingoNode owner reference, so deleting a node does not garbage-collect its chain
+database. Provisioner reclaim policies still apply to explicit PVC deletion.
+
+StatefulSet claim templates remain immutable at their original size. A new
+ordinal on an existing StatefulSet initially requests that template size; the
+operator expands its claim on a subsequent reconciliation. Reconciliation polls
+every two minutes. Plan replica increases with this asynchronous delay in mind.
+
+### Sizing and health
+
+Size for growth and bootstrap peak usage. Mithril bootstrap can temporarily hold
+both compressed archives and extracted chain data. API storage mode builds more
+indexes and needs its own capacity and resource budget. Set CPU and memory
+requests for scheduling, and leave memory headroom for replay and epoch changes.
+
+Check `Ready`, `StorageReady`, and `LedgerPipelineHealthy` together. A healthy
+process or open API listener does not prove the node has caught up to its peers.
+
+The operator exposes relay, node-to-client, and metrics Service ports. API
+listener environment variables do not add API Service ports or ingress rules.
+UTxO RPC, Blockfrost, Mesh, Kupo, Bark, and Midnight Service exposure needs a
+separate operator API contract; standalone chart port values are not
+interchangeable with DingoNode environment overrides.

@@ -141,6 +141,7 @@ type onChainAttempt struct {
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
@@ -226,10 +227,15 @@ func (r *DingoNodeReconciler) Reconcile(
 		return ctrl.Result{}, err
 	}
 
+	storageErr := r.reconcileStorage(ctx, dn)
+
 	if err := r.reconcileStatus(ctx, dn); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	if storageErr != nil {
+		return ctrl.Result{}, storageErr
+	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
