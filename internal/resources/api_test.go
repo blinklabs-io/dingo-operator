@@ -77,7 +77,27 @@ func TestAPIExposure(t *testing.T) {
 					require.Len(t, rules, 1)
 					assert.Equal(
 						t,
-						labelledClientPeers(APIAccessLabel),
+						[]networkingv1.NetworkPolicyPeer{
+							{
+								PodSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"dingo.blinklabs.io/api": "allowed",
+									},
+								},
+							},
+							{
+								NamespaceSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"dingo.blinklabs.io/api": "allowed",
+									},
+								},
+								PodSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"dingo.blinklabs.io/api": "allowed",
+									},
+								},
+							},
+						},
 						rules[0].From,
 					)
 					assert.Equal(t, "0.0.0.0", env[l.hostEnv])
@@ -216,6 +236,37 @@ func TestAPIValidation(t *testing.T) {
 	}
 }
 
+func TestAPIIngressPeerValidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		peer networkingv1.NetworkPolicyPeer
+	}{
+		{name: "empty peer"},
+		{
+			name: "ip block with selectors",
+			peer: networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: "192.0.2.0/24"},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "gateway"},
+				},
+			},
+		},
+		{
+			name: "invalid CIDR",
+			peer: networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: "not-a-cidr"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dn := apiNode()
+			dn.Spec.APIs.IngressFrom = []networkingv1.NetworkPolicyPeer{tc.peer}
+			require.Error(t, ValidateAPIs(dn))
+		})
+	}
+}
+
 func TestAPITLSProjection(t *testing.T) {
 	dn := apiNode()
 	dn.Spec.APIs.UTxORPCTLSSecretRef = "rpc-tls"
@@ -227,7 +278,10 @@ func TestAPITLSProjection(t *testing.T) {
 			found = true
 			require.NotNil(t, vol.Secret)
 			assert.Equal(t, "rpc-tls", vol.Secret.SecretName)
-			assert.Len(t, vol.Secret.Items, 2)
+			assert.Equal(t, []corev1.KeyToPath{
+				{Key: "tls.crt", Path: "tls.crt"},
+				{Key: "tls.key", Path: "tls.key"},
+			}, vol.Secret.Items)
 		}
 	}
 	require.True(t, found)

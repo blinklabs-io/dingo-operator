@@ -74,6 +74,7 @@ func storageClaim(
 			},
 		},
 		Status: corev1.PersistentVolumeClaimStatus{
+			Phase: corev1.ClaimBound,
 			Capacity: corev1.ResourceList{
 				corev1.ResourceStorage: resource.MustParse(capacity),
 			},
@@ -146,6 +147,27 @@ func TestReconcileStorage(t *testing.T) {
 			assert.Equal(t, tc.reason, condition.Reason)
 		})
 	}
+}
+
+func TestReconcileStorageWaitsForPendingClaimCapacity(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dn := storageNode()
+	replicas := int32(1)
+	dn.Spec.Replicas = &replicas
+	pvc := storageClaim("data-relay-0", "60Gi", "60Gi")
+	pvc.Status = corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending}
+	c := fake.NewClientBuilder().WithObjects(pvc).Build()
+	r := &DingoNodeReconciler{Client: c}
+
+	require.NoError(t, r.reconcileStorage(ctx, dn))
+	condition := meta.FindStatusCondition(
+		dn.Status.Conditions,
+		condStorageReady,
+	)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, "ClaimsPending", condition.Reason)
 }
 
 func TestStorageExpansionConflictNeverShrinks(t *testing.T) {

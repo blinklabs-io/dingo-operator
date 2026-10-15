@@ -79,9 +79,14 @@ func (r *DingoNodeReconciler) reconcileStorage(
 		if err := r.expandClaim(ctx, pvc, size); err != nil {
 			return fail(fmt.Errorf("resize data claim %s: %w", pvc.Name, err))
 		}
-		if pvc.Status.Capacity.Storage().Cmp(
-			*pvc.Spec.Resources.Requests.Storage(),
-		) < 0 || claimResizePending(pvc) {
+		capacity := pvc.Status.Capacity.Storage()
+		requested := pvc.Spec.Resources.Requests.Storage()
+		if capacity == nil || pvc.Status.Phase != corev1.ClaimBound {
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = "ClaimsPending"
+			condition.Message = "waiting for data volume claims to bind"
+		} else if requested != nil && capacity.Cmp(*requested) < 0 ||
+			claimResizePending(pvc) {
 			condition.Status = metav1.ConditionFalse
 			condition.Reason = "ExpansionPending"
 			condition.Message = "waiting for data volume capacity or filesystem expansion"

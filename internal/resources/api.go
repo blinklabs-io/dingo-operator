@@ -17,6 +17,7 @@ package resources
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -84,6 +85,43 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 
 // ValidateAPIs rejects listener/Service disagreement before resources are changed.
 func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
+	if a := dn.Spec.APIs; a != nil {
+		for i, peer := range a.IngressFrom {
+			selectors := peer.NamespaceSelector != nil ||
+				peer.PodSelector != nil
+			if peer.IPBlock != nil && selectors {
+				return fmt.Errorf(
+					"apis.ingressFrom[%d] cannot combine ipBlock with selectors",
+					i,
+				)
+			}
+			if peer.IPBlock == nil && !selectors {
+				return fmt.Errorf(
+					"apis.ingressFrom[%d] must set ipBlock or a selector",
+					i,
+				)
+			}
+			if peer.IPBlock != nil {
+				if _, _, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
+					return fmt.Errorf(
+						"apis.ingressFrom[%d].ipBlock.cidr is invalid: %w",
+						i,
+						err,
+					)
+				}
+				for j, excluded := range peer.IPBlock.Except {
+					if _, _, err := net.ParseCIDR(excluded); err != nil {
+						return fmt.Errorf(
+							"apis.ingressFrom[%d].ipBlock.except[%d] is invalid: %w",
+							i,
+							j,
+							err,
+						)
+					}
+				}
+			}
+		}
+	}
 	used := map[int32]string{
 		portRelay: "relay", PortNodeToClient: "private",
 		portMetrics: "metrics", portHealth: "health",

@@ -39,19 +39,24 @@ func TestAPIListenersThroughPrivateService(t *testing.T) {
 		}
 	})
 	dev := h.applyDevNet(ctx)
-	h.applyDingoNode(ctx, dev, func(spec *dingov1alpha1.DingoNodeSpec) error {
-		spec.Image.Tag = "0.83.0"
-		spec.StorageMode = dingov1alpha1.StorageModeAPI
-		spec.APIs = &dingov1alpha1.APISpec{
-			UTxORPC:    9090,
-			Blockfrost: 3000,
-			Mesh:       8080,
-			Kupo:       1442,
-			Bark:       3003,
-			Midnight:   50051,
-		}
-		return nil
-	})
+	h.applyDingoNode(
+		ctx,
+		dev,
+		withNodeToClient(),
+		func(spec *dingov1alpha1.DingoNodeSpec) error {
+			spec.Image.Tag = "0.83.0"
+			spec.StorageMode = dingov1alpha1.StorageModeAPI
+			spec.APIs = &dingov1alpha1.APISpec{
+				UTxORPC:    9090,
+				Blockfrost: 3000,
+				Mesh:       8080,
+				Kupo:       1442,
+				Bark:       3003,
+				Midnight:   50051,
+			}
+			return nil
+		},
+	)
 	h.waitPodReady(ctx)
 	h.waitForged(ctx, 1)
 	for _, allowed := range []bool{true, false} {

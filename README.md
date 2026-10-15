@@ -259,8 +259,9 @@ Legacy `DINGO_UTXORPC_PORT`, `DINGO_BLOCKFROST_PORT`, and `DINGO_MESH_PORT`
 environment settings, canonical `DINGO_PLUGINS_API_*_CONFIG_PORT` settings, and
 Bark/Midnight port variables also drive Service and policy ports when `spec.apis`
 is omitted. When `spec.apis` is present, contradictory environment overrides,
-port collisions, loopback binding, and core storage mode are rejected before
-resources change. Kupo uses `DINGO_PLUGINS_API_KUPO_CONFIG_PORT`.
+port collisions and loopback binding are rejected before resources change.
+Core storage mode is rejected only when an API listener is enabled. Kupo uses
+`DINGO_PLUGINS_API_KUPO_CONFIG_PORT`.
 
 Set `apis.utxorpcTLSSecretRef` to mount `tls.crt` and `tls.key` from an existing
 TLS Secret for UTxORPC. The operator projects only those two files read-only and
