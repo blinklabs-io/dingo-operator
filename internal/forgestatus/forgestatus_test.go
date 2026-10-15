@@ -86,11 +86,12 @@ cardano_node_metrics_Forge_forged_int{network="mainnet"} 42
 func TestParsePipelineWedgeGauges(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		body       string
-		wantStuck  bool
-		wantHalted bool
-		wantGauges bool
+		name            string
+		body            string
+		wantStuck       bool
+		wantHalted      bool
+		wantStuckGauge  bool
+		wantHaltedGauge bool
 	}{
 		{
 			name:       "absent gauges are not a wedge",
@@ -102,19 +103,20 @@ func TestParsePipelineWedgeGauges(t *testing.T) {
 			name: "zero gauges are healthy",
 			body: "dingo_ledger_pipeline_stuck 0\n" +
 				"dingo_ledger_pipeline_halted 0\n",
-			wantGauges: true,
+			wantStuckGauge:  true,
+			wantHaltedGauge: true,
 		},
 		{
-			name:       "stuck is reported",
-			body:       `dingo_ledger_pipeline_stuck{network="preview"} 1` + "\n",
-			wantStuck:  true,
-			wantGauges: true,
+			name:           "stuck is reported",
+			body:           `dingo_ledger_pipeline_stuck{network="preview"} 1` + "\n",
+			wantStuck:      true,
+			wantStuckGauge: true,
 		},
 		{
-			name:       "halted is reported",
-			body:       `dingo_ledger_pipeline_halted{network="preview"} 1` + "\n",
-			wantHalted: true,
-			wantGauges: true,
+			name:            "halted is reported",
+			body:            `dingo_ledger_pipeline_halted{network="preview"} 1` + "\n",
+			wantHalted:      true,
+			wantHaltedGauge: true,
 		},
 	}
 	for _, tt := range tests {
@@ -124,7 +126,8 @@ func TestParsePipelineWedgeGauges(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantStuck, got.PipelineStuck)
 			assert.Equal(t, tt.wantHalted, got.PipelineHalted)
-			assert.Equal(t, tt.wantGauges, got.HasPipelineMetrics)
+			assert.Equal(t, tt.wantStuckGauge, got.HasPipelineStuckMetric)
+			assert.Equal(t, tt.wantHaltedGauge, got.HasPipelineHaltedMetric)
 		})
 	}
 }

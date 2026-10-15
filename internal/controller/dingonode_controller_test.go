@@ -1311,8 +1311,10 @@ func TestRefreshForgeStatusReportsPipelineWedge(t *testing.T) {
 		degraded   bool
 	}{
 		{
-			name:       "following",
-			st:         &forgestatus.Status{HasPipelineMetrics: true},
+			name: "following",
+			st: &forgestatus.Status{
+				HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+			},
 			wantStatus: metav1.ConditionTrue,
 			wantReason: "Following",
 		},
@@ -1360,7 +1362,8 @@ func TestRefreshForgeStatusWatchesRelays(t *testing.T) {
 	dn := relayNodeForStatus("relay", "relay-ns")
 	r := &DingoNodeReconciler{
 		ForgeStatus: &statusFetcher{st: &forgestatus.Status{
-			PipelineHalted: true, HasPipelineMetrics: true,
+			PipelineHalted:         true,
+			HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
 		}},
 	}
 
@@ -1376,8 +1379,11 @@ func TestRefreshForgeStatusAggregatesRelayReplicas(t *testing.T) {
 	dn := relayNodeForStatus("relay", "relay-ns")
 	dn.Spec.Replicas = new(int32(2))
 	fetcher := &statusFetcher{sequence: []*forgestatus.Status{
-		{HasPipelineMetrics: true},
-		{HasPipelineMetrics: true, PipelineStuck: true},
+		{HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true},
+		{
+			HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+			PipelineStuck: true,
+		},
 	}}
 	r := &DingoNodeReconciler{ForgeStatus: fetcher}
 

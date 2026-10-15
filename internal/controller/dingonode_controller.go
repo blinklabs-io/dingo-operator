@@ -552,11 +552,17 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		}
 		return
 	}
-	aggregate := &forgestatus.Status{HasPipelineMetrics: true}
+	aggregate := &forgestatus.Status{
+		HasPipelineStuckMetric:  true,
+		HasPipelineHaltedMetric: true,
+	}
 	for _, st := range statuses {
 		aggregate.PipelineStuck = aggregate.PipelineStuck || st.PipelineStuck
 		aggregate.PipelineHalted = aggregate.PipelineHalted || st.PipelineHalted
-		aggregate.HasPipelineMetrics = aggregate.HasPipelineMetrics && st.HasPipelineMetrics
+		aggregate.HasPipelineStuckMetric =
+			aggregate.HasPipelineStuckMetric && st.HasPipelineStuckMetric
+		aggregate.HasPipelineHaltedMetric =
+			aggregate.HasPipelineHaltedMetric && st.HasPipelineHaltedMetric
 	}
 	setPipelineCondition(dn, aggregate)
 	if !isBP {
@@ -635,7 +641,7 @@ func setPipelineCondition(dn *dingov1alpha1.DingoNode, st *forgestatus.Status) {
 		cond.Reason = "LedgerPipelineStuck"
 		cond.Message = "ledger pipeline is restarting without tip progress and " +
 			"requires operator intervention"
-	case !st.HasPipelineMetrics:
+	case !st.HasPipelineStuckMetric || !st.HasPipelineHaltedMetric:
 		cond.Status = metav1.ConditionUnknown
 		cond.Reason = "PipelineMetricsUnavailable"
 		cond.Message = "node metrics do not include ledger pipeline health gauges"
