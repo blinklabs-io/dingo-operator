@@ -624,6 +624,19 @@ func rulesForPort(
 }
 
 func TestBuildNetworkPolicy(t *testing.T) {
+	t.Run("relay metrics require labelled clients and peers retain node-to-node access", func(t *testing.T) {
+		policy := BuildNetworkPolicy(relayNode())
+		require.Len(t, policy.Spec.Ingress, 2)
+		relayRules := rulesForPort(policy, portRelay)
+		require.Len(t, relayRules, 1)
+		assert.Empty(t, relayRules[0].From, "relay peer traffic remains available")
+		metrics := ruleForPort(t, policy, portMetrics)
+		require.Len(t, metrics.From, 2)
+		want := map[string]string{MetricsAccessLabel: "allowed"}
+		assert.Equal(t, want, metrics.From[0].PodSelector.MatchLabels)
+		assert.Equal(t, want, metrics.From[1].PodSelector.MatchLabels)
+		assert.Equal(t, want, metrics.From[1].NamespaceSelector.MatchLabels)
+	})
 	t.Run(
 		"a plain block producer only allows labelled metrics clients",
 		func(t *testing.T) {

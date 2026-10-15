@@ -54,7 +54,8 @@ operators.
 - **Secure by default** — non-root, read-only root filesystem with writable
   `/tmp` and `/ipc` volumes, dropped capabilities, no privilege escalation,
   RuntimeDefault seccomp, no node service-account token, least-privilege RBAC,
-  and a default-deny NetworkPolicy for block producers. Node-to-client (port
+  and ingress NetworkPolicies for all nodes (default-deny for block producers,
+  with relay peers limited to node-to-node traffic). Node-to-client (port
   3002) is closed unless a client opts in: label the client pod
   `dingo.blinklabs.io/node-to-client=allowed`, and its namespace too when it is
   not the node's own. That label is the only way in — peers named in
@@ -65,8 +66,8 @@ operators.
   Metrics also require an explicit grant: label the operator and Prometheus
   client pods `dingo.blinklabs.io/metrics=allowed`, and their namespaces too
   when they differ from the node's. Apply these labels before upgrading;
-  otherwise status and KES monitoring cannot scrape block producers. Metrics
-  access does not grant node-to-client access.
+  otherwise status and KES monitoring cannot scrape nodes. Metrics access does
+  not grant node-to-client access.
   Set `spec.image.digest` to pin immutable image content; it overrides the
   tag in container references. Keep `spec.image.tag` set to the pinned image's
   version because the operator uses it to select the UID and health probes.

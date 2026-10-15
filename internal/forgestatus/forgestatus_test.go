@@ -82,8 +82,7 @@ cardano_node_metrics_Forge_forged_int{network="mainnet"} 42
 }
 
 // The wedge gauges are what distinguish a node that is merely responding from
-// one that is still following the chain. Absent gauges must read as healthy,
-// since relays and older nodes do not emit them.
+// one that is still following the chain. Absent gauges cannot establish health.
 func TestParsePipelineWedgeGauges(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -91,6 +90,7 @@ func TestParsePipelineWedgeGauges(t *testing.T) {
 		body       string
 		wantStuck  bool
 		wantHalted bool
+		wantGauges bool
 	}{
 		{
 			name:       "absent gauges are not a wedge",
@@ -102,16 +102,19 @@ func TestParsePipelineWedgeGauges(t *testing.T) {
 			name: "zero gauges are healthy",
 			body: "dingo_ledger_pipeline_stuck 0\n" +
 				"dingo_ledger_pipeline_halted 0\n",
+			wantGauges: true,
 		},
 		{
-			name:      "stuck is reported",
-			body:      `dingo_ledger_pipeline_stuck{network="preview"} 1` + "\n",
-			wantStuck: true,
+			name:       "stuck is reported",
+			body:       `dingo_ledger_pipeline_stuck{network="preview"} 1` + "\n",
+			wantStuck:  true,
+			wantGauges: true,
 		},
 		{
 			name:       "halted is reported",
 			body:       `dingo_ledger_pipeline_halted{network="preview"} 1` + "\n",
 			wantHalted: true,
+			wantGauges: true,
 		},
 	}
 	for _, tt := range tests {
@@ -121,6 +124,7 @@ func TestParsePipelineWedgeGauges(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantStuck, got.PipelineStuck)
 			assert.Equal(t, tt.wantHalted, got.PipelineHalted)
+			assert.Equal(t, tt.wantGauges, got.HasPipelineMetrics)
 		})
 	}
 }

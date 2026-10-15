@@ -336,9 +336,9 @@ func (r *DingoNodeReconciler) reconcileResources(
 		if err := r.upsertPDB(ctx, dn); err != nil {
 			return fmt.Errorf("apply poddisruptionbudget: %w", err)
 		}
-		if err := r.upsertNetworkPolicy(ctx, dn); err != nil {
-			return fmt.Errorf("apply networkpolicy: %w", err)
-		}
+	}
+	if err := r.upsertNetworkPolicy(ctx, dn); err != nil {
+		return fmt.Errorf("apply networkpolicy: %w", err)
 	}
 
 	// PodMonitor is best-effort and skipped when the CRD is absent.
@@ -521,35 +521,50 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// exactly when /readyz fails -- a node behind, stalled or catching up is
 	// when its remaining KES periods matter most. The headless Service sets
 	// PublishNotReadyAddresses, so an unready node stays scrapable.
-	url := fmt.Sprintf(
-		"http://%s.%s.svc.cluster.local:%d/metrics",
-		resources.HeadlessServiceName(dn),
-		dn.Namespace,
-		metricsPort,
-	)
-	st, err := r.ForgeStatus.Fetch(ctx, url)
-	if err != nil {
-		logger.V(1).Info("forge status unavailable", "error", err.Error())
-		// An unreadable scrape is unknown, never healthy. Treating a failed
-		// read as "no wedge reported" is how wedge detection goes silently
-		// blind at exactly the moment the node is in trouble.
-		setPipelineUnknown(dn, "MetricsUnavailable", "node metrics could not be fetched")
+	var statuses []*forgestatus.Status
+	var scrapeFailed bool
+	for replica := range desiredReplicas(dn) {
+		podName := fmt.Sprintf("%s-%d", dn.Name, replica)
+		url := fmt.Sprintf(
+			"http://%s.%s.%s.svc.cluster.local:%d/metrics",
+			podName,
+			resources.HeadlessServiceName(dn),
+			dn.Namespace,
+			metricsPort,
+		)
+		st, err := r.ForgeStatus.Fetch(ctx, url)
+		if err != nil {
+			logger.V(1).Info("forge status unavailable", "pod", podName, "error", err.Error())
+			scrapeFailed = true
+			continue
+		}
+		if st == nil {
+			logger.V(1).Info("forge status unavailable", "pod", podName, "error", "empty metrics")
+			scrapeFailed = true
+			continue
+		}
+		statuses = append(statuses, st)
+	}
+	if scrapeFailed || len(statuses) != int(desiredReplicas(dn)) {
+		setPipelineUnknown(dn, "MetricsUnavailable", "metrics could not be fetched from every node replica")
 		if isBP {
 			setRotationDueUnknown(dn, "MetricsUnavailable", "forge status metrics could not be fetched")
 		}
 		return
 	}
-	if st == nil {
-		setPipelineUnknown(dn, "MetricsUnavailable", "node metrics were empty")
-		if isBP {
-			setRotationDueUnknown(dn, "MetricsUnavailable", "forge status metrics were empty")
-		}
-		return
+	aggregate := &forgestatus.Status{HasPipelineMetrics: true}
+	for _, st := range statuses {
+		aggregate.PipelineStuck = aggregate.PipelineStuck || st.PipelineStuck
+		aggregate.PipelineHalted = aggregate.PipelineHalted || st.PipelineHalted
+		aggregate.HasPipelineMetrics = aggregate.HasPipelineMetrics && st.HasPipelineMetrics
 	}
-	setPipelineCondition(dn, st)
+	setPipelineCondition(dn, aggregate)
 	if !isBP {
 		return
 	}
+	// Block producers have one replica in v1; keep KES status tied to that
+	// replica's keys rather than an aggregate pipeline observation.
+	st := statuses[0]
 	if !st.HasKESData {
 		setRotationDueUnknown(dn, "KESMetricsUnavailable", "KES metrics are not available")
 		return
@@ -620,6 +635,10 @@ func setPipelineCondition(dn *dingov1alpha1.DingoNode, st *forgestatus.Status) {
 		cond.Reason = "LedgerPipelineStuck"
 		cond.Message = "ledger pipeline is restarting without tip progress and " +
 			"requires operator intervention"
+	case !st.HasPipelineMetrics:
+		cond.Status = metav1.ConditionUnknown
+		cond.Reason = "PipelineMetricsUnavailable"
+		cond.Message = "node metrics do not include ledger pipeline health gauges"
 	}
 	if cond.Status == metav1.ConditionFalse {
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{

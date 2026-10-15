@@ -148,6 +148,8 @@ func TestMithrilBootstrapForceResyncWipesAndRebootstraps(t *testing.T) {
 	out, err = runBootstrap(t, dataDir, true, false)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "force resync requested")
+	assert.Contains(t, out, "mithril bootstrap complete", "force resync must invoke sync")
 	assert.False(t, exists(t, stale), "force resync must clear the data dir")
+	assert.True(t, exists(t, filepath.Join(dataDir, "metadata.sqlite")), "sync must recreate the database")
 	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
 }

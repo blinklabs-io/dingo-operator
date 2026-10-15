@@ -161,9 +161,11 @@ func TestReconcileRelay(t *testing.T) {
 	assert.Equal(t, wantIPFamilies, svc.Spec.IPFamilies)
 	assert.Equal(t, wantIPFamilyPolicy, svc.Spec.IPFamilyPolicy)
 
-	// A relay must NOT get a block-producer PDB or NetworkPolicy.
+	// A relay gets no block-producer PDB, but its metrics listener is
+	// restricted by a NetworkPolicy.
 	err := c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &policyv1.PodDisruptionBudget{})
 	assert.True(t, apierrors.IsNotFound(err))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "relay", Namespace: "relay-ns"}, &networkingv1.NetworkPolicy{}))
 }
 
 func TestReconcileLegacyImagePreservesSecurityContext(t *testing.T) {
@@ -308,7 +310,7 @@ func TestRefreshForgeStatusScrapesHeadlessService(t *testing.T) {
 
 	assert.Equal(
 		t,
-		"http://bp-headless.bp-ns.svc.cluster.local:12798/metrics",
+		"http://bp-0.bp-headless.bp-ns.svc.cluster.local:12798/metrics",
 		fetcher.url,
 	)
 }
@@ -1277,13 +1279,22 @@ func relayNodeForStatus(name, ns string) *dingov1alpha1.DingoNode {
 
 // statusFetcher returns a fixed Status, standing in for a live scrape.
 type statusFetcher struct {
-	st *forgestatus.Status
+	st       *forgestatus.Status
+	sequence []*forgestatus.Status
+	urls     []string
 }
 
 func (f *statusFetcher) Fetch(
-	context.Context,
-	string,
+	_ context.Context,
+	url string,
 ) (*forgestatus.Status, error) {
+	f.urls = append(f.urls, url)
+	if len(f.sequence) > 0 {
+		idx := len(f.urls) - 1
+		if idx < len(f.sequence) {
+			return f.sequence[idx], nil
+		}
+	}
 	return f.st, nil
 }
 
@@ -1301,7 +1312,7 @@ func TestRefreshForgeStatusReportsPipelineWedge(t *testing.T) {
 	}{
 		{
 			name:       "following",
-			st:         &forgestatus.Status{},
+			st:         &forgestatus.Status{HasPipelineMetrics: true},
 			wantStatus: metav1.ConditionTrue,
 			wantReason: "Following",
 		},
@@ -1348,7 +1359,9 @@ func TestRefreshForgeStatusReportsPipelineWedge(t *testing.T) {
 func TestRefreshForgeStatusWatchesRelays(t *testing.T) {
 	dn := relayNodeForStatus("relay", "relay-ns")
 	r := &DingoNodeReconciler{
-		ForgeStatus: &statusFetcher{st: &forgestatus.Status{PipelineHalted: true}},
+		ForgeStatus: &statusFetcher{st: &forgestatus.Status{
+			PipelineHalted: true, HasPipelineMetrics: true,
+		}},
 	}
 
 	r.refreshForgeStatus(context.Background(), dn)
@@ -1357,6 +1370,36 @@ func TestRefreshForgeStatusWatchesRelays(t *testing.T) {
 		t,
 		meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy),
 	)
+}
+
+func TestRefreshForgeStatusAggregatesRelayReplicas(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	dn.Spec.Replicas = new(int32(2))
+	fetcher := &statusFetcher{sequence: []*forgestatus.Status{
+		{HasPipelineMetrics: true},
+		{HasPipelineMetrics: true, PipelineStuck: true},
+	}}
+	r := &DingoNodeReconciler{ForgeStatus: fetcher}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Equal(t, []string{
+		"http://relay-0.relay-headless.relay-ns.svc.cluster.local:12798/metrics",
+		"http://relay-1.relay-headless.relay-ns.svc.cluster.local:12798/metrics",
+	}, fetcher.urls)
+	assert.True(t, meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy))
+}
+
+func TestRefreshForgeStatusMissingPipelineGaugesIsUnknown(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	r := &DingoNodeReconciler{ForgeStatus: &statusFetcher{st: &forgestatus.Status{}}}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+	assert.Equal(t, "PipelineMetricsUnavailable", cond.Reason)
 }
 
 // An unreadable scrape is unknown, never healthy. Reading a failed fetch as

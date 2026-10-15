@@ -115,6 +115,7 @@ DONE="${CARDANO_DATABASE_PATH}/.mithril-bootstrap-complete"
 STARTED="${CARDANO_DATABASE_PATH}/.mithril-bootstrap-started"
 if [ "${FORCE_RESYNC:-false}" = "true" ]; then
   echo "force resync requested; removing existing database"
+  rm -f "$DONE" "$STARTED"
   rm -rf "${CARDANO_DATABASE_PATH:?}/"* || true
 fi
 if [ -f "$DONE" ]; then

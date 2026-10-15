@@ -62,6 +62,9 @@ type Status struct {
 	// unrepairable validation failure. Terminal: the node no longer follows the
 	// chain, and a block producer in this state forges on a dead chain.
 	PipelineHalted bool
+	// HasPipelineMetrics is true when at least one Dingo pipeline gauge was
+	// present. Missing gauges cannot establish that the pipeline is following.
+	HasPipelineMetrics bool
 }
 
 // Fetcher retrieves forge status from a node's metrics endpoint.
@@ -140,8 +143,10 @@ func Parse(r io.Reader) (*Status, error) {
 		case metricForgedBlocks:
 			s.ForgedBlocks = int64(v)
 		case metricPipelineStuck:
+			s.HasPipelineMetrics = true
 			s.PipelineStuck = v != 0
 		case metricPipelineHalted:
+			s.HasPipelineMetrics = true
 			s.PipelineHalted = v != 0
 		}
 	}
