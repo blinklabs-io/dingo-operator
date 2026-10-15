@@ -1396,6 +1396,23 @@ func TestRefreshForgeStatusAggregatesRelayReplicas(t *testing.T) {
 	assert.True(t, meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy))
 }
 
+func TestRefreshForgeStatusZeroRelayReplicasIsUnknown(t *testing.T) {
+	dn := relayNodeForStatus("relay", "relay-ns")
+	dn.Spec.Replicas = new(int32(0))
+	fetcher := &statusFetcher{st: &forgestatus.Status{
+		HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+	}}
+	r := &DingoNodeReconciler{ForgeStatus: fetcher}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Empty(t, fetcher.urls, "there are no replicas to scrape")
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+	assert.Equal(t, "NoReplicas", cond.Reason)
+}
+
 func TestRefreshForgeStatusMissingPipelineGaugesIsUnknown(t *testing.T) {
 	dn := relayNodeForStatus("relay", "relay-ns")
 	r := &DingoNodeReconciler{ForgeStatus: &statusFetcher{st: &forgestatus.Status{}}}
@@ -1422,4 +1439,27 @@ func TestRefreshForgeStatusUnreadableMetricsAreNotHealthy(t *testing.T) {
 	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+}
+
+func TestRefreshForgeStatusScrapeFailurePreservesUnhealthyCondition(t *testing.T) {
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	dn.Status.Conditions = append(dn.Status.Conditions, metav1.Condition{
+		Type: condPipelineHealthy, Status: metav1.ConditionFalse,
+		Reason: "LedgerPipelineHalted", Message: "terminal pipeline failure",
+	})
+	dn.Status.Conditions = append(dn.Status.Conditions, metav1.Condition{
+		Type: condDegraded, Status: metav1.ConditionTrue,
+		Reason: "LedgerPipelineHalted", Message: "terminal pipeline failure",
+	})
+	r := &DingoNodeReconciler{
+		ForgeStatus: fakeForgeStatusFetcher{err: errors.New("connection refused")},
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "LedgerPipelineHalted", cond.Reason)
+	assert.True(t, meta.IsStatusConditionTrue(dn.Status.Conditions, condDegraded))
 }

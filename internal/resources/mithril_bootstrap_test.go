@@ -52,7 +52,7 @@ func runBootstrap(
 	binDir := t.TempDir()
 	// The stub writes the database file before succeeding or failing, which is
 	// exactly the condition the old existence check could not tell apart.
-	body := "#!/bin/sh\ntouch \"$CARDANO_DATABASE_PATH/metadata.sqlite\"\n"
+	body := "#!/bin/sh\necho 'sync invoked'\ntouch \"$CARDANO_DATABASE_PATH/metadata.sqlite\"\n"
 	if syncFails {
 		body += "echo 'aggregator unreachable' >&2\nexit 1\n"
 	}
@@ -102,6 +102,33 @@ func TestMithrilBootstrapResumesAfterInterruption(t *testing.T) {
 	out, err = runBootstrap(t, dataDir, false, false)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "resuming")
+	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
+}
+
+// If the pod exits after sync succeeds but before the init script writes DONE,
+// the persisted state is still STARTED plus a database. The next start must
+// invoke Dingo's sync dispatch again rather than adopting or skipping it.
+func TestMithrilBootstrapResumesAfterSyncBeforeCompletionMarker(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	require.NoError(
+		t,
+		os.WriteFile(filepath.Join(dataDir, "metadata.sqlite"), []byte("x"), 0o600),
+	)
+	require.NoError(
+		t,
+		os.WriteFile(
+			filepath.Join(dataDir, ".mithril-bootstrap-started"),
+			[]byte{},
+			0o600,
+		),
+	)
+
+	out, err := runBootstrap(t, dataDir, false, false)
+
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "previous mithril bootstrap did not complete; resuming")
+	assert.Contains(t, out, "sync invoked")
 	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
 }
 

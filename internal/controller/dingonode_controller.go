@@ -508,6 +508,13 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 ) {
 	bp := dn.Spec.BlockProducer
 	isBP := bp != nil
+	if desiredReplicas(dn) == 0 {
+		// There is no running node whose pipeline can be observed. Drop an old
+		// result from before scale-down, then report the current state as unknown.
+		meta.RemoveStatusCondition(&dn.Status.Conditions, condPipelineHealthy)
+		setPipelineUnknown(dn, "NoReplicas", "node has no desired replicas")
+		return
+	}
 	if r.ForgeStatus == nil {
 		setPipelineUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
 		if isBP {
@@ -610,6 +617,12 @@ func setRotationDueUnknown(dn *dingov1alpha1.DingoNode, reason, message string) 
 }
 
 func setPipelineUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
+	// Keep a confirmed unhealthy observation until a successful scrape includes
+	// both gauges. A transient scrape failure or an older node without the
+	// gauges must not erase a known wedge and clear Degraded.
+	if meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy) {
+		return
+	}
 	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 		Type: condPipelineHealthy, Status: metav1.ConditionUnknown, Reason: reason,
 		Message: message, ObservedGeneration: dn.Generation,
@@ -642,9 +655,12 @@ func setPipelineCondition(dn *dingov1alpha1.DingoNode, st *forgestatus.Status) {
 		cond.Message = "ledger pipeline is restarting without tip progress and " +
 			"requires operator intervention"
 	case !st.HasPipelineStuckMetric || !st.HasPipelineHaltedMetric:
-		cond.Status = metav1.ConditionUnknown
-		cond.Reason = "PipelineMetricsUnavailable"
-		cond.Message = "node metrics do not include ledger pipeline health gauges"
+		setPipelineUnknown(
+			dn,
+			"PipelineMetricsUnavailable",
+			"node metrics do not include ledger pipeline health gauges",
+		)
+		return
 	}
 	if cond.Status == metav1.ConditionFalse {
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
