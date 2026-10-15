@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -45,7 +46,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		return errors.New("spec.network is required")
 	}
 	if dn.Spec.Image.Digest != "" && dn.Spec.Image.Tag == "" {
-		return errors.New("spec.image.tag is required when spec.image.digest is set")
+		return errors.New(
+			"spec.image.tag is required when spec.image.digest is set",
+		)
 	}
 
 	if dn.Spec.Network == "custom" && dn.Spec.NetworkMagic == nil {
@@ -118,7 +121,21 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 	}
-	return nil
+	if relay := dn.Spec.RelayService; relay.Type == "" ||
+		relay.Type == corev1.ServiceTypeClusterIP {
+		if relay.NodePort != 0 || relay.ExternalTrafficPolicy != "" ||
+			len(relay.LoadBalancerSourceRanges) > 0 {
+			return errors.New(
+				"relayService external options require NodePort or LoadBalancer",
+			)
+		}
+	} else if relay.Type != corev1.ServiceTypeNodePort && relay.Type != corev1.ServiceTypeLoadBalancer {
+		return errors.New("relayService.type must be ClusterIP, NodePort, or LoadBalancer")
+	}
+	if len(dn.Spec.RelayService.LoadBalancerSourceRanges) > 0 && dn.Spec.RelayService.Type != corev1.ServiceTypeLoadBalancer {
+		return errors.New("relayService.loadBalancerSourceRanges requires type LoadBalancer")
+	}
+	return resources.ValidateAPIs(dn)
 }
 
 // checksum returns a short, stable hex digest used to trigger rollouts when

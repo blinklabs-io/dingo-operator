@@ -327,6 +327,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if err := r.upsertService(ctx, dn, resources.BuildHeadlessService(dn)); err != nil {
 		return fmt.Errorf("apply headless service: %w", err)
 	}
+	for _, svc := range []*corev1.Service{resources.BuildRelayService(dn), resources.BuildPrivateService(dn), resources.BuildMetricsService(dn)} {
+		if err := r.upsertService(ctx, dn, svc); err != nil {
+			return fmt.Errorf("apply Service %s: %w", svc.Name, err)
+		}
+	}
 	if err := r.upsertService(ctx, dn, resources.BuildClientService(dn)); err != nil {
 		return fmt.Errorf("apply service: %w", err)
 	}

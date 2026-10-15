@@ -196,8 +196,75 @@ requests for scheduling, and leave memory headroom for replay and epoch changes.
 Check `Ready`, `StorageReady`, and `LedgerPipelineHealthy` together. A healthy
 process or open API listener does not prove the node has caught up to its peers.
 
-The operator exposes relay, node-to-client, and metrics Service ports. API
-listener environment variables do not add API Service ports or ingress rules.
-UTxO RPC, Blockfrost, Mesh, Kupo, Bark, and Midnight Service exposure needs a
-separate operator API contract; standalone chart port values are not
-interchangeable with DingoNode environment overrides.
+## API and Service exposure
+
+Configure API ports once; the operator uses them for Dingo's listener environment,
+container ports, Services, and NetworkPolicy. Zero disables a listener. Use an
+image supporting the selected APIs (the six-listener configuration below targets
+Dingo 0.83.0 or later). API mode needs more storage and memory than core mode.
+Midnight also enables its indexer; custom networks need their Midnight parameters
+in the environment, while supported named networks use Dingo's defaults.
+
+```yaml
+spec:
+  role: relay
+  network: preview
+  image:
+    tag: "0.83.0"
+  storageMode: api
+  mithril:
+    enabled: false
+  apis:
+    utxorpc: 9090
+    blockfrost: 3000
+    mesh: 8080
+    kupo: 1442
+    bark: 3003
+    midnight: 50051
+    ingressFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: api-gateway
+        podSelector:
+          matchLabels:
+            app: gateway
+```
+
+The operator creates these stable Services:
+
+| Service | Ports | Exposure |
+| --- | --- | --- |
+| `<name>-relay` | P2P only | ClusterIP by default; configurable NodePort or LoadBalancer. |
+| `<name>-private` | NtC and enabled APIs | ClusterIP only. |
+| `<name>-metrics` | Prometheus metrics only | ClusterIP only. |
+| `<name>` | Existing relay, NtC, metrics, and enabled API ports | ClusterIP compatibility endpoint. |
+| `<name>-headless` | Internal per-pod discovery | Headless; includes unready pods for peering. |
+
+API clients should use `<name>-private`; the headless Service publishes unready
+pods and is intended for peer discovery. `spec.relayService.type` can publish P2P
+without also publishing APIs or metrics. It also accepts annotations,
+externalTrafficPolicy, loadBalancerSourceRanges, nodePort, and hostPort. HostPort
+requires CNI support and sufficient hosts for replicas. Keep the original
+ClusterIP endpoint while migrating existing clients to the tiered Services.
+
+The managed NetworkPolicy admits only enabled API ports. `apis.ingressFrom` uses
+standard NetworkPolicy peers; each peer's namespace and pod selectors are ANDed.
+With no explicit peers, API clients must carry `dingo.blinklabs.io/api=allowed` on
+their pod and, for cross-namespace access, their namespace too. This grants no
+NtC or metrics access. Existing NtC and metrics opt-ins remain separate. Network
+isolation requires a CNI that enforces NetworkPolicy; APIs still need application
+authentication or an authenticated gateway where appropriate.
+
+Legacy `DINGO_UTXORPC_PORT`, `DINGO_BLOCKFROST_PORT`, and `DINGO_MESH_PORT`
+environment settings, canonical `DINGO_PLUGINS_API_*_CONFIG_PORT` settings, and
+Bark/Midnight port variables also drive Service and policy ports when `spec.apis`
+is omitted. When `spec.apis` is present, contradictory environment overrides,
+port collisions, loopback binding, and core storage mode are rejected before
+resources change. Kupo uses `DINGO_PLUGINS_API_KUPO_CONFIG_PORT`.
+
+Set `apis.utxorpcTLSSecretRef` to mount `tls.crt` and `tls.key` from an existing
+TLS Secret for UTxORPC. The operator projects only those two files read-only and
+sets their paths; certificate/key bytes never enter environment variables.
+
+Storage expansion is asynchronous as described above. API pod readiness still
+reports ledger health, rather than merely testing whether a TCP listener opened.

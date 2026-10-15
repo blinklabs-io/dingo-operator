@@ -89,12 +89,24 @@ func (r *DingoNodeReconciler) upsertService(
 	}
 	err := createOrUpdateWithRetry(ctx, r.Client, svc, func() error {
 		svc.Labels = desired.Labels
+		svc.Annotations = desired.Annotations
+		allocatedPorts := map[string]int32{}
+		for _, p := range svc.Spec.Ports {
+			allocatedPorts[p.Name] = p.NodePort
+		}
 		// Preserve the API-assigned cluster IP on update (immutable).
 		clusterIP := svc.Spec.ClusterIP
 		clusterIPs := svc.Spec.ClusterIPs
 		ipFamilies := svc.Spec.IPFamilies
 		ipFamilyPolicy := svc.Spec.IPFamilyPolicy
 		svc.Spec = desired.Spec
+		if svc.Spec.Type == corev1.ServiceTypeNodePort || svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
+			for i := range svc.Spec.Ports {
+				if svc.Spec.Ports[i].NodePort == 0 {
+					svc.Spec.Ports[i].NodePort = allocatedPorts[svc.Spec.Ports[i].Name]
+				}
+			}
+		}
 		if clusterIP != "" {
 			svc.Spec.ClusterIP = clusterIP
 			svc.Spec.ClusterIPs = clusterIPs
