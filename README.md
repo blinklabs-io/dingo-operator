@@ -146,3 +146,126 @@ Requires Go 1.26+. A local Cardano devnet for end-to-end testing lives in the
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+## Storage operations
+
+Increase `spec.persistence.size` to grow existing node data volumes:
+
+```yaml
+spec:
+  persistence:
+    size: 120Gi
+```
+
+The operator patches data PVC requests without replacing the StatefulSet, pods,
+PVCs, or bound volumes. The StorageClass and provisioner must support expansion.
+Kubernetes and the CSI driver control block-device and filesystem resizing; some
+drivers require a pod restart. The operator does not restart a producer to finish
+resizing.
+
+`StorageReady` reports capacity independently of pod readiness:
+
+| Reason | Meaning |
+| --- | --- |
+| `VolumesReady` | Existing data claims have their requested capacity. |
+| `ClaimsPending` | An active replica's data claim has not appeared yet. |
+| `ExpansionPending` | Capacity or filesystem resizing is pending. |
+| `VolumeResizeFailed` | A claim could not be read or expanded; the condition carries the API error. |
+
+Inspect the condition and PVC events when expansion is refused. Unsupported
+StorageClasses are not replaced. Decreasing the spec never shrinks existing
+volumes; reducing capacity requires a separate data migration.
+
+Claims are retained when replicas scale down or a DingoNode is deleted. Retained
+ordinals are included in later size reconciliations. PVCs do not acquire a
+DingoNode owner reference, so deleting a node does not garbage-collect its chain
+database. Provisioner reclaim policies still apply to explicit PVC deletion.
+
+StatefulSet claim templates remain immutable at their original size. A new
+ordinal on an existing StatefulSet initially requests that template size; the
+operator expands its claim on a subsequent reconciliation. Reconciliation polls
+every two minutes. Plan replica increases with this asynchronous delay in mind.
+
+### Sizing and health
+
+Size for growth and bootstrap peak usage. Mithril bootstrap can temporarily hold
+both compressed archives and extracted chain data. API storage mode builds more
+indexes and needs its own capacity and resource budget. Set CPU and memory
+requests for scheduling, and leave memory headroom for replay and epoch changes.
+
+Check `Ready`, `StorageReady`, and `LedgerPipelineHealthy` together. A healthy
+process or open API listener does not prove the node has caught up to its peers.
+
+## API and Service exposure
+
+Configure API ports once; the operator uses them for Dingo's listener environment,
+container ports, Services, and NetworkPolicy. Zero disables a listener. Use an
+image supporting the selected APIs (the six-listener configuration below targets
+Dingo 0.83.0 or later). API mode needs more storage and memory than core mode.
+Midnight also enables its indexer; custom networks need their Midnight parameters
+in the environment, while supported named networks use Dingo's defaults.
+
+```yaml
+spec:
+  role: relay
+  network: preview
+  image:
+    tag: "0.83.0"
+  storageMode: api
+  mithril:
+    enabled: false
+  apis:
+    utxorpc: 9090
+    blockfrost: 3000
+    mesh: 8080
+    kupo: 1442
+    bark: 3003
+    midnight: 50051
+    ingressFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: api-gateway
+        podSelector:
+          matchLabels:
+            app: gateway
+```
+
+The operator creates these stable Services:
+
+| Service | Ports | Exposure |
+| --- | --- | --- |
+| `<name>-relay` | P2P only | ClusterIP by default; configurable NodePort or LoadBalancer. |
+| `<name>-private` | NtC and enabled APIs | ClusterIP only. |
+| `<name>-metrics` | Prometheus metrics only | ClusterIP only. |
+| `<name>` | Existing relay, NtC, metrics, and enabled API ports | ClusterIP compatibility endpoint. |
+| `<name>-headless` | Internal per-pod discovery | Headless; includes unready pods for peering. |
+
+API clients should use `<name>-private`; the headless Service publishes unready
+pods and is intended for peer discovery. `spec.relayService.type` can publish P2P
+without also publishing APIs or metrics. It also accepts annotations,
+externalTrafficPolicy, loadBalancerSourceRanges, nodePort, and hostPort. HostPort
+requires CNI support and sufficient hosts for replicas. Keep the original
+ClusterIP endpoint while migrating existing clients to the tiered Services.
+
+The managed NetworkPolicy admits only enabled API ports. `apis.ingressFrom` uses
+standard NetworkPolicy peers; each peer's namespace and pod selectors are ANDed.
+With no explicit peers, API clients must carry `dingo.blinklabs.io/api=allowed` on
+their pod and, for cross-namespace access, their namespace too. This grants no
+NtC or metrics access. Existing NtC and metrics opt-ins remain separate. Network
+isolation requires a CNI that enforces NetworkPolicy; APIs still need application
+authentication or an authenticated gateway where appropriate.
+
+Legacy `DINGO_UTXORPC_PORT`, `DINGO_BLOCKFROST_PORT`, and `DINGO_MESH_PORT`
+environment settings, canonical `DINGO_PLUGINS_API_*_CONFIG_PORT` settings, and
+Bark/Midnight port variables also drive Service and policy ports when `spec.apis`
+is omitted. When `spec.apis` is present, contradictory environment overrides,
+port collisions and loopback binding are rejected before resources change.
+Core storage mode is rejected only when an API listener is enabled. Kupo uses
+`DINGO_PLUGINS_API_KUPO_CONFIG_PORT`.
+
+Set `apis.utxorpcTLSSecretRef` to mount `tls.crt` and `tls.key` from an existing
+TLS Secret for UTxORPC. The operator projects only those two files read-only and
+sets their paths; certificate/key bytes never enter environment variables.
+
+Storage expansion is asynchronous as described above. API pod readiness still
+reports ledger health, rather than merely testing whether a TCP listener opened.

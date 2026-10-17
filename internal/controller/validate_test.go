@@ -21,6 +21,8 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestValidateSpec(t *testing.T) {
@@ -31,13 +33,27 @@ func TestValidateSpec(t *testing.T) {
 	}{
 		{
 			name: "valid relay",
-			spec: dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleRelay, Network: "mainnet"},
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role:    dingov1alpha1.RoleRelay,
+				Network: "mainnet",
+			},
+		},
+		{
+			name: "core storage without API listener",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role:        dingov1alpha1.RoleRelay,
+				Network:     "mainnet",
+				StorageMode: dingov1alpha1.StorageModeCore,
+				APIs:        &dingov1alpha1.APISpec{},
+			},
 		},
 		{
 			name: "digest without tag",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleRelay, Network: "mainnet",
-				Image: dingov1alpha1.ImageSpec{Digest: "sha256:" + strings.Repeat("a", 64)},
+				Image: dingov1alpha1.ImageSpec{
+					Digest: "sha256:" + strings.Repeat("a", 64),
+				},
 			},
 			wantErr: true,
 		},
@@ -54,13 +70,31 @@ func TestValidateSpec(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "invalid role",
-			spec:    dingov1alpha1.DingoNodeSpec{Role: "gateway", Network: "mainnet"},
+			name: "invalid load balancer CIDR",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role:    dingov1alpha1.RoleRelay,
+				Network: "mainnet",
+				RelayService: dingov1alpha1.RelayServiceSpec{
+					Type:                     corev1.ServiceTypeLoadBalancer,
+					LoadBalancerSourceRanges: []string{"not-a-cidr"},
+				},
+			},
 			wantErr: true,
 		},
 		{
-			name:    "custom network without magic",
-			spec:    dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleRelay, Network: "custom"},
+			name: "invalid role",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role:    "gateway",
+				Network: "mainnet",
+			},
+			wantErr: true,
+		},
+		{
+			name: "custom network without magic",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role:    dingov1alpha1.RoleRelay,
+				Network: "custom",
+			},
 			wantErr: true,
 		},
 		{
@@ -118,8 +152,11 @@ func TestValidateSpec(t *testing.T) {
 			},
 		},
 		{
-			name:    "block producer without blockProducer section",
-			spec:    dingov1alpha1.DingoNodeSpec{Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet"},
+			name: "block producer without blockProducer section",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role:    dingov1alpha1.RoleBlockProducer,
+				Network: "mainnet",
+			},
 			wantErr: true,
 		},
 		{
@@ -135,8 +172,10 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					Keys:     dingov1alpha1.KeysSpec{SecretRef: "keys"},
-					Rotation: dingov1alpha1.RotationSpec{Mode: dingov1alpha1.RotationModeMonitorOnly},
+					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					Rotation: dingov1alpha1.RotationSpec{
+						Mode: dingov1alpha1.RotationModeMonitorOnly,
+					},
 				},
 			},
 		},
@@ -145,8 +184,10 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					Keys:     dingov1alpha1.KeysSpec{SecretRef: "keys"},
-					Rotation: dingov1alpha1.RotationSpec{Mode: dingov1alpha1.RotationModeAssisted},
+					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					Rotation: dingov1alpha1.RotationSpec{
+						Mode: dingov1alpha1.RotationModeAssisted,
+					},
 				},
 			},
 		},
@@ -195,6 +236,19 @@ func TestValidateSpec(t *testing.T) {
 			}
 			assert.NoError(t, err)
 		})
+	}
+}
+
+func TestValidateSpecRejectsManagedServiceSuffixes(t *testing.T) {
+	t.Parallel()
+	for _, suffix := range []string{"-private", "-relay", "-metrics", "-headless"} {
+		dn := &dingov1alpha1.DingoNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "foo" + suffix},
+			Spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+			},
+		}
+		require.ErrorContains(t, validateSpec(dn), "managed Service name")
 	}
 }
 

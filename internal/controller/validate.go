@@ -19,16 +19,26 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	corev1 "k8s.io/api/core/v1"
 )
 
 // validateSpec enforces cross-field invariants the CRD OpenAPI schema cannot
 // express on its own.
 func validateSpec(dn *dingov1alpha1.DingoNode) error {
+	for _, suffix := range []string{"-private", "-relay", "-metrics", "-headless"} {
+		if strings.HasSuffix(dn.Name, suffix) {
+			return fmt.Errorf(
+				"metadata.name must not end in %q; it collides with a managed Service name",
+				suffix,
+			)
+		}
+	}
 	// Guard against an object with no (or an incomplete) spec. The CRD requires
 	// role/network only when spec is present, so a bare `kind: DingoNode` would
 	// otherwise reconcile with empty values and be treated as a relay.
@@ -45,7 +55,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		return errors.New("spec.network is required")
 	}
 	if dn.Spec.Image.Digest != "" && dn.Spec.Image.Tag == "" {
-		return errors.New("spec.image.tag is required when spec.image.digest is set")
+		return errors.New(
+			"spec.image.tag is required when spec.image.digest is set",
+		)
 	}
 
 	if dn.Spec.Network == "custom" && dn.Spec.NetworkMagic == nil {
@@ -118,7 +130,33 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 	}
-	return nil
+	if relay := dn.Spec.RelayService; relay.Type == "" ||
+		relay.Type == corev1.ServiceTypeClusterIP {
+		if relay.NodePort != 0 || relay.ExternalTrafficPolicy != "" ||
+			len(relay.LoadBalancerSourceRanges) > 0 {
+			return errors.New(
+				"relayService external options require NodePort or LoadBalancer",
+			)
+		}
+	} else if relay.Type != corev1.ServiceTypeNodePort && relay.Type != corev1.ServiceTypeLoadBalancer {
+		return errors.New("relayService.type must be ClusterIP, NodePort, or LoadBalancer")
+	}
+	if len(dn.Spec.RelayService.LoadBalancerSourceRanges) > 0 &&
+		dn.Spec.RelayService.Type != corev1.ServiceTypeLoadBalancer {
+		return errors.New(
+			"relayService.loadBalancerSourceRanges requires type LoadBalancer",
+		)
+	}
+	for _, cidr := range dn.Spec.RelayService.LoadBalancerSourceRanges {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf(
+				"relayService.loadBalancerSourceRanges contains invalid CIDR %q: %w",
+				cidr,
+				err,
+			)
+		}
+	}
+	return resources.ValidateAPIs(dn)
 }
 
 // checksum returns a short, stable hex digest used to trigger rollouts when

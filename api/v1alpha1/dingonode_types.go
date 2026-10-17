@@ -16,6 +16,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -359,6 +360,77 @@ type MetricsSpec struct {
 	PodMonitor PodMonitorSpec `json:"podMonitor,omitempty"`
 }
 
+// RelayServiceSpec configures public P2P exposure without publishing APIs or metrics.
+type RelayServiceSpec struct {
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +optional
+	Type corev1.ServiceType `json:"type,omitempty"`
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// +kubebuilder:validation:Enum=Cluster;Local
+	// +optional
+	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
+	// +optional
+	LoadBalancerSourceRanges []string `json:"loadBalancerSourceRanges,omitempty"`
+	// NodePort is used only for NodePort or LoadBalancer Services; zero is allocated by Kubernetes.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	NodePort int32 `json:"nodePort,omitempty"`
+	// HostPort preserves peer source addresses when supported by the CNI. Zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	HostPort int32 `json:"hostPort,omitempty"`
+}
+
+// APISpec configures API listeners and their cluster access. API listeners
+// require storageMode=api. Ports also configure the container and Services.
+type APISpec struct {
+	// UTxORPC is the listener port; zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	UTxORPC int32 `json:"utxorpc,omitempty"`
+	// Blockfrost is the listener port; zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Blockfrost int32 `json:"blockfrost,omitempty"`
+	// Mesh is the listener port; zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Mesh int32 `json:"mesh,omitempty"`
+	// Kupo is the listener port; zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Kupo int32 `json:"kupo,omitempty"`
+	// Bark is the listener port; zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Bark int32 `json:"bark,omitempty"`
+	// Midnight is the listener port; zero disables it.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Midnight int32 `json:"midnight,omitempty"`
+	// IngressFrom grants access to enabled API ports using standard NetworkPolicy
+	// peers. When empty, only clients labelled dingo.blinklabs.io/api=allowed
+	// are admitted; cross-namespace clients must label their namespace too.
+	// This does not grant node-to-client, metrics, or relay access.
+	// +optional
+	IngressFrom []networkingv1.NetworkPolicyPeer `json:"ingressFrom,omitempty"`
+	// UTxORPCTLSSecretRef mounts tls.crt and tls.key from a TLS Secret for UTxORPC.
+	// The Secret is mounted read-only and its contents never enter environment variables.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	UTxORPCTLSSecretRef string `json:"utxorpcTLSSecretRef,omitempty"`
+}
+
 // DingoNodeSpec defines the desired state of a DingoNode.
 type DingoNodeSpec struct {
 	// Role selects relay or blockProducer behaviour.
@@ -405,6 +477,12 @@ type DingoNodeSpec struct {
 	// +kubebuilder:default=core
 	// +optional
 	StorageMode StorageMode `json:"storageMode,omitempty"`
+	// APIs enables optional API listeners. Zero ports remain disabled.
+	// +optional
+	APIs *APISpec `json:"apis,omitempty"`
+	// RelayService publishes only P2P on the <name>-relay Service.
+	// +optional
+	RelayService RelayServiceSpec `json:"relayService,omitempty"`
 	// +optional
 	Persistence PersistenceSpec `json:"persistence,omitempty"`
 	// +optional
