@@ -15,6 +15,15 @@ spec:
   metrics:
     podMonitor:
       enabled: true
+  logging:
+    format: json
+  # Tracing needs a Dingo image of v0.82.0 or later:
+  # image:
+  #   tag: "0.85.0"
+  # tracing:
+  #   enabled: true
+  #   endpoint: http://otel-collector.observability:4318
+  #   sampleRatio: "0.1"
   topology:
     # Relays peer with the block producer and any external relays.
     relayRefs:

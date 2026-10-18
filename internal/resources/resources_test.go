@@ -1036,3 +1036,91 @@ func TestShutdownTimeoutIsOverridable(t *testing.T) {
 	env := envMap(dn, RenderOptions{})
 	assert.Equal(t, "5m", env["CARDANO_SHUTDOWN_TIMEOUT"])
 }
+
+func TestBuildEnvTracing(t *testing.T) {
+	t.Run("disabled emits nothing", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Tracing = dingov1alpha1.TracingSpec{
+			Endpoint: "http://collector:4318",
+		}
+		env := envMap(dn, RenderOptions{})
+		for name := range env {
+			assert.NotContains(t, name, "DINGO_TRACING")
+		}
+	})
+
+	t.Run("enabled defaults the service name to the node", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Tracing.Enabled = true
+		env := envMap(dn, RenderOptions{})
+		assert.Equal(t, "true", env["DINGO_TRACING_ENABLED"])
+		assert.Equal(t, "relay", env["DINGO_TRACING_SERVICE_NAME"])
+		assert.NotContains(t, env, "DINGO_TRACING_ENDPOINT")
+		assert.NotContains(t, env, "DINGO_TRACING_SAMPLE_RATIO")
+	})
+
+	t.Run("explicit settings pass through", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Tracing = dingov1alpha1.TracingSpec{
+			Enabled:     true,
+			Endpoint:    "http://otel.observability:4318",
+			ServiceName: "mainnet-relay",
+			SampleRatio: "0.25",
+		}
+		env := envMap(dn, RenderOptions{})
+		assert.Equal(t, "http://otel.observability:4318",
+			env["DINGO_TRACING_ENDPOINT"])
+		assert.Equal(t, "mainnet-relay", env["DINGO_TRACING_SERVICE_NAME"])
+		assert.Equal(t, "0.25", env["DINGO_TRACING_SAMPLE_RATIO"])
+	})
+
+	t.Run("spec.environment still overrides", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Tracing.Enabled = true
+		dn.Spec.Environment = map[string]string{
+			"DINGO_TRACING_SERVICE_NAME": "custom",
+		}
+		env := envMap(dn, RenderOptions{})
+		assert.Equal(t, "custom", env["DINGO_TRACING_SERVICE_NAME"])
+	})
+}
+
+func TestBuildEnvLogging(t *testing.T) {
+	env := envMap(relayNode(), RenderOptions{})
+	assert.NotContains(t, env, "DINGO_LOGGING_LEVEL")
+	assert.NotContains(t, env, "DINGO_LOGGING_FORMAT")
+
+	dn := relayNode()
+	dn.Spec.Logging = dingov1alpha1.LoggingSpec{
+		Level:  dingov1alpha1.LogLevel("debug"),
+		Format: dingov1alpha1.LogFormat("json"),
+	}
+	env = envMap(dn, RenderOptions{})
+	assert.Equal(t, "debug", env["DINGO_LOGGING_LEVEL"])
+	assert.Equal(t, "json", env["DINGO_LOGGING_FORMAT"])
+}
+
+func TestSupportsTracing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		repo  string
+		tag   string
+		wants bool
+	}{
+		{name: "default tag predates the options"},
+		{name: "first release with the options", tag: "0.82.0", wants: true},
+		{name: "v prefix", tag: "v0.82.0", wants: true},
+		{name: "one minor below", tag: "0.81.9"},
+		{name: "later", tag: "0.85.0", wants: true},
+		{name: "major above zero", tag: "1.0.0", wants: true},
+		{name: "unparseable tag is trusted", tag: "main", wants: true},
+		{name: "custom repository is trusted", repo: "example/dingo", wants: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Repository = tc.repo
+			dn.Spec.Image.Tag = tc.tag
+			assert.Equal(t, tc.wants, SupportsTracing(dn))
+		})
+	}
+}

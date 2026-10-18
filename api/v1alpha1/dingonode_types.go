@@ -359,6 +359,57 @@ type MetricsSpec struct {
 	PodMonitor PodMonitorSpec `json:"podMonitor,omitempty"`
 }
 
+// TracingSpec configures OpenTelemetry trace export from the managed node.
+//
+// Spans are sent over OTLP/HTTP. The endpoint, service name and sample ratio
+// need a Dingo image that supports them (v0.82.0 or later); the operator
+// rejects a spec that enables tracing on an older canonical image rather than
+// leaving the node to ignore the settings.
+// +kubebuilder:validation:XValidation:rule="(!has(self.endpoint) && !has(self.serviceName) && !has(self.sampleRatio)) || (has(self.enabled) && self.enabled)",message="endpoint, serviceName and sampleRatio require enabled=true"
+type TracingSpec struct {
+	// Enabled turns on trace export. It is off by default because an exporter
+	// with no collector listening logs connection errors continuously.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Endpoint is the OTLP/HTTP collector base URL, for example
+	// http://otel-collector.observability:4318. The standard /v1/traces path is
+	// appended when the URL has none. When empty, Dingo falls back to the
+	// standard OTEL_EXPORTER_OTLP_* variables, which spec.environment can set.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https?://[^\s]+$`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+	// ServiceName is the service.name attribute on exported spans. It defaults
+	// to the DingoNode name so nodes are distinguishable in the backend.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+	// SampleRatio is the fraction of new traces sampled, from "0" to "1". It is
+	// a string because CRD schemas do not carry floating-point fields portably.
+	// Dingo's own default applies when empty.
+	// +kubebuilder:validation:Pattern=`^(0(\.[0-9]+)?|1(\.0+)?)$`
+	// +optional
+	SampleRatio string `json:"sampleRatio,omitempty"`
+}
+
+// LogFormat selects Dingo's log output handler.
+// +kubebuilder:validation:Enum=text;json
+type LogFormat string
+
+// LogLevel is Dingo's minimum log level.
+// +kubebuilder:validation:Enum=debug;info;warn;error
+type LogLevel string
+
+// LoggingSpec configures the managed node's log output. Unset fields leave
+// Dingo's defaults (info, text) in place.
+type LoggingSpec struct {
+	// +optional
+	Level LogLevel `json:"level,omitempty"`
+	// Format json is intended for machine ingestion such as Loki or ELK.
+	// +optional
+	Format LogFormat `json:"format,omitempty"`
+}
+
 // DingoNodeSpec defines the desired state of a DingoNode.
 type DingoNodeSpec struct {
 	// Role selects relay or blockProducer behaviour.
@@ -447,6 +498,12 @@ type DingoNodeSpec struct {
 	BlockProducer *BlockProducerSpec `json:"blockProducer,omitempty"`
 	// +optional
 	Metrics MetricsSpec `json:"metrics,omitempty"`
+	// Tracing configures OpenTelemetry trace export.
+	// +optional
+	Tracing TracingSpec `json:"tracing,omitempty"`
+	// Logging configures the node's log level and format.
+	// +optional
+	Logging LoggingSpec `json:"logging,omitempty"`
 }
 
 // KESStatus reports the KES key lifecycle state observed from the node.

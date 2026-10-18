@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -73,6 +74,15 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			"spec.configRef requires spec.mithril.aggregatorUrl to be set or " +
 				"spec.mithril.enabled=false; a custom network has no " +
 				"auto-detected Mithril aggregator",
+		)
+	}
+
+	// An image that predates the tracing options would ignore them, leaving a
+	// node that reports tracing as configured while exporting nothing.
+	if dn.Spec.Tracing.Enabled && !resources.SupportsTracing(dn) {
+		return errors.New(
+			"spec.tracing requires a Dingo image of v0.82.0 or later; set " +
+				"spec.image.tag",
 		)
 	}
 

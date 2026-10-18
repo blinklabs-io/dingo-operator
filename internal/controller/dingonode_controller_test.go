@@ -1463,3 +1463,73 @@ func TestRefreshForgeStatusScrapeFailurePreservesUnhealthyCondition(t *testing.T
 	assert.Equal(t, "LedgerPipelineHalted", cond.Reason)
 	assert.True(t, meta.IsStatusConditionTrue(dn.Status.Conditions, condDegraded))
 }
+
+func TestCRDRejectsInvalidTracingAndLogging(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "tracing-ns")
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*dingov1alpha1.DingoNodeSpec)
+		wantErr string
+	}{
+		{
+			name: "endpoint without enabled",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.Tracing.Endpoint = "http://otel:4318"
+			},
+			wantErr: "require enabled=true",
+		},
+		{
+			name: "endpoint not a URL",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.Tracing = dingov1alpha1.TracingSpec{Enabled: true, Endpoint: "otel:4318"}
+			},
+			wantErr: "endpoint",
+		},
+		{
+			name: "sample ratio above one",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.Tracing = dingov1alpha1.TracingSpec{Enabled: true, SampleRatio: "1.5"}
+			},
+			wantErr: "sampleRatio",
+		},
+		{
+			name: "unknown log level",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.Logging.Level = dingov1alpha1.LogLevel("trace")
+			},
+			wantErr: "level",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dn := &dingov1alpha1.DingoNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "tracing-ns"},
+				Spec: dingov1alpha1.DingoNodeSpec{
+					Role:    dingov1alpha1.RoleRelay,
+					Network: "preview",
+				},
+			}
+			tc.mutate(&dn.Spec)
+			require.ErrorContains(t, c.Create(ctx, dn), tc.wantErr)
+		})
+	}
+
+	ok := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "ok", Namespace: "tracing-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+			Tracing: dingov1alpha1.TracingSpec{
+				Enabled:     true,
+				Endpoint:    "http://otel:4318",
+				SampleRatio: "0.5",
+			},
+			Logging: dingov1alpha1.LoggingSpec{
+				Level:  dingov1alpha1.LogLevel("warn"),
+				Format: dingov1alpha1.LogFormat("json"),
+			},
+		},
+	}
+	require.NoError(t, c.Create(ctx, ok))
+}

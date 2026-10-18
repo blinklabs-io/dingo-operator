@@ -206,3 +206,25 @@ func TestChecksum(t *testing.T) {
 	assert.NotEqual(t, a, c, "different input must differ")
 	assert.Len(t, a, 16)
 }
+
+func TestValidateSpecTracingImage(t *testing.T) {
+	spec := func(tag string) *dingov1alpha1.DingoNode {
+		dn := &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "mainnet",
+			Tracing: dingov1alpha1.TracingSpec{Enabled: true},
+			Image:   dingov1alpha1.ImageSpec{Tag: tag},
+		}}
+		return dn
+	}
+
+	// The default tag predates the tracing options, so enabling tracing
+	// without choosing an image must fail rather than export nothing.
+	require.ErrorContains(t, validateSpec(spec("")), "v0.82.0")
+	require.ErrorContains(t, validateSpec(spec("0.81.0")), "v0.82.0")
+	require.NoError(t, validateSpec(spec("0.82.0")))
+
+	disabled := spec("0.81.0")
+	disabled.Spec.Tracing.Enabled = false
+	require.NoError(t, validateSpec(disabled))
+}
