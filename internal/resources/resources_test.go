@@ -1107,7 +1107,7 @@ func TestSupportsTracing(t *testing.T) {
 		tag   string
 		wants bool
 	}{
-		{name: "default tag predates the options"},
+		{name: "default tag has the options", wants: true},
 		{name: "first release with the options", tag: "0.82.0", wants: true},
 		{name: "v prefix", tag: "v0.82.0", wants: true},
 		{name: "one minor below", tag: "0.81.9"},

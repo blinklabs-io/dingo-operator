@@ -17,9 +17,7 @@ spec:
       enabled: true
   logging:
     format: json
-  # Tracing needs a Dingo image of v0.82.0 or later:
-  # image:
-  #   tag: "0.85.0"
+  # Tracing needs a Dingo image of v0.82.0 or later (the default qualifies).
   # tracing:
   #   enabled: true
   #   endpoint: http://otel-collector.observability:4318

@@ -218,9 +218,7 @@ func TestValidateSpecTracingImage(t *testing.T) {
 		return dn
 	}
 
-	// The default tag predates the tracing options, so enabling tracing
-	// without choosing an image must fail rather than export nothing.
-	require.ErrorContains(t, validateSpec(spec("")), "v0.82.0")
+	require.NoError(t, validateSpec(spec("")))
 	require.ErrorContains(t, validateSpec(spec("0.81.0")), "v0.82.0")
 	require.NoError(t, validateSpec(spec("0.82.0")))
 
