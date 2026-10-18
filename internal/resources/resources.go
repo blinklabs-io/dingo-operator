@@ -188,25 +188,47 @@ func usesLegacyDingoUser(dn *dingov1alpha1.DingoNode) bool {
 	return major == 0 && minor < 70
 }
 
-// supportsHealthProbes reports whether the canonical image serves Dingo's
-// dedicated health listener. Older and custom images keep the TCP probes.
-func supportsHealthProbes(dn *dingov1alpha1.DingoNode) bool {
+// canonicalImageVersion returns the parsed version of a canonical Dingo image
+// tag. ok is false for custom repositories, digest-pinned images and tags that
+// are not major.minor.patch, whose capabilities cannot be inferred.
+func canonicalImageVersion(
+	dn *dingov1alpha1.DingoNode,
+) (major, minor, patch int, ok bool) {
 	repo := dn.Spec.Image.Repository
 	if repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
-		return false
+		return 0, 0, 0, false
 	}
 	parts := strings.SplitN(strings.TrimPrefix(imageTag(dn), "v"), ".", 3)
 	if len(parts) != 3 {
-		return false
+		return 0, 0, 0, false
 	}
 	major, majorErr := strconv.Atoi(parts[0])
 	minor, minorErr := strconv.Atoi(parts[1])
 	patch, patchErr := strconv.Atoi(strings.SplitN(parts[2], "-", 2)[0])
 	if majorErr != nil || minorErr != nil || patchErr != nil ||
 		major < 0 || minor < 0 || patch < 0 {
-		return false
+		return 0, 0, 0, false
 	}
-	return major > 0 || minor > 70 || minor == 70 && patch >= 13
+	return major, minor, patch, true
+}
+
+// supportsHealthProbes reports whether the canonical image serves Dingo's
+// dedicated health listener. Older and custom images keep the TCP probes.
+func supportsHealthProbes(dn *dingov1alpha1.DingoNode) bool {
+	major, minor, patch, ok := canonicalImageVersion(dn)
+	return ok && (major > 0 || minor > 70 || minor == 70 && patch >= 13)
+}
+
+// minTracingMinor is the first 0.x release whose tracing configuration accepts
+// an endpoint, service name and sample ratio.
+const minTracingMinor = 82
+
+// SupportsTracing reports whether the selected image can honour spec.tracing.
+// Unlike the health probes there is no fallback to degrade to, so an image
+// whose version cannot be determined is trusted: the user opted in explicitly.
+func SupportsTracing(dn *dingov1alpha1.DingoNode) bool {
+	major, minor, _, ok := canonicalImageVersion(dn)
+	return !ok || major > 0 || minor >= minTracingMinor
 }
 
 // DefaultDingoTag is the Dingo image tag used when the spec omits one. It should
@@ -215,7 +237,7 @@ func supportsHealthProbes(dn *dingov1alpha1.DingoNode) bool {
 // Do not let this drift below 0.68.0: earlier releases brick their data volume
 // if the pod is rolled mid-genesis-write (dingo #2959), and a DingoNode that
 // omits spec.image.tag gets whatever this says.
-const DefaultDingoTag = "0.75.0"
+const DefaultDingoTag = "0.85.0"
 
 // DefaultTerminationGracePeriodSeconds is the grace period used when the spec
 // omits one. It is deliberately above Kubernetes' own 30s default: Dingo's
@@ -316,6 +338,8 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 			Value: configBundleMountPath + "/" + configBundleFileName,
 		})
 	}
+	env = append(env, tracingEnv(dn)...)
+	env = append(env, loggingEnv(dn)...)
 	bp := dn.Spec.BlockProducer
 	// Dingo binds node-to-client to 127.0.0.1:3002 unless told otherwise, so it
 	// is unreachable from outside the pod no matter what the NetworkPolicy

@@ -198,3 +198,53 @@ echo "mithril bootstrap complete"
 		},
 	)
 }
+
+// tracingEnv returns Dingo's tracing settings. Nothing is emitted while
+// tracing is disabled: Dingo enables tracing whenever an endpoint is set, so a
+// stray DINGO_TRACING_ENDPOINT alone would switch the exporter on.
+func tracingEnv(dn *dingov1alpha1.DingoNode) []corev1.EnvVar {
+	t := dn.Spec.Tracing
+	if !t.Enabled {
+		return nil
+	}
+	serviceName := t.ServiceName
+	if serviceName == "" {
+		serviceName = dn.Name
+	}
+	env := []corev1.EnvVar{
+		{Name: "DINGO_TRACING_ENABLED", Value: "true"},
+		{Name: "DINGO_TRACING_SERVICE_NAME", Value: serviceName},
+	}
+	if t.Endpoint != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "DINGO_TRACING_ENDPOINT",
+			Value: t.Endpoint,
+		})
+	}
+	if t.SampleRatio != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "DINGO_TRACING_SAMPLE_RATIO",
+			Value: t.SampleRatio,
+		})
+	}
+	return env
+}
+
+// loggingEnv returns Dingo's log settings, leaving its defaults for any field
+// the spec does not set.
+func loggingEnv(dn *dingov1alpha1.DingoNode) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, 2)
+	if l := dn.Spec.Logging.Level; l != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "DINGO_LOGGING_LEVEL",
+			Value: string(l),
+		})
+	}
+	if f := dn.Spec.Logging.Format; f != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "DINGO_LOGGING_FORMAT",
+			Value: string(f),
+		})
+	}
+	return env
+}
