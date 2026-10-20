@@ -141,6 +141,7 @@ type onChainAttempt struct {
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
@@ -226,10 +227,15 @@ func (r *DingoNodeReconciler) Reconcile(
 		return ctrl.Result{}, err
 	}
 
+	storageErr := r.reconcileStorage(ctx, dn)
+
 	if err := r.reconcileStatus(ctx, dn); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	if storageErr != nil {
+		return ctrl.Result{}, storageErr
+	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
@@ -320,6 +326,15 @@ func (r *DingoNodeReconciler) reconcileResources(
 	}
 	if err := r.upsertService(ctx, dn, resources.BuildHeadlessService(dn)); err != nil {
 		return fmt.Errorf("apply headless service: %w", err)
+	}
+	for _, svc := range []*corev1.Service{
+		resources.BuildRelayService(dn),
+		resources.BuildPrivateService(dn),
+		resources.BuildMetricsService(dn),
+	} {
+		if err := r.upsertService(ctx, dn, svc); err != nil {
+			return fmt.Errorf("apply Service %s: %w", svc.Name, err)
+		}
 	}
 	if err := r.upsertService(ctx, dn, resources.BuildClientService(dn)); err != nil {
 		return fmt.Errorf("apply service: %w", err)
@@ -463,7 +478,10 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	// healthy. Phase is downgraded to Degraded while the pipeline is unhealthy,
 	// but Ready still reports StatefulSet truth -- conflating the two would
 	// hide which of the two failed.
-	wedged := meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy)
+	wedged := meta.IsStatusConditionFalse(
+		dn.Status.Conditions,
+		condPipelineHealthy,
+	)
 	switch {
 	case ready && wedged:
 		dn.Status.Phase = "Degraded"
@@ -493,7 +511,8 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	// A refused key bundle must survive to the status write, so keep Degraded
 	// while KeysValid is False. A wedged pipeline is kept for the same reason:
 	// it is set during this reconcile, after everything that returns early.
-	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) && !wedged {
+	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) &&
+		!wedged {
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condDegraded)
 	}
 	return r.updateStatus(ctx, dn)
@@ -516,9 +535,17 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		return
 	}
 	if r.ForgeStatus == nil {
-		setPipelineUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
+		setPipelineUnknown(
+			dn,
+			"MetricsUnavailable",
+			"forge status fetcher is not configured",
+		)
 		if isBP {
-			setRotationDueUnknown(dn, "MetricsUnavailable", "forge status fetcher is not configured")
+			setRotationDueUnknown(
+				dn,
+				"MetricsUnavailable",
+				"forge status fetcher is not configured",
+			)
 		}
 		return
 	}
@@ -541,21 +568,31 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		)
 		st, err := r.ForgeStatus.Fetch(ctx, url)
 		if err != nil {
-			logger.V(1).Info("forge status unavailable", "pod", podName, "error", err.Error())
+			logger.V(1).
+				Info("forge status unavailable", "pod", podName, "error", err.Error())
 			scrapeFailed = true
 			continue
 		}
 		if st == nil {
-			logger.V(1).Info("forge status unavailable", "pod", podName, "error", "empty metrics")
+			logger.V(1).
+				Info("forge status unavailable", "pod", podName, "error", "empty metrics")
 			scrapeFailed = true
 			continue
 		}
 		statuses = append(statuses, st)
 	}
 	if scrapeFailed || len(statuses) != int(desiredReplicas(dn)) {
-		setPipelineUnknown(dn, "MetricsUnavailable", "metrics could not be fetched from every node replica")
+		setPipelineUnknown(
+			dn,
+			"MetricsUnavailable",
+			"metrics could not be fetched from every node replica",
+		)
 		if isBP {
-			setRotationDueUnknown(dn, "MetricsUnavailable", "forge status metrics could not be fetched")
+			setRotationDueUnknown(
+				dn,
+				"MetricsUnavailable",
+				"forge status metrics could not be fetched",
+			)
 		}
 		return
 	}
@@ -579,7 +616,11 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// replica's keys rather than an aggregate pipeline observation.
 	st := statuses[0]
 	if !st.HasKESData {
-		setRotationDueUnknown(dn, "KESMetricsUnavailable", "KES metrics are not available")
+		setRotationDueUnknown(
+			dn,
+			"KESMetricsUnavailable",
+			"KES metrics are not available",
+		)
 		return
 	}
 	dn.Status.KES = dingov1alpha1.KESStatus{
@@ -609,7 +650,10 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	}
 }
 
-func setRotationDueUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
+func setRotationDueUnknown(
+	dn *dingov1alpha1.DingoNode,
+	reason, message string,
+) {
 	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 		Type: condRotationDue, Status: metav1.ConditionUnknown, Reason: reason,
 		Message: message, ObservedGeneration: dn.Generation,

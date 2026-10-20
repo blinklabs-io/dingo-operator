@@ -129,6 +129,27 @@ func BuildNetworkPolicy(
 	if bp := dn.Spec.BlockProducer; bp != nil && bp.NodeToClient.Enabled {
 		ingress = append(ingress, nodeToClientIngress(tcp))
 	}
+	for _, listener := range apiListeners(dn) {
+		if listener.port == 0 {
+			continue
+		}
+		peers := labelledClientPeers(APIAccessLabel)
+		if a := dn.Spec.APIs; a != nil && len(a.IngressFrom) > 0 {
+			copy := &dingov1alpha1.APISpec{}
+			a.DeepCopyInto(copy)
+			peers = copy.IngressFrom
+		}
+		port := intstr.FromInt32(listener.port)
+		ingress = append(
+			ingress,
+			networkingv1.NetworkPolicyIngressRule{
+				From: peers,
+				Ports: []networkingv1.NetworkPolicyPort{
+					{Protocol: &tcp, Port: &port},
+				},
+			},
+		)
+	}
 	ingress = append(ingress, metricsIngress)
 
 	return &networkingv1.NetworkPolicy{

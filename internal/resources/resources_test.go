@@ -271,23 +271,35 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.Equal(t, int64(101), *securityContext.FSGroup)
 	})
 
-	t.Run(
-		"explicit security context overrides image defaults",
-		func(t *testing.T) {
-			dn := relayNode()
-			dn.Spec.Image.Tag = "0.69.0"
-			override := &corev1.PodSecurityContext{RunAsUser: new(int64(2000))}
-			dn.Spec.PodSecurityContext = override
-			assert.Same(
-				t,
-				override,
-				BuildStatefulSet(
-					dn,
-					RenderOptions{Replicas: 1},
-				).Spec.Template.Spec.SecurityContext,
-			)
-		},
-	)
+	t.Run("custom security context retains Secret access", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.Image.Tag = "0.69.0"
+		dn.Spec.StorageMode = dingov1alpha1.StorageModeAPI
+		dn.Spec.APIs = &dingov1alpha1.APISpec{
+			UTxORPC: 9090, UTxORPCTLSSecretRef: "rpc-tls",
+		}
+		dn.Spec.PodSecurityContext = &corev1.PodSecurityContext{
+			RunAsUser: new(int64(2000)),
+		}
+		statefulSet := BuildStatefulSet(
+			dn,
+			RenderOptions{Replicas: 1},
+		)
+		securityContext := statefulSet.Spec.Template.Spec.SecurityContext
+		require.NotNil(t, securityContext.FSGroup)
+		assert.Equal(t, int64(101), *securityContext.FSGroup)
+		assert.Equal(t, int64(2000), *securityContext.RunAsUser)
+		assert.Nil(t, dn.Spec.PodSecurityContext.FSGroup)
+		var secretVolume *corev1.Volume
+		for i := range statefulSet.Spec.Template.Spec.Volumes {
+			if statefulSet.Spec.Template.Spec.Volumes[i].Name == apiTLSVolume {
+				secretVolume = &statefulSet.Spec.Template.Spec.Volumes[i]
+			}
+		}
+		require.NotNil(t, secretVolume)
+		require.NotNil(t, secretVolume.Secret)
+		assert.Equal(t, int32(0o440), *secretVolume.Secret.DefaultMode)
+	})
 
 	t.Run("block producer stages private key files", func(t *testing.T) {
 		dn := bpNode()
@@ -624,19 +636,26 @@ func rulesForPort(
 }
 
 func TestBuildNetworkPolicy(t *testing.T) {
-	t.Run("relay metrics require labelled clients and peers retain node-to-node access", func(t *testing.T) {
-		policy := BuildNetworkPolicy(relayNode())
-		require.Len(t, policy.Spec.Ingress, 2)
-		relayRules := rulesForPort(policy, portRelay)
-		require.Len(t, relayRules, 1)
-		assert.Empty(t, relayRules[0].From, "relay peer traffic remains available")
-		metrics := ruleForPort(t, policy, portMetrics)
-		require.Len(t, metrics.From, 2)
-		want := map[string]string{MetricsAccessLabel: "allowed"}
-		assert.Equal(t, want, metrics.From[0].PodSelector.MatchLabels)
-		assert.Equal(t, want, metrics.From[1].PodSelector.MatchLabels)
-		assert.Equal(t, want, metrics.From[1].NamespaceSelector.MatchLabels)
-	})
+	t.Run(
+		"relay metrics require labelled clients and peers retain node-to-node access",
+		func(t *testing.T) {
+			policy := BuildNetworkPolicy(relayNode())
+			require.Len(t, policy.Spec.Ingress, 2)
+			relayRules := rulesForPort(policy, portRelay)
+			require.Len(t, relayRules, 1)
+			assert.Empty(
+				t,
+				relayRules[0].From,
+				"relay peer traffic remains available",
+			)
+			metrics := ruleForPort(t, policy, portMetrics)
+			require.Len(t, metrics.From, 2)
+			want := map[string]string{MetricsAccessLabel: "allowed"}
+			assert.Equal(t, want, metrics.From[0].PodSelector.MatchLabels)
+			assert.Equal(t, want, metrics.From[1].PodSelector.MatchLabels)
+			assert.Equal(t, want, metrics.From[1].NamespaceSelector.MatchLabels)
+		},
+	)
 	t.Run(
 		"a plain block producer only allows labelled metrics clients",
 		func(t *testing.T) {

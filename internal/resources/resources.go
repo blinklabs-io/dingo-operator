@@ -387,6 +387,7 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 			},
 		)
 	}
+	env = append(env, apiEnv(dn)...)
 	return mergeEnv(env, dn.Spec.Environment)
 }
 
@@ -416,7 +417,15 @@ func podSecurityContext(
 	dn *dingov1alpha1.DingoNode,
 ) *corev1.PodSecurityContext {
 	if dn.Spec.PodSecurityContext != nil {
-		return dn.Spec.PodSecurityContext
+		context := dn.Spec.PodSecurityContext.DeepCopy()
+		if context.FSGroup == nil {
+			gid := dingoGID
+			if usesLegacyDingoUser(dn) {
+				gid = legacyDingoGID
+			}
+			context.FSGroup = new(int64(gid))
+		}
+		return context
 	}
 	uid, gid := dingoUID, dingoGID
 	if usesLegacyDingoUser(dn) {
@@ -516,6 +525,10 @@ func BuildStatefulSet(
 				Spec: podSpec,
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{dataPVC(dn)},
+			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+			},
 		},
 	}
 }
@@ -529,7 +542,12 @@ func pullPolicy(dn *dingov1alpha1.DingoNode) corev1.PullPolicy {
 
 func containerPorts(dn *dingov1alpha1.DingoNode) []corev1.ContainerPort {
 	ports := []corev1.ContainerPort{
-		{Name: "relay", ContainerPort: portRelay, Protocol: corev1.ProtocolTCP},
+		{
+			Name:          "relay",
+			ContainerPort: portRelay,
+			HostPort:      dn.Spec.RelayService.HostPort,
+			Protocol:      corev1.ProtocolTCP,
+		},
 		{
 			Name:          "private",
 			ContainerPort: PortNodeToClient,
@@ -540,6 +558,18 @@ func containerPorts(dn *dingov1alpha1.DingoNode) []corev1.ContainerPort {
 			ContainerPort: portMetrics,
 			Protocol:      corev1.ProtocolTCP,
 		},
+	}
+	for _, listener := range apiListeners(dn) {
+		if listener.port > 0 {
+			ports = append(
+				ports,
+				corev1.ContainerPort{
+					Name:          listener.name,
+					ContainerPort: listener.port,
+					Protocol:      corev1.ProtocolTCP,
+				},
+			)
+		}
 	}
 	if supportsHealthProbes(dn) {
 		ports = append(ports, corev1.ContainerPort{
@@ -631,6 +661,16 @@ func volumeMounts(
 			ReadOnly:  true,
 		})
 	}
+	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
+		mounts = append(
+			mounts,
+			corev1.VolumeMount{
+				Name:      apiTLSVolume,
+				MountPath: apiTLSPath,
+				ReadOnly:  true,
+			},
+		)
+	}
 	return mounts
 }
 
@@ -695,6 +735,21 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 				},
 			},
 		)
+	}
+	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
+		vols = append(vols, corev1.Volume{
+			Name: apiTLSVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: a.UTxORPCTLSSecretRef,
+					Items: []corev1.KeyToPath{
+						{Key: "tls.crt", Path: "tls.crt"},
+						{Key: "tls.key", Path: "tls.key"},
+					},
+					DefaultMode: new(int32(0o440)),
+				},
+			},
+		})
 	}
 	return vols
 }
