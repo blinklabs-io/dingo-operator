@@ -37,6 +37,11 @@ operators.
   Prometheus endpoint, including blockfetch delay and fetch duration, ledger
   block-apply batch latency, and the KES/opcert metrics used for status and
   rotation monitoring.
+- **Tracing and logging** — `spec.tracing` exports OpenTelemetry spans over
+  OTLP/HTTP (endpoint, service name defaulting to the node name, sample ratio)
+  and needs a Dingo image of v0.82.0 or later, which the operator checks before
+  rendering. `spec.logging` sets the node's log level and format; `json` suits
+  Loki or ELK.
 - **On-chain counter floor** — with `blockProducer.nodeToClient.enabled`, the
   operator reads the pool's authoritative opcert counter from the node over
   node-to-client local-state-query, publishes it as

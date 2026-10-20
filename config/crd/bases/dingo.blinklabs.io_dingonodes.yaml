@@ -1361,6 +1361,25 @@ spec:
                 x-kubernetes-validations:
                 - message: tag must be set when digest is set
                   rule: '!has(self.digest) || (has(self.tag) && size(self.tag) > 0)'
+              logging:
+                description: Logging configures the node's log level and format.
+                properties:
+                  format:
+                    description: Format json is intended for machine ingestion such
+                      as Loki or ELK.
+                    enum:
+                    - text
+                    - json
+                    type: string
+                  level:
+                    description: LogLevel is Dingo's minimum log level.
+                    enum:
+                    - debug
+                    - info
+                    - warn
+                    - error
+                    type: string
+                type: object
               metrics:
                 description: MetricsSpec configures metrics exposure for the managed
                   node.
@@ -1961,6 +1980,41 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              tracing:
+                description: Tracing configures OpenTelemetry trace export.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled turns on trace export. It is off by default because an exporter
+                      with no collector listening logs connection errors continuously.
+                    type: boolean
+                  endpoint:
+                    description: |-
+                      Endpoint is the OTLP/HTTP collector base URL, for example
+                      http://otel-collector.observability:4318. The standard /v1/traces path is
+                      appended when the URL has none. When empty, Dingo falls back to the
+                      standard OTEL_EXPORTER_OTLP_* variables, which spec.environment can set.
+                    maxLength: 2048
+                    pattern: ^https?://[^\s]+$
+                    type: string
+                  sampleRatio:
+                    description: |-
+                      SampleRatio is the fraction of new traces sampled, from "0" to "1". It is
+                      a string because CRD schemas do not carry floating-point fields portably.
+                      Dingo's own default applies when empty.
+                    pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                    type: string
+                  serviceName:
+                    description: |-
+                      ServiceName is the service.name attribute on exported spans. It defaults
+                      to the DingoNode name so nodes are distinguishable in the backend.
+                    maxLength: 253
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: endpoint, serviceName and sampleRatio require enabled=true
+                  rule: (!has(self.endpoint) && !has(self.serviceName) && !has(self.sampleRatio))
+                    || (has(self.enabled) && self.enabled)
             required:
             - network
             - role

@@ -88,6 +88,15 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		)
 	}
 
+	// An image that predates the tracing options would ignore them, leaving a
+	// node that reports tracing as configured while exporting nothing.
+	if dn.Spec.Tracing.Enabled && !resources.SupportsTracing(dn) {
+		return errors.New(
+			"spec.tracing requires a Dingo image of v0.82.0 or later; set " +
+				"spec.image.tag",
+		)
+	}
+
 	if dn.Spec.Role == dingov1alpha1.RoleBlockProducer {
 		bp := dn.Spec.BlockProducer
 		if bp == nil {
