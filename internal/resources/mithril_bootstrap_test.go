@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,7 +63,8 @@ func runBootstrap(
 	)
 
 	cmd := exec.Command("/bin/sh", "-c", mithrilScript(t))
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		// binDir first so the stub shadows any real dingo, with the system
 		// paths kept for touch, rm and echo.
 		"PATH="+binDir+":"+os.Getenv("PATH"),
@@ -102,7 +104,10 @@ func TestMithrilBootstrapResumesAfterInterruption(t *testing.T) {
 	out, err = runBootstrap(t, dataDir, false, false)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "resuming")
-	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
+	assert.True(
+		t,
+		exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")),
+	)
 }
 
 // If the pod exits after sync succeeds but before the init script writes DONE,
@@ -113,7 +118,11 @@ func TestMithrilBootstrapResumesAfterSyncBeforeCompletionMarker(t *testing.T) {
 	dataDir := t.TempDir()
 	require.NoError(
 		t,
-		os.WriteFile(filepath.Join(dataDir, "metadata.sqlite"), []byte("x"), 0o600),
+		os.WriteFile(
+			filepath.Join(dataDir, "metadata.sqlite"),
+			[]byte("x"),
+			0o600,
+		),
 	)
 	require.NoError(
 		t,
@@ -127,9 +136,16 @@ func TestMithrilBootstrapResumesAfterSyncBeforeCompletionMarker(t *testing.T) {
 	out, err := runBootstrap(t, dataDir, false, false)
 
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "previous mithril bootstrap did not complete; resuming")
+	assert.Contains(
+		t,
+		out,
+		"previous mithril bootstrap did not complete; resuming",
+	)
 	assert.Contains(t, out, "sync invoked")
-	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
+	assert.True(
+		t,
+		exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")),
+	)
 }
 
 // A completed bootstrap must not re-run. Catch-up against a complete database
@@ -154,13 +170,20 @@ func TestMithrilBootstrapAdoptsPreExistingDatabase(t *testing.T) {
 	dataDir := t.TempDir()
 	require.NoError(
 		t,
-		os.WriteFile(filepath.Join(dataDir, "metadata.sqlite"), []byte("x"), 0o600),
+		os.WriteFile(
+			filepath.Join(dataDir, "metadata.sqlite"),
+			[]byte("x"),
+			0o600,
+		),
 	)
 
 	out, err := runBootstrap(t, dataDir, false, true)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "adopting as complete")
-	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
+	assert.True(
+		t,
+		exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")),
+	)
 }
 
 func TestMithrilBootstrapForceResyncWipesAndRebootstraps(t *testing.T) {
@@ -175,8 +198,80 @@ func TestMithrilBootstrapForceResyncWipesAndRebootstraps(t *testing.T) {
 	out, err = runBootstrap(t, dataDir, true, false)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "force resync requested")
-	assert.Contains(t, out, "mithril bootstrap complete", "force resync must invoke sync")
+	assert.Contains(
+		t,
+		out,
+		"mithril bootstrap complete",
+		"force resync must invoke sync",
+	)
 	assert.False(t, exists(t, stale), "force resync must clear the data dir")
-	assert.True(t, exists(t, filepath.Join(dataDir, "metadata.sqlite")), "sync must recreate the database")
-	assert.True(t, exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")))
+	assert.True(
+		t,
+		exists(t, filepath.Join(dataDir, "metadata.sqlite")),
+		"sync must recreate the database",
+	)
+	assert.True(
+		t,
+		exists(t, filepath.Join(dataDir, ".mithril-bootstrap-complete")),
+	)
+}
+
+func TestMithrilBootstrapStorageMode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     dingov1alpha1.StorageMode
+		override string
+		want     string
+	}{
+		{name: "default", want: "core"},
+		{name: "core", mode: dingov1alpha1.StorageModeCore, want: "core"},
+		{name: "api", mode: dingov1alpha1.StorageModeAPI, want: "api"},
+		{name: "environment override", mode: dingov1alpha1.StorageModeCore, override: "api", want: "api"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.StorageMode = tc.mode
+			if tc.override != "" {
+				dn.Spec.Environment = map[string]string{
+					"DINGO_STORAGE_MODE": tc.override,
+				}
+			}
+			dataDir := t.TempDir()
+			binDir := t.TempDir()
+			body := "#!/bin/sh\nprintf '%s' \"${DINGO_STORAGE_MODE:-unset}\" > \"$CARDANO_DATABASE_PATH/mode\"\n"
+			require.NoError(
+				t,
+				os.WriteFile(
+					filepath.Join(binDir, "dingo"),
+					[]byte(body),
+					0o755,
+				),
+			)
+			for _, c := range initContainers(dn, RenderOptions{}) {
+				if c.Name != mithrilInitName {
+					continue
+				}
+				cmd := exec.Command(c.Command[0], c.Command[1:]...)
+				cmd.Env = []string{"PATH=" + binDir + ":" + os.Getenv("PATH")}
+				for _, env := range c.Env {
+					if env.Name != "CARDANO_DATABASE_PATH" {
+						cmd.Env = append(cmd.Env, env.Name+"="+env.Value)
+					}
+				}
+				cmd.Env = append(cmd.Env, "CARDANO_DATABASE_PATH="+dataDir)
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, string(out))
+				mode, err := os.ReadFile(filepath.Join(dataDir, "mode"))
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, string(mode))
+				for _, env := range BuildEnv(dn, RenderOptions{}) {
+					if env.Name == "DINGO_STORAGE_MODE" {
+						assert.Equal(t, env.Value, string(mode))
+					}
+				}
+				return
+			}
+			t.Fatal("Mithril init container missing")
+		})
+	}
 }
