@@ -1197,7 +1197,7 @@ func TestConfigRefChecksumRollout(t *testing.T) {
 	}))
 
 	dn := &dingov1alpha1.DingoNode{
-		ObjectMeta: metav1.ObjectMeta{Name: "custom-relay", Namespace: "cfg-ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-node", Namespace: "cfg-ns"},
 		Spec: dingov1alpha1.DingoNodeSpec{
 			Role:         dingov1alpha1.RoleRelay,
 			Network:      "custom",
@@ -1208,12 +1208,12 @@ func TestConfigRefChecksumRollout(t *testing.T) {
 		},
 	}
 	require.NoError(t, c.Create(ctx, dn))
-	reconcile(t, ctx, reconcilerFor(c), "custom-relay", "cfg-ns")
+	reconcile(t, ctx, reconcilerFor(c), "custom-node", "cfg-ns")
 
 	sts := &appsv1.StatefulSet{}
 	require.NoError(t, c.Get(
 		ctx,
-		types.NamespacedName{Name: "custom-relay", Namespace: "cfg-ns"},
+		types.NamespacedName{Name: "custom-node", Namespace: "cfg-ns"},
 		sts,
 	))
 	first := sts.Spec.Template.Annotations["dingo.blinklabs.io/config-checksum"]
@@ -1228,10 +1228,10 @@ func TestConfigRefChecksumRollout(t *testing.T) {
 	cm.Data["shelley-genesis.json"] = `{"networkMagic":42,"epochLength":500}`
 	require.NoError(t, c.Update(ctx, cm))
 
-	reconcile(t, ctx, reconcilerFor(c), "custom-relay", "cfg-ns")
+	reconcile(t, ctx, reconcilerFor(c), "custom-node", "cfg-ns")
 	require.NoError(t, c.Get(
 		ctx,
-		types.NamespacedName{Name: "custom-relay", Namespace: "cfg-ns"},
+		types.NamespacedName{Name: "custom-node", Namespace: "cfg-ns"},
 		sts,
 	))
 	second := sts.Spec.Template.Annotations["dingo.blinklabs.io/config-checksum"]
