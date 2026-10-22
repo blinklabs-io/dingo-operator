@@ -144,7 +144,7 @@ make lint                 # golangci-lint + nilaway + modernize
 make run                  # run the operator against the current kubecontext
 ```
 
-Requires Go 1.26+. A local Cardano devnet for end-to-end testing lives in the
+Requires Go 1.26.10+. A local Cardano devnet for end-to-end testing lives in the
 [Dingo repo](https://github.com/blinklabs-io/dingo) under
 `internal/test/devnet/`.
 
