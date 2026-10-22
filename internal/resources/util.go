@@ -139,9 +139,14 @@ echo "mithril bootstrap complete"
 `
 	verify := dn.Spec.Mithril.VerifyCertificates == nil ||
 		*dn.Spec.Mithril.VerifyCertificates
+	mode := storageMode(dn)
+	if override, ok := dn.Spec.Environment["DINGO_STORAGE_MODE"]; ok {
+		mode = override
+	}
 	env := []corev1.EnvVar{
 		{Name: "CARDANO_NETWORK", Value: dn.Spec.Network},
 		{Name: "CARDANO_DATABASE_PATH", Value: dataMountPath},
+		{Name: "DINGO_STORAGE_MODE", Value: mode},
 		{
 			Name:  "FORCE_RESYNC",
 			Value: strconv.FormatBool(dn.Spec.Mithril.ForceResync),

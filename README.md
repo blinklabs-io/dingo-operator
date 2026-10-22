@@ -274,3 +274,11 @@ sets their paths; certificate/key bytes never enter environment variables.
 
 Storage expansion is asynchronous as described above. API pod readiness still
 reports ledger health, rather than merely testing whether a TCP listener opened.
+
+Mithril bootstrap uses the same effective storage mode as the serving container,
+including a `DINGO_STORAGE_MODE` environment override. For API nodes, this lets
+Dingo backfill historical API metadata before the serving container starts.
+Downloading a snapshot alone does not mean an API node is ready: allow the
+history backfill to finish, then verify ledger freshness and queries for both
+historical and recent data. An interrupted operator-managed bootstrap resumes
+using its persisted completion markers; preserve the PVC when restarting it.
