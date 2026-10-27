@@ -1971,8 +1971,9 @@ spec:
                       type: object
                     type: array
                   relayRefs:
-                    description: RelayRefs are names of sibling DingoNode relays (same
-                      namespace) to peer.
+                    description: |-
+                      RelayRefs are names of sibling DingoNode relays (same namespace) to peer.
+                      Each one is rendered as its own localRoots group with valency 1.
                     items:
                       type: string
                     type: array

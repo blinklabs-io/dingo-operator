@@ -34,6 +34,8 @@ func newNode(topo dingov1alpha1.TopologySpec) *dingov1alpha1.DingoNode {
 }
 
 func TestRender(t *testing.T) {
+	t.Parallel()
+
 	t.Run("empty topology has no content", func(t *testing.T) {
 		_, hasContent, err := Render(newNode(dingov1alpha1.TopologySpec{}), "ns")
 		require.NoError(t, err)
@@ -58,7 +60,7 @@ func TestRender(t *testing.T) {
 		assert.True(t, doc.LocalRoots[0].Trustable)
 	})
 
-	t.Run("relay refs are auto-wired to headless dns", func(t *testing.T) {
+	t.Run("each relay ref is its own local root group", func(t *testing.T) {
 		dn := newNode(dingov1alpha1.TopologySpec{
 			RelayRefs: []string{"relay-0", "relay-1"},
 		})
@@ -68,13 +70,39 @@ func TestRender(t *testing.T) {
 
 		var doc document
 		require.NoError(t, json.Unmarshal([]byte(out), &doc))
-		require.Len(t, doc.LocalRoots, 1)
-		require.Len(t, doc.LocalRoots[0].AccessPoints, 2)
-		assert.Equal(t,
+		// Dingo's Genesis corroboration counts one group as one witness.
+		require.Len(t, doc.LocalRoots, 2)
+		for i, want := range []string{
 			"relay-0-headless.cardano.svc.cluster.local",
-			doc.LocalRoots[0].AccessPoints[0].Address,
-		)
-		assert.Equal(t, 2, doc.LocalRoots[0].Valency)
+			"relay-1-headless.cardano.svc.cluster.local",
+		} {
+			g := doc.LocalRoots[i]
+			require.Len(t, g.AccessPoints, 1)
+			assert.Equal(t, want, g.AccessPoints[0].Address)
+			assert.Equal(t, int32(relayNtNPort), g.AccessPoints[0].Port)
+			assert.Equal(t, 1, g.Valency)
+			assert.Equal(t, 1, g.WarmValency)
+			assert.True(t, g.Trustable)
+			assert.False(t, g.Advertise)
+		}
+	})
+
+	t.Run("relay ref groups precede external relay groups", func(t *testing.T) {
+		dn := newNode(dingov1alpha1.TopologySpec{
+			RelayRefs: []string{"relay-0", "relay-1"},
+			ExternalRelays: []dingov1alpha1.ExternalRelay{
+				{Address: "relay.example.com", Port: 3001, Valency: 1, Trustable: true},
+			},
+		})
+		out, _, err := Render(dn, "ns")
+		require.NoError(t, err)
+
+		var doc document
+		require.NoError(t, json.Unmarshal([]byte(out), &doc))
+		require.Len(t, doc.LocalRoots, 3)
+		assert.Equal(t, "relay-0-headless.ns.svc.cluster.local", doc.LocalRoots[0].AccessPoints[0].Address)
+		assert.Equal(t, "relay-1-headless.ns.svc.cluster.local", doc.LocalRoots[1].AccessPoints[0].Address)
+		assert.Equal(t, "relay.example.com", doc.LocalRoots[2].AccessPoints[0].Address)
 	})
 
 	t.Run("auto-peer disabled omits relay refs", func(t *testing.T) {

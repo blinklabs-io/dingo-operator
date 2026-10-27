@@ -206,6 +206,7 @@ type TopologySpec struct {
 	// +optional
 	AutoPeerRelays *bool `json:"autoPeerRelays,omitempty"`
 	// RelayRefs are names of sibling DingoNode relays (same namespace) to peer.
+	// Each one is rendered as its own localRoots group with valency 1.
 	// +optional
 	RelayRefs []string `json:"relayRefs,omitempty"`
 	// ExternalRelays are static/external peers merged into local roots.

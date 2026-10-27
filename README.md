@@ -23,7 +23,9 @@ operators.
 - **Mithril bootstrap** via an init container running `dingo mithril sync`
   (native Go client, no external binary).
 - **Topology management** — auto-wire in-cluster block-producer/relay peering,
-  plus static/external relays merged into local roots.
+  plus static/external relays merged into local roots. Every `relayRefs` entry
+  and every external relay is rendered as its own `localRoots` group, because
+  Dingo's Genesis corroboration counts one group as one witness.
 - **Block-producer key handling** — stages KES/VRF/opcert from a Secret into a
   memory-backed `/keys` volume with mode `0600`, sets the `CARDANO_SHELLEY_*`
   env, and surfaces KES period / opcert state from the node's metrics. A

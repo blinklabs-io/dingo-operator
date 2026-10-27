@@ -16,6 +16,7 @@ spec:
       enabled: true
   topology:
     # A block producer peers only with its own relays (never public roots).
+    # Each relayRefs entry becomes its own localRoots group (one witness each).
     relayRefs:
       - relay
   blockProducer:

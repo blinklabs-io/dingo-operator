@@ -33,7 +33,8 @@ type accessPoint struct {
 	Port    int32  `json:"port"`
 }
 
-// localRoot is a group of trusted/advertised peers.
+// localRoot is a group of trusted/advertised peers. Dingo counts each group as
+// one witness for Genesis corroboration.
 type localRoot struct {
 	AccessPoints []accessPoint `json:"accessPoints"`
 	Advertise    bool          `json:"advertise"`
@@ -73,18 +74,6 @@ func Render(
 ) (string, bool, error) {
 	spec := dn.Spec.Topology
 
-	var roots []accessPoint
-	// Auto-wire in-cluster relay peers.
-	autoPeer := spec.AutoPeerRelays == nil || *spec.AutoPeerRelays
-	if autoPeer {
-		for _, ref := range spec.RelayRefs {
-			roots = append(roots, accessPoint{
-				Address: InClusterPeerAddress(ref, namespace),
-				Port:    relayNtNPort,
-			})
-		}
-	}
-
 	doc := document{
 		BootstrapPeers:     []accessPoint{},
 		LocalRoots:         []localRoot{},
@@ -92,15 +81,24 @@ func Render(
 		UseLedgerAfterSlot: spec.UseLedgerAfterSlot,
 	}
 
-	// In-cluster peers form a single trusted local root group.
-	if len(roots) > 0 {
-		doc.LocalRoots = append(doc.LocalRoots, localRoot{
-			AccessPoints: roots,
-			Advertise:    false,
-			Trustable:    true,
-			Valency:      len(roots),
-			WarmValency:  len(roots),
-		})
+	// Each in-cluster relay becomes its own trusted local root group with
+	// valency 1. Dingo's Genesis corroboration counts one group as one
+	// witness, so folding all relays into one group would leave a single
+	// witness regardless of how many relays are listed.
+	autoPeer := spec.AutoPeerRelays == nil || *spec.AutoPeerRelays
+	if autoPeer {
+		for _, ref := range spec.RelayRefs {
+			doc.LocalRoots = append(doc.LocalRoots, localRoot{
+				AccessPoints: []accessPoint{{
+					Address: InClusterPeerAddress(ref, namespace),
+					Port:    relayNtNPort,
+				}},
+				Advertise:   false,
+				Trustable:   true,
+				Valency:     1,
+				WarmValency: 1,
+			})
+		}
 	}
 
 	// Each external relay becomes its own local root so per-peer valency and

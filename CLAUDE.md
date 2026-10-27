@@ -19,7 +19,7 @@ active/standby failover. Module: `github.com/blinklabs-io/dingo-operator`.
 | `cmd/dingo-operator/` | Manager entrypoint (leader election, metrics, health) |
 | `internal/controller/` | Reconciler: `dingonode_controller.go` (reconcile loop, status), `apply.go` (CreateOrUpdate upserts), `validate.go` (cross-field validation) |
 | `internal/resources/` | Pure builders for StatefulSet, Services, ConfigMap, PDB, NetworkPolicy, PodMonitor, ServiceAccount |
-| `internal/topology/` | Renders `topology.json` (in-cluster peering + external relays) |
+| `internal/topology/` | Renders `topology.json` (in-cluster peering + external relays; each `relayRefs` entry and each external relay is its own `localRoots` group, since Dingo counts one group as one Genesis witness) |
 | `internal/forgestatus/` | Scrapes the node's Prometheus metrics for KES/opcert state |
 | `internal/onchain/` | Reads the authoritative on-chain opcert counter from the node over node-to-client local-state-query |
 | `internal/version/` | ldflags-injected `Version`/`CommitHash` |
