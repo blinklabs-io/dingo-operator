@@ -82,6 +82,19 @@ func observedOnChain(
 	}
 }
 
+const voteEnvelopeType = "BLS12-381 Signing Key"
+
+func scalar32(last byte) []byte {
+	b := make([]byte, 32)
+	b[31] = last
+	return b
+}
+
+func voteEnvelope(t *testing.T, last byte) []byte {
+	t.Helper()
+	return rawKeyEnvelope(t, voteEnvelopeType, scalar32(last))
+}
+
 func TestValidateKeysSecret(t *testing.T) {
 	keys, err := devnet.GeneratePoolKeys(rand.Reader)
 	require.NoError(t, err)
@@ -146,6 +159,52 @@ func TestValidateKeysSecret(t *testing.T) {
 			dn: node(func(dn *dingov1alpha1.DingoNode) {
 				dn.Spec.BlockProducer.PoolID = ""
 			}),
+		},
+		{
+			name: "valid with a vote key",
+			data: withKey(goodData, "vote.skey", voteEnvelope(t, 42)),
+			dn:   node(nil),
+		},
+		{
+			name: "valid with a legacy raw hex vote key",
+			data: withKey(
+				goodData, "vote.skey",
+				[]byte(hex.EncodeToString(scalar32(42))+"\n"),
+			),
+			dn: node(nil),
+		},
+		{
+			name: "empty vote key is treated as absent",
+			data: withKey(goodData, "vote.skey", []byte{}),
+			dn:   node(nil),
+		},
+		{
+			name:    "vote key of the wrong envelope type",
+			data:    withKey(goodData, "vote.skey", goodData["kes.skey"]),
+			dn:      node(nil),
+			wantErr: "vote.skey",
+		},
+		{
+			name: "vote key with a short scalar",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, scalar32(42)[:16],
+			)),
+			dn:      node(nil),
+			wantErr: "vote.skey holds 16 bytes, expected 32",
+		},
+		{
+			name: "vote key that is the zero scalar",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, make([]byte, 32),
+			)),
+			dn:      node(nil),
+			wantErr: "vote.skey",
+		},
+		{
+			name:    "vote key that is not a key at all",
+			data:    withKey(goodData, "vote.skey", []byte("not-a-key")),
+			dn:      node(nil),
+			wantErr: "vote.skey",
 		},
 		{
 			name:    "missing opcert",

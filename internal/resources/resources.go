@@ -294,6 +294,10 @@ type RenderOptions struct {
 	// MountKeys mounts the block-producer key Secret. Keyless standby pods set
 	// this false.
 	MountKeys bool
+	// MountVoteKey sets DINGO_LEIOS_VOTE_SIGNING_KEY_FILE for the optional
+	// vote.skey in the keys Secret. Like the other key env it applies only
+	// where the keys are mounted.
+	MountVoteKey bool
 }
 
 // BuildEnv assembles the container environment. Spec.Environment values take
@@ -386,6 +390,11 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 				Value: strconv.FormatInt(bp.ForgeStaleGapThresholdSlots, 10),
 			},
 		)
+	}
+	// The optional Leios vote key shares the key-mount gate, so a keyless
+	// standby never gets a vote signing key.
+	if mountsBlockProducerKeys(dn, opts) && opts.MountVoteKey {
+		env = append(env, corev1.EnvVar{Name: VoteKeyEnv, Value: VoteKeyPath})
 	}
 	env = append(env, apiEnv(dn)...)
 	return mergeEnv(env, dn.Spec.Environment)

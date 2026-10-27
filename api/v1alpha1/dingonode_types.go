@@ -225,7 +225,10 @@ type KeysSpec struct {
 	// +optional
 	SourceType KeySourceType `json:"sourceType,omitempty"`
 	// SecretRef names a Secret holding vrf.skey, kes.skey and opcert.cert in
-	// cardano-cli text-envelope JSON form.
+	// cardano-cli text-envelope JSON form. An optional vote.skey holds the
+	// Leios BLS12-381 vote signing key (text envelope or raw hex scalar); when
+	// present it is staged with the other keys and wired to
+	// DINGO_LEIOS_VOTE_SIGNING_KEY_FILE.
 	// +kubebuilder:validation:MinLength=1
 	SecretRef string `json:"secretRef"`
 }

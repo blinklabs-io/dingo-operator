@@ -459,6 +459,104 @@ func TestBlockProducerKeysChecksumRollout(t *testing.T) {
 // the failure mode that matters: dropping the keys-checksum annotation removes
 // it from the template, which is itself a change and would roll the single
 // forging pod onto the rejected keys.
+// templateEnv returns the named environment variable from the pod template's
+// containers, and whether it is set.
+func templateEnv(tpl corev1.PodTemplateSpec, name string) (string, bool) {
+	for _, ctr := range tpl.Spec.Containers {
+		for _, e := range ctr.Env {
+			if e.Name == name {
+				return e.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
+func TestBlockProducerLeiosVoteKey(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "vote-ns")
+	const voteEnv = "DINGO_LEIOS_VOTE_SIGNING_KEY_FILE"
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	good, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pool-keys", Namespace: "vote-ns",
+		},
+		Data: good,
+	}))
+	dn := blockProducerNode(
+		"bp", "vote-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+
+	// No vote.skey: existing three-key Secrets render exactly as before.
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-ns")
+	_, ok := templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
+	assert.False(t, ok, "no vote key in the Secret must set no vote env")
+	before := keysAnnotation(t, ctx, c, "bp", "vote-ns")
+
+	// Adding vote.skey wires the env and rolls the pod.
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{Name: "pool-keys", Namespace: "vote-ns"}
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data["vote.skey"] = voteEnvelope(t, 42)
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-ns")
+	got, ok := templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
+	require.True(t, ok, "vote.skey in the Secret must set the vote env")
+	assert.Equal(t, "/keys/vote.skey", got)
+	withVote := keysAnnotation(t, ctx, c, "bp", "vote-ns")
+	assert.NotEqual(t, before, withVote, "adding vote.skey must roll the pod")
+	wantTemplate := podTemplate(t, ctx, c, "bp", "vote-ns")
+
+	// A refused bundle (foreign opcert) must carry the vote wiring forward,
+	// otherwise dropping the env would itself roll the pod onto rejected keys.
+	other, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	foreign, err := other.SecretData(3, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data["opcert.cert"] = foreign["opcert.cert"]
+	require.NoError(t, c.Update(ctx, secret))
+	r := reconcilerFor(c)
+	r.Recorder = events.NewFakeRecorder(10)
+	reconcile(t, ctx, r, "bp", "vote-ns")
+	assert.Equal(
+		t, wantTemplate, podTemplate(t, ctx, c, "bp", "vote-ns"),
+		"a refused bundle must leave the vote wiring untouched",
+	)
+
+	// A malformed vote key refuses the bundle and does not roll.
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data["opcert.cert"] = good["opcert.cert"]
+	secret.Data["vote.skey"] = []byte("not-a-key")
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, r, "bp", "vote-ns")
+	assert.Equal(
+		t, wantTemplate, podTemplate(t, ctx, c, "bp", "vote-ns"),
+		"a malformed vote key must not roll the pod",
+	)
+	node := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "bp", Namespace: "vote-ns"}, node,
+	))
+	cond := meta.FindStatusCondition(node.Status.Conditions, condKeysValid)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Contains(t, cond.Message, "vote.skey")
+
+	// Removing the vote key drops the wiring (a deliberate change).
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	delete(secret.Data, "vote.skey")
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-ns")
+	_, ok = templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
+	assert.False(t, ok, "removing vote.skey must remove the vote env")
+}
+
 func TestBlockProducerRejectedKeysDoNotRoll(t *testing.T) {
 	c, ctx := startEnv(t)
 	createNamespace(t, ctx, c, "reject-ns")

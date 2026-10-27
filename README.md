@@ -33,6 +33,13 @@ operators.
   out. The live pod keeps its staged keys when the Secret changes. Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
+  An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
+  text envelope or raw hex scalar) is staged the same way and wired to
+  `DINGO_LEIOS_VOTE_SIGNING_KEY_FILE`; without it nothing changes. It is checked
+  with the rest of the bundle, and `spec.environment` may not point that
+  variable elsewhere. On a network without Leios, Dingo logs a warning and
+  ignores the key. Dingo no longer reads `DINGO_LEIOS_VOTER_PUBLIC_KEYS`; the
+  vote key must be registered on chain for the pool.
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
   Prometheus endpoint, including blockfetch delay and fetch duration, ledger
   block-apply batch latency, and the KES/opcert metrics used for status and
@@ -107,6 +114,7 @@ cardano-cli text-envelope form, then apply the sample:
 ```sh
 kubectl create secret generic producer-pool-keys -n cardano \
   --from-file=vrf.skey --from-file=kes.skey --from-file=opcert.cert
+# On a Leios network, optionally add --from-file=vote.skey
 kubectl apply -f config/samples/dingo_v1alpha1_dingonode_blockproducer.yaml
 ```
 

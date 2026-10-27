@@ -138,6 +138,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 					"version; use SingleActive",
 			)
 		}
+		if err := resources.ValidateKeyEnv(dn); err != nil {
+			return err
+		}
 	}
 	if relay := dn.Spec.RelayService; relay.Type == "" ||
 		relay.Type == corev1.ServiceTypeClusterIP {

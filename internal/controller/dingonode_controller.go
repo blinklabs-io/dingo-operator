@@ -276,14 +276,18 @@ func (r *DingoNodeReconciler) reconcileResources(
 				// byte-identical and nothing rolls. Leaving the checksum empty
 				// would *remove* the annotation, which is itself a template
 				// change and would roll the pod onto the rejected keys.
-				prev, err := r.liveKeysChecksum(ctx, dn)
+				prev, voteKey, err := r.liveKeysState(ctx, dn)
 				if err != nil {
 					return err
 				}
 				opts.KeysChecksum = prev
+				// The vote env is part of the pod template too: carry it
+				// forward with the checksum.
+				opts.MountVoteKey = voteKey
 				r.rejectKeys(ctx, dn, verr)
 			} else {
 				opts.KeysChecksum = keysChecksum(secret)
+				opts.MountVoteKey = len(secret.Data[keyFileVote]) > 0
 				dn.Status.OpCert.OnDiskCounter = state.Counter
 				meta.SetStatusCondition(
 					&dn.Status.Conditions,
@@ -421,9 +425,10 @@ func (r *DingoNodeReconciler) rejectKeys(
 	})
 }
 
-// liveKeysChecksum returns the keys-checksum annotation currently on the
-// node's StatefulSet pod template. Re-rendering with this value keeps the pod
-// template unchanged, so a rejected key bundle cannot trigger a rollout.
+// liveKeysState returns the keys-checksum annotation currently on the
+// node's StatefulSet pod template, and whether the vote key env is set there.
+// Re-rendering with these values keeps the pod template unchanged, so a
+// rejected key bundle cannot trigger a rollout.
 //
 // It reads through the same cached client controllerutil.CreateOrUpdate uses
 // below, so both see one informer's view of the StatefulSet — but they are two
@@ -441,19 +446,28 @@ func (r *DingoNodeReconciler) rejectKeys(
 // returned: "" is the one value that *removes* the annotation, so on the single
 // path whose whole purpose is never rendering without the live checksum, an
 // unclassified error must not be indistinguishable from absence.
-func (r *DingoNodeReconciler) liveKeysChecksum(
+func (r *DingoNodeReconciler) liveKeysState(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) (string, error) {
+) (string, bool, error) {
 	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
 	if err := r.Get(ctx, key, sts); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", nil
+			return "", false, nil
 		}
-		return "", fmt.Errorf("read statefulset for keys checksum: %w", err)
+		return "", false, fmt.Errorf("read statefulset for keys checksum: %w", err)
 	}
-	return sts.Spec.Template.Annotations[resources.KeysChecksumAnnotation], nil
+	voteKey := false
+	for _, c := range sts.Spec.Template.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == resources.VoteKeyEnv {
+				voteKey = true
+			}
+		}
+	}
+	return sts.Spec.Template.Annotations[resources.KeysChecksumAnnotation],
+		voteKey, nil
 }
 
 // reconcileStatus refreshes the DingoNode status from live children.
