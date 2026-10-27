@@ -85,6 +85,9 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 
 // ValidateAPIs rejects listener/Service disagreement before resources are changed.
 func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
+	if err := validateManagedPortEnv(dn); err != nil {
+		return err
+	}
 	if a := dn.Spec.APIs; a != nil {
 		for i, peer := range a.IngressFrom {
 			selectors := peer.NamespaceSelector != nil ||
@@ -175,15 +178,6 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 		}
 	}
 	if anyEnabled {
-		for key, want := range map[string]string{"CARDANO_PORT": "3001", "CARDANO_PRIVATE_PORT": "3002", "CARDANO_METRICS_PORT": "12798"} {
-			if v, ok := dn.Spec.Environment[key]; ok && v != want {
-				return fmt.Errorf(
-					"%s must be %s when API listeners are enabled",
-					key,
-					want,
-				)
-			}
-		}
 		if storageMode(dn) != "api" {
 			return errors.New("API listeners require spec.storageMode=api")
 		}
@@ -207,6 +201,36 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 			if value, ok := dn.Spec.Environment[key]; ok && value != want {
 				return fmt.Errorf("%s conflicts with utxorpcTLSSecretRef", key)
 			}
+		}
+	}
+	return nil
+}
+
+// validateManagedPortEnv rejects environment overrides that move a listener
+// the operator wires into container ports, Services, NetworkPolicy, probes and
+// topology dialing. Those stay on fixed ports, so a moved listener would
+// silently stop accepting traffic. Restating the managed port is harmless.
+func validateManagedPortEnv(dn *dingov1alpha1.DingoNode) error {
+	for _, m := range []struct {
+		key  string
+		port int32
+	}{
+		{"CARDANO_PORT", portRelay},
+		{"CARDANO_PRIVATE_PORT", PortNodeToClient},
+		{"CARDANO_METRICS_PORT", portMetrics},
+		{"DINGO_HEALTH_PORT", portHealth},
+	} {
+		value, ok := dn.Spec.Environment[m.key]
+		if !ok {
+			continue
+		}
+		port, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || port != int64(m.port) {
+			return fmt.Errorf(
+				"%s is managed by the operator and must be %d or unset",
+				m.key,
+				m.port,
+			)
 		}
 	}
 	return nil
