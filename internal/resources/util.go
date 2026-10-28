@@ -61,6 +61,18 @@ chmod 0600 \
   "${destination_dir}/vrf.skey" \
   "${destination_dir}/kes.skey" \
   "${destination_dir}/opcert.cert"
+# vote.skey (or the dingo Helm chart's bls.skey) is the optional Leios vote
+# signing key; Dingo requires it to be owner-only.
+vote=
+if [ -s "${source_dir}/vote.skey" ]; then
+  vote=vote.skey
+elif [ -s "${source_dir}/bls.skey" ]; then
+  vote=bls.skey
+fi
+if [ -n "${vote}" ]; then
+  cp "${source_dir}/${vote}" "${destination_dir}/vote.skey"
+  chmod 0600 "${destination_dir}/vote.skey"
+fi
 `
 
 // initContainers prepares private key files when mounted and builds the Mithril

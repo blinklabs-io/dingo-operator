@@ -82,6 +82,34 @@ func observedOnChain(
 	}
 }
 
+const voteEnvelopeType = "BLS12-381 Signing Key"
+
+func scalar32(last byte) []byte {
+	b := make([]byte, 32)
+	b[31] = last
+	return b
+}
+
+func voteEnvelope(t *testing.T, last byte) []byte {
+	t.Helper()
+	return rawKeyEnvelope(t, voteEnvelopeType, scalar32(last))
+}
+
+// blsScalarModulus is r, the BLS12-381 scalar field order, big-endian. Dingo
+// rejects vote scalars outside [1, r).
+const blsScalarModulus = "73eda753299d7d483339d80809a1d805" +
+	"53bda402fffe5bfeffffffff00000001"
+
+// modulusScalar returns r+delta as a 32-byte big-endian scalar, for delta in
+// {-1, 0, 1}; r ends in 0x01, so only the last byte changes.
+func modulusScalar(t *testing.T, delta int) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(blsScalarModulus)
+	require.NoError(t, err)
+	b[31] = byte(int(b[31]) + delta)
+	return b
+}
+
 func TestValidateKeysSecret(t *testing.T) {
 	keys, err := devnet.GeneratePoolKeys(rand.Reader)
 	require.NoError(t, err)
@@ -146,6 +174,112 @@ func TestValidateKeysSecret(t *testing.T) {
 			dn: node(func(dn *dingov1alpha1.DingoNode) {
 				dn.Spec.BlockProducer.PoolID = ""
 			}),
+		},
+		{
+			name: "valid with a vote key",
+			data: withKey(goodData, "vote.skey", voteEnvelope(t, 42)),
+			dn:   node(nil),
+		},
+		{
+			name: "valid with a legacy raw hex vote key",
+			data: withKey(
+				goodData, "vote.skey",
+				[]byte(hex.EncodeToString(scalar32(42))+"\n"),
+			),
+			dn: node(nil),
+		},
+		{
+			name: "valid with the chart's bls.skey",
+			data: withKey(goodData, "bls.skey", voteEnvelope(t, 42)),
+			dn:   node(nil),
+		},
+		{
+			name: "valid with identical vote.skey and bls.skey",
+			data: withKey(
+				withKey(goodData, "vote.skey", voteEnvelope(t, 42)),
+				"bls.skey", voteEnvelope(t, 42),
+			),
+			dn: node(nil),
+		},
+		{
+			name: "vote.skey and bls.skey that differ",
+			data: withKey(
+				withKey(goodData, "vote.skey", voteEnvelope(t, 42)),
+				"bls.skey", voteEnvelope(t, 43),
+			),
+			dn:      node(nil),
+			wantErr: "both vote.skey and bls.skey",
+		},
+		{
+			name:    "bls.skey that is not a key at all",
+			data:    withKey(goodData, "bls.skey", []byte("not-a-key")),
+			dn:      node(nil),
+			wantErr: "bls.skey",
+		},
+		{
+			name: "empty vote key is treated as absent",
+			data: withKey(goodData, "vote.skey", []byte{}),
+			dn:   node(nil),
+		},
+		{
+			name:    "vote key of the wrong envelope type",
+			data:    withKey(goodData, "vote.skey", goodData["kes.skey"]),
+			dn:      node(nil),
+			wantErr: "vote.skey",
+		},
+		{
+			name: "vote key with a short scalar",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, scalar32(42)[:16],
+			)),
+			dn:      node(nil),
+			wantErr: "vote.skey holds 16 bytes, expected 32",
+		},
+		{
+			name: "vote key that is the zero scalar",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, make([]byte, 32),
+			)),
+			dn:      node(nil),
+			wantErr: "vote.skey",
+		},
+		{
+			name: "vote key one below the field modulus",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, modulusScalar(t, -1),
+			)),
+			dn: node(nil),
+		},
+		{
+			name: "vote key equal to the field modulus",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, modulusScalar(t, 0),
+			)),
+			dn:      node(nil),
+			wantErr: "vote.skey scalar is not below the BLS12-381 field modulus",
+		},
+		{
+			name: "legacy raw hex vote key above the field modulus",
+			data: withKey(
+				goodData, "vote.skey",
+				[]byte(hex.EncodeToString(modulusScalar(t, 1))),
+			),
+			dn:      node(nil),
+			wantErr: "vote.skey scalar is not below the BLS12-381 field modulus",
+		},
+		{
+			name: "vote key of all ones",
+			data: withKey(goodData, "vote.skey", rawKeyEnvelope(
+				t, voteEnvelopeType, bytes.Repeat([]byte{0xff}, 32),
+			)),
+			dn:      node(nil),
+			wantErr: "vote.skey scalar is not below the BLS12-381 field modulus",
+		},
+		{
+			name:    "vote key that is not a key at all",
+			data:    withKey(goodData, "vote.skey", []byte("not-a-key")),
+			dn:      node(nil),
+			wantErr: "vote.skey",
 		},
 		{
 			name:    "missing opcert",

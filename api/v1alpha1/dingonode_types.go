@@ -227,7 +227,10 @@ type KeysSpec struct {
 	// SecretRef names a Secret holding vrf.skey, kes.skey and the operational
 	// certificate in cardano-cli text-envelope JSON form. The certificate is
 	// opcert.cert or node.cert (the name the dingo Helm chart uses); a Secret
-	// may hold both only if they are identical.
+	// may hold both only if they are identical. An optional vote.skey (or the
+	// chart's bls.skey) holds the Leios BLS12-381 vote signing key (text
+	// envelope or raw hex scalar); when present it is staged with the other keys and wired to
+	// DINGO_LEIOS_VOTE_SIGNING_KEY_FILE.
 	// +kubebuilder:validation:MinLength=1
 	SecretRef string `json:"secretRef"`
 }

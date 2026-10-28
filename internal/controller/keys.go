@@ -21,16 +21,20 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
+	"slices"
 	"strings"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/kes"
 	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/blinklabs-io/gouroboros/vrf"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -40,6 +44,12 @@ const (
 	keyFileKES    = "kes.skey"
 	keyFileVRF    = "vrf.skey"
 	keyFileOpCert = "opcert.cert"
+	// keyFileVote is optional: the Leios BLS vote signing key. A Secret
+	// without it stays valid.
+	keyFileVote = resources.VoteKeyFile
+	// keyFileBLS is the name the dingo Helm chart gives the vote signing key.
+	// It is accepted in place of keyFileVote.
+	keyFileBLS = "bls.skey"
 	// keyFileNodeCert is the name the dingo Helm chart gives the operational
 	// certificate. It is accepted in place of keyFileOpCert so one Secret can
 	// serve both.
@@ -148,6 +158,16 @@ func validateKeysSecret(
 	}
 	if err := checkVRFKeyLength(vrfRaw); err != nil {
 		return nil, err
+	}
+
+	voteData, voteFile, err := voteKeyFile(secret.Data)
+	if err != nil {
+		return nil, err
+	}
+	if voteData != nil {
+		if err := checkVoteKey(voteData, voteFile); err != nil {
+			return nil, err
+		}
 	}
 
 	oc, coldVkey, err := opcert.Parse(certData)
@@ -276,6 +296,30 @@ func opCertFile(data map[string][]byte) ([]byte, string, error) {
 	return nil, "", nil
 }
 
+// voteKeyFile returns the optional Leios vote signing key from a keys Secret
+// and the file it came from. The key is vote.skey or the dingo chart's
+// bls.skey; an empty file counts as absent. Both may be present only when they
+// hold the same bytes. It returns nil data when neither is present.
+func voteKeyFile(data map[string][]byte) ([]byte, string, error) {
+	voteData, blsData := data[keyFileVote], data[keyFileBLS]
+	switch {
+	case len(voteData) > 0 && len(blsData) > 0:
+		if !bytes.Equal(voteData, blsData) {
+			return nil, "", fmt.Errorf(
+				"keys secret holds both %s and %s with different contents; "+
+					"keep only one",
+				keyFileVote, keyFileBLS,
+			)
+		}
+		return voteData, keyFileVote, nil
+	case len(voteData) > 0:
+		return voteData, keyFileVote, nil
+	case len(blsData) > 0:
+		return blsData, keyFileBLS, nil
+	}
+	return nil, "", nil
+}
+
 // onChainFloor returns the on-chain opcert counter to enforce against, and
 // whether there is one to enforce at all.
 //
@@ -356,6 +400,83 @@ func checkKeyEnvelope(
 		return nil, fmt.Errorf("%s holds no key material", file)
 	}
 	return raw, nil
+}
+
+// voteKeyMaxSize and voteKeySize mirror Dingo's loader
+// (dingo/ledger/leios/keys.go): the file is read up to 1 KiB and holds a
+// 32-byte big-endian BLS12-381 scalar, either in a text envelope or as legacy
+// raw hex. Dingo's ParseVoteSigningKey also requires the scalar to lie in
+// [1, r), r being the scalar field modulus; checkVoteKey enforces the same
+// range so a key Dingo would refuse at startup never rolls the pod.
+const (
+	voteKeyMaxSize = 1024
+	voteKeySize    = 32
+)
+
+// checkVoteKey validates the optional Leios vote signing key so a truncated or
+// misfiled key is a refused rotation rather than a node that starts with
+// voting disabled or fails at startup.
+func checkVoteKey(data []byte, name string) error {
+	if len(data) > voteKeyMaxSize {
+		return fmt.Errorf(
+			"%s exceeds %d bytes", name, voteKeyMaxSize,
+		)
+	}
+	var scalar []byte
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("{")) {
+		var env keyEnvelope
+		if err := json.Unmarshal(trimmed, &env); err != nil {
+			return fmt.Errorf("parse %s envelope: %w", name, err)
+		}
+		// Dingo accepts any envelope whose type names a BLS or Leios key.
+		lower := strings.ToLower(env.Type)
+		if !strings.Contains(lower, "bls") &&
+			!strings.Contains(lower, "leios") {
+			return fmt.Errorf(
+				"%s has envelope type %q, expected a BLS vote signing key",
+				name, env.Type,
+			)
+		}
+		payload, err := hex.DecodeString(env.CborHex)
+		if err != nil {
+			return fmt.Errorf("decode %s cborHex: %w", name, err)
+		}
+		n, err := cbor.Decode(payload, &scalar)
+		if err != nil {
+			return fmt.Errorf("decode %s cbor: %w", name, err)
+		}
+		if n != len(payload) {
+			return fmt.Errorf(
+				"%s has trailing bytes after the key", name,
+			)
+		}
+	} else {
+		var err error
+		scalar, err = hex.DecodeString(string(trimmed))
+		if err != nil {
+			return fmt.Errorf(
+				"%s is neither a text envelope nor a hex scalar: %w",
+				name, err,
+			)
+		}
+	}
+	if len(scalar) != voteKeySize {
+		return fmt.Errorf(
+			"%s holds %d bytes, expected %d",
+			name, len(scalar), voteKeySize,
+		)
+	}
+	if !slices.ContainsFunc(scalar, func(b byte) bool { return b != 0 }) {
+		return fmt.Errorf("%s is the zero scalar", name)
+	}
+	if new(big.Int).SetBytes(scalar).Cmp(fr.Modulus()) >= 0 {
+		return fmt.Errorf(
+			"%s scalar is not below the BLS12-381 field modulus",
+			name,
+		)
+	}
+	return nil
 }
 
 // checkVRFKeyLength mirrors the bound Dingo's keystore enforces

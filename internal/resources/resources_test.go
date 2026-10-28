@@ -1236,3 +1236,67 @@ func TestKeyPreparationStagesNodeCertAsOpcert(t *testing.T) {
 		})
 	}
 }
+
+// The staging script accepts the dingo Helm chart's bls.skey and always
+// presents the vote key to Dingo as /keys/vote.skey.
+func TestKeyPreparationStagesBLSKeyAsVoteKey(t *testing.T) {
+	t.Parallel()
+	sts := BuildStatefulSet(
+		bpNode(),
+		RenderOptions{Replicas: 1, MountKeys: true},
+	)
+	var script []string
+	for _, c := range sts.Spec.Template.Spec.InitContainers {
+		if c.Name == "prepare-block-producer-keys" {
+			script = c.Command
+		}
+	}
+	require.Len(t, script, 3)
+
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"bls.skey only", map[string]string{"bls.skey": "chart-key"}, "chart-key"},
+		{"vote.skey only", map[string]string{"vote.skey": "vote-key"}, "vote-key"},
+		{"both", map[string]string{"vote.skey": "same", "bls.skey": "same"}, "same"},
+		{"neither", map[string]string{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src, dst := t.TempDir(), t.TempDir()
+			files := map[string]string{
+				"vrf.skey": "vrf", "kes.skey": "kes", "opcert.cert": "cert",
+			}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			for name, body := range files {
+				require.NoError(
+					t,
+					os.WriteFile(filepath.Join(src, name), []byte(body), 0o600),
+				)
+			}
+			cmd := exec.Command(script[0], script[1:]...)
+			cmd.Env = append(
+				os.Environ(),
+				"DINGO_KEYS_SOURCE="+src,
+				"DINGO_KEYS_DESTINATION="+dst,
+			)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			assert.NoFileExists(t, filepath.Join(dst, "bls.skey"))
+			if tc.want == "" {
+				assert.NoFileExists(t, filepath.Join(dst, "vote.skey"))
+				return
+			}
+			got, err := os.ReadFile(filepath.Join(dst, "vote.skey"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+			info, err := os.Stat(filepath.Join(dst, "vote.skey"))
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		})
+	}
+}
