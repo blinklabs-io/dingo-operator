@@ -55,6 +55,18 @@ type Signer interface {
 	Sign(ctx context.Context, signable []byte) ([]byte, error)
 }
 
+// Issuer issues an operational certificate from the pool's on-chain opcert
+// counter: the issue number is chainCounter + 1, the next one the chain
+// accepts. Implementations return a result whose signature verifies under
+// ColdVkey over the opcert signable bytes.
+type Issuer interface {
+	SignOpCertFromChain(
+		ctx context.Context,
+		kesVkey []byte,
+		chainCounter, kesPeriod uint64,
+	) (*OpCertResult, error)
+}
+
 // SecretSigner signs with a cold Ed25519 private key held in memory. It is
 // intended for dev/testnet only: production block producers should keep the
 // cold key out of the cluster and use a remote backend (see BursaSigner).
@@ -89,6 +101,42 @@ func (s *SecretSigner) Sign(_ context.Context, signable []byte) ([]byte, error) 
 // PublicKey returns the cold verification key.
 func (s *SecretSigner) PublicKey() ed25519.PublicKey {
 	return s.key.Public().(ed25519.PublicKey)
+}
+
+// SignOpCertFromChain implements Issuer.
+func (s *SecretSigner) SignOpCertFromChain(
+	ctx context.Context,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+) (*OpCertResult, error) {
+	if err := checkOpCertInput(kesVkey, chainCounter); err != nil {
+		return nil, err
+	}
+	issue := chainCounter + 1
+	sig, err := s.Sign(
+		ctx, lcommon.OpCertSignableBytes(kesVkey, issue, kesPeriod),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &OpCertResult{
+		IssueCounter: issue,
+		Signature:    sig,
+		ColdVkey:     s.PublicKey(),
+	}, nil
+}
+
+func checkOpCertInput(kesVkey []byte, chainCounter uint64) error {
+	if len(kesVkey) != kesVkeySize {
+		return fmt.Errorf(
+			"KES vkey must be %d bytes, got %d",
+			kesVkeySize, len(kesVkey),
+		)
+	}
+	if chainCounter == math.MaxUint64 {
+		return errors.New("chain counter out of range")
+	}
+	return nil
 }
 
 // BursaConfig configures a remote Bursa cold-signer.
@@ -211,14 +259,8 @@ func (b *BursaSigner) SignOpCertFromChain(
 	kesVkey []byte,
 	chainCounter, kesPeriod uint64,
 ) (*OpCertResult, error) {
-	if len(kesVkey) != kesVkeySize {
-		return nil, fmt.Errorf(
-			"KES vkey must be %d bytes, got %d",
-			kesVkeySize, len(kesVkey),
-		)
-	}
-	if chainCounter == math.MaxUint64 {
-		return nil, errors.New("chain counter out of range")
+	if err := checkOpCertInput(kesVkey, chainCounter); err != nil {
+		return nil, err
 	}
 	reqBody, err := json.Marshal(bursaOpCertRequest{
 		Type:         "opcert",
@@ -310,4 +352,6 @@ func (b *BursaSigner) verify(
 var (
 	_ Signer = (*SecretSigner)(nil)
 	_ Signer = (*BursaSigner)(nil)
+	_ Issuer = (*SecretSigner)(nil)
+	_ Issuer = (*BursaSigner)(nil)
 )

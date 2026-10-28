@@ -18,8 +18,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"math"
 	"testing"
 
+	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,4 +79,33 @@ func TestBursaSignerNotImplemented(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.Sign(context.Background(), []byte("x"))
 	assert.ErrorIs(t, err, ErrNotImplemented)
+}
+
+func TestSecretSignerSignOpCertFromChain(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	s, err := NewSecretSigner(priv.Seed())
+	require.NoError(t, err)
+	kesVkey := make([]byte, 32)
+	kesVkey[0] = 7
+
+	var issuer Issuer = s
+	res, err := issuer.SignOpCertFromChain(
+		context.Background(), kesVkey, 4, 120,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(5), res.IssueCounter)
+	assert.Equal(t, pub, res.ColdVkey)
+	assert.True(t, ed25519.Verify(
+		pub, lcommon.OpCertSignableBytes(kesVkey, 5, 120), res.Signature,
+	))
+
+	_, err = s.SignOpCertFromChain(
+		context.Background(), kesVkey[:31], 4, 120,
+	)
+	require.Error(t, err)
+	_, err = s.SignOpCertFromChain(
+		context.Background(), kesVkey, math.MaxUint64, 120,
+	)
+	require.Error(t, err)
 }
