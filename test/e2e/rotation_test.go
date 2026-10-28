@@ -326,7 +326,9 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 
 // opcertFromKeysSecret reads the opcert from the keys Secret, trying
 // opcert.cert first and falling back to node.cert.
-func (h *harness) opcertFromKeysSecret(ctx context.Context) (*ledger.OpCert, []byte, error) {
+func (h *harness) opcertFromKeysSecret(
+	ctx context.Context,
+) (*ledger.OpCert, []byte, error) {
 	s := &corev1.Secret{}
 	if err := h.client.Get(ctx, types.NamespacedName{
 		Name:      keysSecretRef,
@@ -388,17 +390,20 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 				return fmt.Errorf("block producer missing")
 			}
 			spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAuto
-			// Stay below the KES window (62 periods) so the operator accepts
-			// it. Pick renewBeforePeriods so the first rotation is due within
-			// a few KES periods of start, but the freshly issued opcert stays
-			// not-due for comfortably longer than the once-only observation
-			// window (at least two requeueInterval values) so a second
-			// issuance is not forced by timing. A fresh opcert at period P is
-			// due again when P + 62 - current <= renewBefore. With
-			// renewBeforePeriods = 30 and requeueInterval = 2m, after issuance
-			// the new opcert should remain not-due across multiple reconciles,
-			// making "issue once" provable.
-			spec.BlockProducer.Rotation.RenewBeforePeriods = 30
+			// The devnet's initial opcert starts at KES period 0 with a
+			// 62-period window (120 s per period). Rotation is due when
+			// 62 - current <= R, so the first rotation is due at
+			// current >= 62 - R. Because the initial opcert starts at 0,
+			// time-to-first-due and time-until-a-fresh-opcert-is-due-again
+			// are BOTH 62 - R periods. With R = 58 the first rotation is
+			// due around period 4 (~8 min; the on-chain counter is observed
+			// around 5-7 min), and a fresh opcert issued at period P stays
+			// not-due until P + 62 - current <= 58 (i.e. current >=
+			// P + 4), giving ~4 periods (~8 min) of headroom to cover the
+			// roll, forging and the once-only window. The wait for
+			// OpCertIssued must allow for rotation becoming due at ~8 min
+			// plus one requeue interval.
+			spec.BlockProducer.Rotation.RenewBeforePeriods = 58
 			spec.BlockProducer.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
 				Type:      dingov1alpha1.ColdSignerSecret,
 				SecretRef: "cold-skey",
@@ -418,6 +423,7 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 	// Auto issuance needs a fresh on-chain counter and a scraped KES period.
 	// The first node-to-client dial always fails (Service not yet created) and
 	// the next is 5 min later, so this is the longest wait in the suite.
+	var onChain int64
 	h.waitFor(ctx, onChainCounterTimeout,
 		"the on-chain opcert counter to be observed",
 		func(ctx context.Context) (bool, error) {
@@ -425,12 +431,13 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 			if err != nil {
 				return false, err
 			}
-			return conditionIs(n, condOnChainCounter, metav1.ConditionTrue,
-				reasonOnChainObserved), nil
+			if !conditionIs(n, condOnChainCounter, metav1.ConditionTrue,
+				reasonOnChainObserved) {
+				return false, nil
+			}
+			onChain = n.Status.OpCert.OnChainCounter
+			return true, nil
 		})
-
-	node := h.getNode(ctx)
-	onChain := node.Status.OpCert.OnChainCounter
 	require.GreaterOrEqual(t, onChain, int64(0))
 	expectedCounter := onChain + 1
 
@@ -477,22 +484,23 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 	// resets on process start.
 	h.waitForged(ctx, 1)
 
-	// Assert it issues once: compare the kes.skey bytes and the opcert bytes,
-	// and fail on Get or parse errors rather than returning false.
+	// Assert it issues once: derive firstKES and the first opcert from
+	// the same Secret read.
 	s := &corev1.Secret{}
 	require.NoError(t, h.client.Get(ctx, types.NamespacedName{
 		Name:      keysSecretRef,
 		Namespace: h.namespace,
 	}, s))
 	firstKES := append([]byte(nil), s.Data["kes.skey"]...)
-	oc, _, err := h.opcertFromKeysSecret(ctx)
-	require.NoError(t, err)
-	require.Equal(t, uint64(expectedCounter), oc.IssueNumber,
-		"the rotated opcert counter must be on-chain + 1")
 	firstCert := append([]byte(nil), s.Data["opcert.cert"]...)
 	if len(firstCert) == 0 {
 		firstCert = append([]byte(nil), s.Data["node.cert"]...)
 	}
+	require.NotEmpty(t, firstCert, "rotated opcert must be present")
+	oc, _, err := opcert.Parse(firstCert)
+	require.NoError(t, err)
+	require.Equal(t, uint64(expectedCounter), oc.IssueNumber,
+		"the rotated opcert counter must be on-chain + 1")
 
 	assert.Never(t, func() bool {
 		s2 := &corev1.Secret{}
