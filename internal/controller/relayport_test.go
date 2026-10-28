@@ -15,7 +15,6 @@
 package controller
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -24,19 +23,15 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // A relayRefs peer is dialed on the port its own DingoNode configures, not the
-// referencing node's.
+// referencing node's. A peer that leaves the port unset is stored with the CRD
+// default, and a ref with no DingoNode falls back to the default port.
 func TestTopologyDialsReferencedNodesRelayPort(t *testing.T) {
-	t.Parallel()
-	scheme := runtime.NewScheme()
-	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "ns")
 
 	relay := func(name string, port int32) *dingov1alpha1.DingoNode {
 		return &dingov1alpha1.DingoNode{
@@ -63,17 +58,22 @@ func TestTopologyDialsReferencedNodesRelayPort(t *testing.T) {
 			},
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(relay("musashi", 3010), relay("plain", 0), bp).Build()
+	for _, obj := range []*dingov1alpha1.DingoNode{
+		relay("musashi", 3010), relay("plain", 0), bp,
+	} {
+		require.NoError(t, c.Create(ctx, obj))
+	}
+	plain := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "plain", Namespace: "ns"}, plain,
+	))
+	assert.Equal(t, int32(3001), plain.Spec.RelayService.Port)
 
-	require.NoError(
-		t,
-		reconcilerFor(c).reconcileResources(context.Background(), bp),
-	)
+	require.NoError(t, reconcilerFor(c).reconcileResources(ctx, bp))
 
 	cm := &corev1.ConfigMap{}
 	require.NoError(t, c.Get(
-		context.Background(),
+		ctx,
 		types.NamespacedName{Name: "bp-topology", Namespace: "ns"},
 		cm,
 	))
