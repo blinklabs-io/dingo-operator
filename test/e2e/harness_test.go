@@ -439,7 +439,7 @@ func (h *harness) createKeysReaderRBAC(ctx context.Context) {
 		Rules: []rbacv1.PolicyRule{{
 			APIGroups: []string{""},
 			Resources: []string{"secrets"},
-			Verbs:     []string{"get", "update"},
+			Verbs:     []string{"get"},
 		}},
 	}
 	require.NoError(h.t, h.client.Create(ctx, role),
@@ -464,6 +464,28 @@ func (h *harness) createKeysReaderRBAC(ctx context.Context) {
 	require.NoError(h.t, h.client.Create(ctx, binding),
 		"create keys-reader RoleBinding in %s", h.namespace)
 	h.t.Logf("keys-reader RBAC scoped to namespace %s", h.namespace)
+}
+
+// grantKeysUpdateRBAC adds update to the namespace's keys Role. Call only
+// from tests that require the operator to write the keys Secret.
+func (h *harness) grantKeysUpdateRBAC(ctx context.Context) {
+	h.t.Helper()
+
+	role := &rbacv1.Role{}
+	require.NoError(h.t,
+		h.client.Get(ctx, types.NamespacedName{
+			Name:      keysReaderName,
+			Namespace: h.namespace,
+		}, role),
+		"get keys-reader Role in %s", h.namespace,
+	)
+	role.Rules = []rbacv1.PolicyRule{{
+		APIGroups: []string{""},
+		Resources: []string{"secrets"},
+		Verbs:     []string{"get", "update"},
+	}}
+	require.NoError(h.t, h.client.Update(ctx, role),
+		"update keys-reader Role in %s", h.namespace)
 }
 
 // operatorServiceAccountUser is the SA username the API server authorizes the
