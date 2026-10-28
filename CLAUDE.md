@@ -429,14 +429,19 @@ Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:
 
 1. Detect: `RotationDue=True` (`remainingPeriods <= renewBeforePeriods`).
-2. Skip if the keys Secret already holds a bundle that is not due. The running
-   pod keeps reporting its old opcert until it rolls and is scraped again, so
-   this check is what keeps one rotation from issuing on every reconcile.
-3. Refuse (`OpCertIssued=False`, Warning Event) without calling the signer when
-   the on-chain counter is not fresh for this pool (`onChainFloor`) or the KES
-   period has not been scraped. A pool that has never minted has no on-chain
-   counter, so it cannot auto-rotate; deliver its first opcert with
-   `Assisted`.
+2. Refuse (`OpCertIssued=False`, Warning Event) without calling the signer when
+   the on-chain counter is not fresh for this pool
+   (`observedOnChainCounter`; an observed 0 counts, unlike `onChainFloor`),
+   the KES period has not been scraped, or `renewBeforePeriods` is not below
+   the KES window (every new opcert would be due at once). A pool that has
+   never minted has no on-chain counter, so it cannot auto-rotate; deliver its
+   first opcert with `Assisted`.
+3. Skip if the keys Secret already holds a bundle that validates and is not
+   due. The running pod keeps reporting its old opcert until it rolls and is
+   scraped again, so this check is what keeps one rotation from issuing on
+   every reconcile. A staged bundle that fails validation is replaced. A
+   dry-run update of the Secret then checks the write is allowed before a
+   signature is spent on it.
 4. Generate a KES key and ask the cold signer for an opcert at on-chain
    counter + 1, starting at the current KES period
    (`coldsigner.Issuer.SignOpCertFromChain`). Reissuing the same number is
