@@ -119,7 +119,7 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   repositories and unrecognized tags retain the conservative `100:101`
   non-root compatibility default. Set `spec.podSecurityContext` when a custom
   or unrecognized image uses different IDs; an explicit context is preserved
-  unchanged.
+  before, without a keys checksum.
 - Cold keys never enter the cluster. The operator issues opcerts by sending
   the signable to a pluggable cold-signer (Bursa); it generates KES/VRF keys
   itself but never holds the cold key.
@@ -306,10 +306,6 @@ the pod onto it":
   carried forward. (An empty checksum would *remove* the annotation — itself a
   template change — and roll the pod onto the rejected keys.) The reconcile
   does not fail: last-known-good is the safe state.
-- A missing keys Secret on an existing StatefulSet is treated the same way:
-  the live template and its checksum are kept, so the forging pod is not
-  replaced by one stuck in `ContainerCreating` (the Secret volume is not
-  optional). With no StatefulSet yet, the first render is unchanged.
   - What this does and does not protect. An init container copies the Secret
     into a memory-backed `/keys` volume with owner-only permissions. The running
     pod therefore keeps its staged files when kubelet refreshes the source
@@ -320,6 +316,13 @@ the pod onto it":
     bundle into a CrashLoop. Spec edits and operator upgrades are held back
     until the Secret validates. Fix the Secret; do not leave a refused bundle
     sitting in it.
+- On a missing keys Secret: `KeysValid=False`/`KeysSecretMissing`,
+  `Degraded=True` and a Warning Event. On an existing StatefulSet the live pod
+  template and its checksum are kept, as on rejection, so the operator does not
+  roll the forging pod onto one stuck in `ContainerCreating` (the Secret volume
+  is not optional). Pod recreation is not fenced: a recreated pod cannot start
+  until the Secret returns. With no StatefulSet yet, it is still created as
+  before, without a keys checksum.
 - The on-chain counter floor. `internal/onchain` dials the node's
   node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
   pool's counter as `status.opcert.onChainCounter` (with

@@ -15,16 +15,21 @@
 package controller
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"testing"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // previousKeysInitScript is the key init-container script an earlier operator
@@ -187,6 +192,14 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 		keysAnnotation(t, ctx, c, "bp", "missing-ns"),
 		"the live keys checksum must be carried forward",
 	)
+	// The pod keeps running, so the missing Secret must be visible in status.
+	keysValid, degraded := keysConditions(t, ctx, c, "bp", "missing-ns")
+	require.NotNil(t, keysValid)
+	assert.Equal(t, metav1.ConditionFalse, keysValid.Status)
+	assert.Equal(t, "KeysSecretMissing", keysValid.Reason)
+	require.NotNil(t, degraded)
+	assert.Equal(t, metav1.ConditionTrue, degraded.Status)
+	assert.Equal(t, "KeysSecretMissing", degraded.Reason)
 
 	// A valid Secret returning applies the rotated bundle's checksum.
 	require.NoError(t, keys.RotateKES(rand.Reader))
@@ -200,4 +213,53 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 	now := keysAnnotation(t, ctx, c, "bp", "missing-ns")
 	assert.NotEmpty(t, now)
 	assert.NotEqual(t, accepted, now)
+	keysValid, degraded = keysConditions(t, ctx, c, "bp", "missing-ns")
+	require.NotNil(t, keysValid)
+	assert.Equal(t, metav1.ConditionTrue, keysValid.Status)
+	assert.Nil(t, degraded, "Degraded must clear once the Secret validates")
+}
+
+// TestBlockProducerMissingKeysFirstRender reconciles a producer whose keys
+// Secret does not exist yet and no StatefulSet exists. The StatefulSet is
+// created without a keys checksum, and the Secret arriving later sets one.
+func TestBlockProducerMissingKeysFirstRender(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "first-missing-ns")
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	dn := blockProducerNode(
+		"bp", "first-missing-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "first-missing-ns")
+	assert.Empty(t, keysAnnotation(t, ctx, c, "bp", "first-missing-ns"))
+
+	data, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: objectMeta("pool-keys", "first-missing-ns"),
+		Data:       data,
+	}))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "first-missing-ns")
+	assert.NotEmpty(t, keysAnnotation(t, ctx, c, "bp", "first-missing-ns"))
+}
+
+// keysConditions returns the node's KeysValid and Degraded conditions.
+func keysConditions(
+	t *testing.T,
+	ctx context.Context,
+	c client.Client,
+	name, ns string,
+) (*metav1.Condition, *metav1.Condition) {
+	t.Helper()
+	dn := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: name, Namespace: ns},
+		dn,
+	))
+	return meta.FindStatusCondition(dn.Status.Conditions, condKeysValid),
+		meta.FindStatusCondition(dn.Status.Conditions, condDegraded)
 }

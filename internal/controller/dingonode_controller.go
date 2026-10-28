@@ -347,6 +347,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 			}
 			opts.KeysChecksum = prev
 			keepTemplate = true
+			r.missingKeys(ctx, dn, bp.Keys.SecretRef)
 		} else {
 			return fmt.Errorf("read keys secret: %w", err)
 		}
@@ -467,6 +468,47 @@ func (r *DingoNodeReconciler) rejectKeys(
 	})
 }
 
+// missingKeys records an absent keys Secret as KeysValid=False and
+// Degraded=True, plus a Warning Event. The pod keeps running on its staged keys
+// and the live template is held, so without this the node would report the
+// last accepted bundle as valid while every template change is withheld.
+func (r *DingoNodeReconciler) missingKeys(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	secretRef string,
+) {
+	msg := fmt.Sprintf("keys secret %q not found", secretRef)
+	log.FromContext(ctx).Info(
+		"block-producer keys secret missing",
+		"secret", secretRef,
+	)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(
+			dn,
+			nil,
+			corev1.EventTypeWarning,
+			"KeysSecretMissing",
+			"ReadKeys",
+			"%s",
+			msg,
+		)
+	}
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condKeysValid,
+		Status:             metav1.ConditionFalse,
+		Reason:             "KeysSecretMissing",
+		Message:            msg,
+		ObservedGeneration: dn.Generation,
+	})
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condDegraded,
+		Status:             metav1.ConditionTrue,
+		Reason:             "KeysSecretMissing",
+		Message:            msg,
+		ObservedGeneration: dn.Generation,
+	})
+}
+
 // liveKeysChecksum returns the keys-checksum annotation currently on the
 // node's StatefulSet pod template, so a render after a rejected or missing key
 // bundle carries the accepted checksum rather than one of the rejected material
@@ -548,11 +590,12 @@ func (r *DingoNodeReconciler) reconcileStatus(
 		})
 	}
 	// Degraded is cleared here because everything that sets it earlier in the
-	// reconcile returns before reaching this point — except rejectKeys, which
-	// deliberately falls through so the rest of the resources still reconcile.
-	// A refused key bundle must survive to the status write, so keep Degraded
-	// while KeysValid is False. A wedged pipeline is kept for the same reason:
-	// it is set during this reconcile, after everything that returns early.
+	// reconcile returns before reaching this point — except rejectKeys and
+	// missingKeys, which deliberately fall through so the rest of the resources
+	// still reconcile. A refused or missing key bundle must survive to the
+	// status write, so keep Degraded while KeysValid is False. A wedged
+	// pipeline is kept for the same reason: it is set during this reconcile,
+	// after everything that returns early.
 	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) &&
 		!wedged {
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condDegraded)
