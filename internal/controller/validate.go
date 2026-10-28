@@ -122,7 +122,7 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
-			if err := validateAutoRotation(bp); err != nil {
+			if err := validateAutoRotation(&dn.Spec, bp); err != nil {
 				return err
 			}
 		}
@@ -177,11 +177,18 @@ func checksum(s string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// mainnetMagic is the Cardano mainnet network magic.
+const mainnetMagic = 764824073
+
 // validateAutoRotation checks what Auto rotation needs before it can issue
 // an opcert: the pool ID and the node-to-client listener that together give
 // the on-chain counter it issues from, and a cold signer that can sign for
-// that pool.
-func validateAutoRotation(bp *dingov1alpha1.BlockProducerSpec) error {
+// that pool. The secret signer holds the cold key in the cluster, so it is
+// refused on mainnet.
+func validateAutoRotation(
+	spec *dingov1alpha1.DingoNodeSpec,
+	bp *dingov1alpha1.BlockProducerSpec,
+) error {
 	if bp.PoolID == "" {
 		return errors.New(
 			"rotation mode Auto requires spec.blockProducer.poolId",
@@ -226,6 +233,13 @@ func validateAutoRotation(bp *dingov1alpha1.BlockProducerSpec) error {
 			)
 		}
 	case dingov1alpha1.ColdSignerSecret:
+		if spec.Network == "mainnet" ||
+			(spec.NetworkMagic != nil && *spec.NetworkMagic == mainnetMagic) {
+			return errors.New(
+				"rotation mode Auto cannot use the secret cold signer on " +
+					"mainnet; it keeps the cold key in the cluster",
+			)
+		}
 		if cs.SecretRef == "" {
 			return errors.New(
 				"rotation mode Auto with the secret signer requires " +

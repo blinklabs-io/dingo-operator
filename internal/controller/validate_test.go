@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func TestValidateSpec(t *testing.T) {
@@ -463,4 +464,36 @@ func TestValidateSpecAutoRotation(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+// The secret signer keeps the cold key in the cluster; it is for test
+// networks only, so Auto must not issue with it on mainnet.
+func TestValidateSpecAutoRotationSecretSignerMainnet(t *testing.T) {
+	dn := &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
+		Role:    dingov1alpha1.RoleBlockProducer,
+		Network: "mainnet",
+		BlockProducer: &dingov1alpha1.BlockProducerSpec{
+			PoolID:       strings.Repeat("ab", 28),
+			Keys:         dingov1alpha1.KeysSpec{SecretRef: "keys"},
+			NodeToClient: dingov1alpha1.NodeToClientSpec{Enabled: true},
+			Rotation: dingov1alpha1.RotationSpec{
+				Mode: dingov1alpha1.RotationModeAuto,
+				ColdSigner: dingov1alpha1.ColdSignerSpec{
+					Type:      dingov1alpha1.ColdSignerSecret,
+					SecretRef: "cold",
+				},
+			},
+		},
+	}}
+	err := validateSpec(dn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mainnet")
+
+	dn.Spec.Network = "custom"
+	dn.Spec.ConfigRef = "custom-config"
+	dn.Spec.Mithril.Enabled = ptr.To(false)
+	dn.Spec.NetworkMagic = ptr.To(int64(764824073))
+	err = validateSpec(dn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mainnet")
 }
