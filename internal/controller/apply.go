@@ -146,11 +146,19 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 	dn *dingov1alpha1.DingoNode,
 	opts resources.RenderOptions,
 ) error {
-	desired := resources.BuildStatefulSet(dn, opts)
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+		ObjectMeta: objectMeta(dn.Name, dn.Namespace),
 	}
 	err := createOrUpdateWithRetry(ctx, r.Client, sts, func() error {
+		renderOpts := opts
+		// Claim templates are immutable. Mount the data volume under the
+		// template name of the StatefulSet this update is based on, so an
+		// earlier stale read cannot render a mount for a claim it lacks.
+		if !sts.CreationTimestamp.IsZero() &&
+			len(sts.Spec.VolumeClaimTemplates) > 0 {
+			renderOpts.DataVolumeName = sts.Spec.VolumeClaimTemplates[0].Name
+		}
+		desired := resources.BuildStatefulSet(dn, renderOpts)
 		sts.Labels = desired.Labels
 		if sts.CreationTimestamp.IsZero() {
 			// Create: set the full spec, including immutable fields.
@@ -227,11 +235,12 @@ func (r *DingoNodeReconciler) upsertPodMonitor(
 	return err
 }
 
-// liveDataVolumeName returns the data claim template name of the node's
-// existing StatefulSet, or "" when none exists so the default applies.
-// Claim templates are immutable, so StatefulSets created before the default
-// became dingo-data keep their original "data" name.
-func (r *DingoNodeReconciler) liveDataVolumeName(
+// dataVolumeName returns the data claim template name for the node's
+// StatefulSet, or "" to use the default. Claim templates are immutable, so an
+// existing StatefulSet keeps its name. Without one, claims retained from an
+// earlier StatefulSet decide it: dingo-data when any exist, as the dingo chart
+// creates them, else data, as earlier operator versions did.
+func (r *DingoNodeReconciler) dataVolumeName(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) (string, error) {
@@ -240,14 +249,32 @@ func (r *DingoNodeReconciler) liveDataVolumeName(
 		Name:      dn.Name,
 		Namespace: dn.Namespace,
 	}, sts)
-	if apierrors.IsNotFound(err) {
-		return "", nil
+	if err == nil {
+		if len(sts.Spec.VolumeClaimTemplates) == 0 {
+			return "", nil
+		}
+		return sts.Spec.VolumeClaimTemplates[0].Name, nil
 	}
-	if err != nil {
+	if !apierrors.IsNotFound(err) {
 		return "", fmt.Errorf("read statefulset: %w", err)
 	}
-	if len(sts.Spec.VolumeClaimTemplates) == 0 {
-		return "", nil
+	claims := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(dn.Namespace),
+		client.MatchingLabels{"cardano_network": dn.Spec.Network}); err != nil {
+		return "", fmt.Errorf("list data claims: %w", err)
 	}
-	return sts.Spec.VolumeClaimTemplates[0].Name, nil
+	legacy := false
+	for i := range claims.Items {
+		name := claims.Items[i].Name
+		if _, ok := claimOrdinal(name, resources.DefaultDataVolumeName, dn.Name); ok {
+			return resources.DefaultDataVolumeName, nil
+		}
+		if _, ok := claimOrdinal(name, legacyDataVolumeName, dn.Name); ok {
+			legacy = true
+		}
+	}
+	if legacy {
+		return legacyDataVolumeName, nil
+	}
+	return "", nil
 }

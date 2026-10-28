@@ -183,9 +183,13 @@ volumes; reducing capacity requires a separate data migration.
 
 New StatefulSets name their data claim template `dingo-data`, so claims are
 `dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
-after a chart release adopts that release's existing claims. Claim templates are
-immutable, so a StatefulSet created by an earlier operator version keeps its
-`data` template and `data-<name>-<ordinal>` claims.
+after the chart's StatefulSet adopts its existing claims once that StatefulSet
+is removed; the chart names it after the release when the release name contains
+`dingo`, and `<release>-dingo` otherwise. Claim templates are immutable, so a
+StatefulSet created by an earlier operator version keeps its `data` template and
+`data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
+node whose retained claims exist, it uses their template name, preferring
+`dingo-data` when both are present.
 
 Claims are retained when replicas scale down or a DingoNode is deleted. Retained
 ordinals are included in later size reconciliations. PVCs do not acquire a

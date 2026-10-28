@@ -402,3 +402,15 @@ func TestReconcileStorageLegacyClaimName(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(current), got))
 	assert.Equal(t, "60Gi", got.Spec.Resources.Requests.Storage().String())
 }
+
+func TestReconcileStorageRetainedLegacyClaim(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	legacy := storageClaim("data-relay-0", "30Gi", "30Gi")
+	c := fake.NewClientBuilder().WithObjects(legacy).Build()
+	r := &DingoNodeReconciler{Client: c}
+	require.NoError(t, r.reconcileStorage(ctx, storageNode()))
+	got := &corev1.PersistentVolumeClaim{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(legacy), got))
+	assert.Equal(t, "60Gi", got.Spec.Resources.Requests.Storage().String())
+}
