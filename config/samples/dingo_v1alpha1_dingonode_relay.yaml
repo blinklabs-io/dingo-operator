@@ -24,7 +24,7 @@ spec:
   #   sampleRatio: "0.1"
   topology:
     # Relays peer with the block producer and any external relays. Each entry
-    # becomes its own localRoots group (one Genesis witness each).
+    # becomes its own localRoots group (valency 1).
     relayRefs:
       - producer
     externalRelays:

@@ -70,7 +70,6 @@ func TestRender(t *testing.T) {
 
 		var doc document
 		require.NoError(t, json.Unmarshal([]byte(out), &doc))
-		// Dingo's Genesis corroboration counts one group as one witness.
 		require.Len(t, doc.LocalRoots, 2)
 		for i, want := range []string{
 			"relay-0-headless.cardano.svc.cluster.local",

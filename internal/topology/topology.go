@@ -33,8 +33,7 @@ type accessPoint struct {
 	Port    int32  `json:"port"`
 }
 
-// localRoot is a group of trusted/advertised peers. Dingo counts each group as
-// one witness for Genesis corroboration.
+// localRoot is a group of trusted/advertised peers.
 type localRoot struct {
 	AccessPoints []accessPoint `json:"accessPoints"`
 	Advertise    bool          `json:"advertise"`
@@ -82,9 +81,10 @@ func Render(
 	}
 
 	// Each in-cluster relay becomes its own trusted local root group with
-	// valency 1. Dingo's Genesis corroboration counts one group as one
-	// witness, so folding all relays into one group would leave a single
-	// witness regardless of how many relays are listed.
+	// valency 1, which keeps the same hot target as one group whose valency
+	// equals its member count. Dingo releases through 0.89.0 identify Genesis
+	// corroboration witnesses by topology group, so one group per relay gives
+	// each relay its own identity there.
 	autoPeer := spec.AutoPeerRelays == nil || *spec.AutoPeerRelays
 	if autoPeer {
 		for _, ref := range spec.RelayRefs {
