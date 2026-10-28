@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -179,7 +180,10 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 	want := podTemplate(t, ctx, c, "bp", "missing-ns")
 
 	require.NoError(t, c.Delete(ctx, secret))
-	reconcile(t, ctx, reconcilerFor(c), "bp", "missing-ns")
+	recorder := events.NewFakeRecorder(10)
+	r := reconcilerFor(c)
+	r.Recorder = recorder
+	reconcile(t, ctx, r, "bp", "missing-ns")
 	assert.Equal(
 		t,
 		want,
@@ -200,6 +204,13 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 	require.NotNil(t, degraded)
 	assert.Equal(t, metav1.ConditionTrue, degraded.Status)
 	assert.Equal(t, "KeysSecretMissing", degraded.Reason)
+	select {
+	case ev := <-recorder.Events:
+		assert.Contains(t, ev, "Warning")
+		assert.Contains(t, ev, "KeysSecretMissing")
+	default:
+		t.Error("no Event was recorded for the missing keys Secret")
+	}
 
 	// A valid Secret returning applies the rotated bundle's checksum.
 	require.NoError(t, keys.RotateKES(rand.Reader))
