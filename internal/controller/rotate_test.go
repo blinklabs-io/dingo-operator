@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +36,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // countingIssuer wraps an Issuer and counts the opcerts it was asked for.
@@ -340,4 +342,58 @@ func TestIssuerForReadsSignerSecrets(t *testing.T) {
 	f.dn.Spec.BlockProducer.Rotation.ColdSigner.MTLSSecretRef = "cold"
 	_, err = f.r.issuerFor(ctx, f.dn)
 	require.ErrorContains(t, err, signerSecretCert)
+}
+
+// A failure after the signer was reached must not reach it again on the next
+// reconcile: with a get-only grant every pass would sign and fail to store.
+func TestAutoRotateBacksOffAfterFailure(t *testing.T) {
+	f := newRotateFixture(t)
+	scheme := f.c.Scheme()
+	s := f.secret(t)
+	s.ResourceVersion = ""
+	denied := fake.NewClientBuilder().WithScheme(scheme).WithObjects(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(
+				context.Context, client.WithWatch, client.Object,
+				...client.UpdateOption,
+			) error {
+				return apierrors.NewForbidden(
+					corev1.Resource("secrets"), "keys",
+					errors.New("update not granted"),
+				)
+			},
+		}).Build()
+	f.c, f.r.Client, f.r.APIReader = denied, denied, denied
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+	f.r.autoRotate(ctx, f.dn)
+
+	assert.Equal(t, 1, f.issuer.calls)
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Equal(t, "SecretUpdateFailed", cond.Reason)
+
+	// Once the retry interval has passed, the next pass tries again.
+	f.r.issueMu.Lock()
+	at := f.r.issueFailures[client.ObjectKeyFromObject(f.dn)]
+	at.at = at.at.Add(-issueRetryInterval)
+	f.r.issueFailures[client.ObjectKeyFromObject(f.dn)] = at
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(ctx, f.dn)
+	assert.Equal(t, 2, f.issuer.calls)
+}
+
+// Issue = on-chain + 1 even when the staged opcert already carries that
+// number: the pool has not forged with it, so it is reissued for a new key.
+func TestAutoRotateReissuesUnforgedCounter(t *testing.T) {
+	f := newRotateFixture(t)
+	observedOnChain(f.dn, 2, time.Minute)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	state, err := validateKeysSecret(f.secret(t), f.dn)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), state.Counter)
+	assert.Equal(t, int64(160), state.KESPeriod)
 }

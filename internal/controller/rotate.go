@@ -33,11 +33,23 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // condOpCertIssued reports the outcome of the last Auto rotation attempt.
 const condOpCertIssued = "OpCertIssued"
+
+// issueRetryInterval is how long Auto rotation waits after a failed issuance
+// before it reaches the cold signer again. A KES period is hours long and
+// rotation starts renewBeforePeriods ahead of expiry, so a few retries an hour
+// cost nothing.
+const issueRetryInterval = 10 * time.Minute
+
+type issueFailure struct {
+	at              time.Time
+	reason, message string
+}
 
 // Keys the operator reads from the cold-signer Secrets. The mTLS Secret uses
 // the kubernetes.io/tls names plus ca.crt; the cold key is a cardano-cli text
@@ -132,9 +144,22 @@ func (r *DingoNodeReconciler) autoRotate(
 		return
 	}
 
+	nodeKey := client.ObjectKeyFromObject(dn)
+	if last, ok := r.lastIssueFailure(nodeKey); ok &&
+		time.Since(last.at) < issueRetryInterval {
+		setIssueCondition(
+			dn, metav1.ConditionFalse, last.reason, last.message,
+		)
+		return
+	}
+	fail := func(reason, message string) {
+		r.recordIssueFailure(nodeKey, reason, message)
+		r.refuseIssue(ctx, dn, reason, message)
+	}
+
 	issuer, err := r.issuerFor(ctx, dn)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "ColdSignerUnavailable", err.Error())
+		fail("ColdSignerUnavailable", err.Error())
 		return
 	}
 	// Both are positive: onChainFloor and the period check above.
@@ -142,7 +167,7 @@ func (r *DingoNodeReconciler) autoRotate(
 		ctx, issuer, uint64(floor), uint64(st.CurrentPeriod), //nolint:gosec
 	)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "IssueFailed", err.Error())
+		fail("IssueFailed", err.Error())
 		return
 	}
 
@@ -155,16 +180,17 @@ func (r *DingoNodeReconciler) autoRotate(
 	}
 	state, err := validateKeysSecret(candidate, dn)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "IssuedBundleRejected", err.Error())
+		fail("IssuedBundleRejected", err.Error())
 		return
 	}
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
 	if err := r.Update(ctx, candidate); err != nil {
-		r.refuseIssue(ctx, dn, "SecretUpdateFailed", err.Error())
+		fail("SecretUpdateFailed", err.Error())
 		return
 	}
 
+	r.forgetIssueFailure(nodeKey)
 	msg := fmt.Sprintf(
 		"issued opcert counter %d, kes start period %d",
 		state.Counter, state.KESPeriod,
@@ -176,13 +202,7 @@ func (r *DingoNodeReconciler) autoRotate(
 			"%s", msg,
 		)
 	}
-	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
-		Type:               condOpCertIssued,
-		Status:             metav1.ConditionTrue,
-		Reason:             "OpCertIssued",
-		Message:            msg,
-		ObservedGeneration: dn.Generation,
-	})
+	setIssueCondition(dn, metav1.ConditionTrue, "OpCertIssued", msg)
 }
 
 // issueBundle generates a KES key and has issuer sign an opcert for it. It
@@ -307,11 +327,48 @@ func (r *DingoNodeReconciler) refuseIssue(
 			"%s", message,
 		)
 	}
+	setIssueCondition(dn, metav1.ConditionFalse, reason, message)
+}
+
+func setIssueCondition(
+	dn *dingov1alpha1.DingoNode,
+	status metav1.ConditionStatus,
+	reason, message string,
+) {
 	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 		Type:               condOpCertIssued,
-		Status:             metav1.ConditionFalse,
+		Status:             status,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: dn.Generation,
 	})
+}
+
+func (r *DingoNodeReconciler) lastIssueFailure(
+	key types.NamespacedName,
+) (issueFailure, bool) {
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+	f, ok := r.issueFailures[key]
+	return f, ok
+}
+
+func (r *DingoNodeReconciler) recordIssueFailure(
+	key types.NamespacedName,
+	reason, message string,
+) {
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+	if r.issueFailures == nil {
+		r.issueFailures = make(map[types.NamespacedName]issueFailure)
+	}
+	r.issueFailures[key] = issueFailure{
+		at: time.Now(), reason: reason, message: message,
+	}
+}
+
+func (r *DingoNodeReconciler) forgetIssueFailure(key types.NamespacedName) {
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+	delete(r.issueFailures, key)
 }

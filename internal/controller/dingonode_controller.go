@@ -86,6 +86,16 @@ type DingoNodeReconciler struct {
 	// Nil builds it from spec.blockProducer.rotation.coldSigner.
 	ColdSigner ColdSignerFactory
 
+	// issueMu guards issueFailures.
+	issueMu sync.Mutex
+	// issueFailures remembers, per node, the last Auto rotation that failed
+	// once it had set out to reach the cold signer. RotationDue stays True
+	// until a rotation lands, so without this a signer that is down, or a
+	// Secret the operator may not update, would be retried on every reconcile:
+	// a signing round trip (and a timeout, for an unreachable signer) each
+	// time. In-memory for the same reasons as onChainAttempts.
+	issueFailures map[types.NamespacedName]issueFailure
+
 	// onChainMu guards onChainAttempts.
 	onChainMu sync.Mutex
 	// onChainAttempts remembers, per node, when the operator last *attempted* an
@@ -169,12 +179,14 @@ func (r *DingoNodeReconciler) Reconcile(
 	if err := r.Get(ctx, req.NamespacedName, dn); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetOnChainAttempt(req.NamespacedName)
+			r.forgetIssueFailure(req.NamespacedName)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !dn.DeletionTimestamp.IsZero() {
 		// Owner references handle garbage collection; nothing else to do.
 		r.forgetOnChainAttempt(req.NamespacedName)
+		r.forgetIssueFailure(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
