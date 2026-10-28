@@ -265,6 +265,13 @@ environment settings, canonical `DINGO_PLUGINS_API_*_CONFIG_PORT` settings, and
 Bark/Midnight port variables also drive Service and policy ports when `spec.apis`
 is omitted. When `spec.apis` is present, contradictory environment overrides,
 port collisions and loopback binding are rejected before resources change.
+`CARDANO_PORT`, `CARDANO_PRIVATE_PORT`, `CARDANO_METRICS_PORT` and
+`DINGO_HEALTH_PORT` in `spec.environment` are rejected unless they equal the
+operator's fixed ports (3001, 3002, 12798, 12799); container ports, Services,
+NetworkPolicy and topology dialing use those ports. The relay Service always
+targets 3001; publish the relay elsewhere with `relayService.hostPort` (the
+container's host port) or `relayService.nodePort` on a NodePort or LoadBalancer
+Service.
 Core storage mode is rejected only when an API listener is enabled. Kupo uses
 `DINGO_PLUGINS_API_KUPO_CONFIG_PORT`.
 

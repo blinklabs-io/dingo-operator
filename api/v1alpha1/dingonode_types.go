@@ -565,6 +565,12 @@ type DingoNodeSpec struct {
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 	// Environment passes extra CARDANO_*/DINGO_* variables to the container.
+	// The operator owns the relay (3001), node-to-client (3002), metrics (12798)
+	// and health (12799) listener ports: CARDANO_PORT, CARDANO_PRIVATE_PORT,
+	// CARDANO_METRICS_PORT and DINGO_HEALTH_PORT are rejected unless they equal
+	// those values. The relay Service always targets 3001; publish the relay
+	// elsewhere with relayService.hostPort (the container's host port) or
+	// relayService.nodePort on a NodePort or LoadBalancer Service.
 	// +optional
 	Environment map[string]string `json:"environment,omitempty"`
 	// +optional
