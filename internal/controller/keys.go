@@ -302,8 +302,23 @@ func onChainFloor(
 	dn *dingov1alpha1.DingoNode,
 	now time.Time,
 ) (int64, bool) {
+	counter, ok := observedOnChainCounter(dn, now)
+	if !ok || counter <= 0 {
+		return 0, false
+	}
+	return counter, true
+}
+
+// observedOnChainCounter returns the on-chain opcert counter last read for the
+// node's own pool, when that reading is fresh. Unlike onChainFloor it reports
+// an observed 0 as known: a pool that has forged on its first opcert has
+// counter 0, which issuance needs and validation has no use for.
+func observedOnChainCounter(
+	dn *dingov1alpha1.DingoNode,
+	now time.Time,
+) (int64, bool) {
 	oc := dn.Status.OpCert
-	if oc.OnChainCounter <= 0 || oc.OnChainCounterAt == nil {
+	if oc.OnChainCounter < 0 || oc.OnChainCounterAt == nil {
 		return 0, false
 	}
 	if now.Sub(oc.OnChainCounterAt.Time) > onChainCounterMaxAge {

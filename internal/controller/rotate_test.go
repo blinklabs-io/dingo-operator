@@ -345,13 +345,38 @@ func TestIssuerForReadsSignerSecrets(t *testing.T) {
 }
 
 // A failure after the signer was reached must not reach it again on the next
-// reconcile: with a get-only grant every pass would sign and fail to store.
+// reconcile: a signer that is down would otherwise cost a round trip, or a
+// timeout, on every pass.
 func TestAutoRotateBacksOffAfterFailure(t *testing.T) {
 	f := newRotateFixture(t)
-	scheme := f.c.Scheme()
+	f.issuer.err = errors.New("signer unreachable")
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+	f.r.autoRotate(ctx, f.dn)
+
+	assert.Equal(t, 1, f.issuer.calls)
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Equal(t, "IssueFailed", cond.Reason)
+
+	// Once the retry interval has passed, the next pass tries again.
+	f.r.issueMu.Lock()
+	at := f.r.issueFailures[client.ObjectKeyFromObject(f.dn)]
+	at.at = at.at.Add(-issueRetryInterval)
+	f.r.issueFailures[client.ObjectKeyFromObject(f.dn)] = at
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(ctx, f.dn)
+	assert.Equal(t, 2, f.issuer.calls)
+}
+
+// Without update access to the keys Secret the write would fail after the
+// signer had signed; the operator checks the write first and never asks.
+func TestAutoRotateChecksWriteBeforeSigning(t *testing.T) {
+	f := newRotateFixture(t)
 	s := f.secret(t)
 	s.ResourceVersion = ""
-	denied := fake.NewClientBuilder().WithScheme(scheme).WithObjects(s).
+	denied := fake.NewClientBuilder().WithScheme(f.c.Scheme()).WithObjects(s).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Update: func(
 				context.Context, client.WithWatch, client.Object,
@@ -364,24 +389,66 @@ func TestAutoRotateBacksOffAfterFailure(t *testing.T) {
 			},
 		}).Build()
 	f.c, f.r.Client, f.r.APIReader = denied, denied, denied
-	ctx := context.Background()
 
-	f.r.autoRotate(ctx, f.dn)
-	f.r.autoRotate(ctx, f.dn)
+	f.r.autoRotate(context.Background(), f.dn)
 
-	assert.Equal(t, 1, f.issuer.calls)
+	assert.Zero(t, f.issuer.calls)
 	cond := f.issued(t)
 	require.NotNil(t, cond)
 	assert.Equal(t, "SecretUpdateFailed", cond.Reason)
+}
 
-	// Once the retry interval has passed, the next pass tries again.
-	f.r.issueMu.Lock()
-	at := f.r.issueFailures[client.ObjectKeyFromObject(f.dn)]
-	at.at = at.at.Add(-issueRetryInterval)
-	f.r.issueFailures[client.ObjectKeyFromObject(f.dn)] = at
-	f.r.issueMu.Unlock()
-	f.r.autoRotate(ctx, f.dn)
-	assert.Equal(t, 2, f.issuer.calls)
+// A pool that has forged on its first opcert has an on-chain counter of 0.
+// That is a known counter, not a missing one.
+func TestAutoRotateFromOnChainCounterZero(t *testing.T) {
+	f := newRotateFixture(t)
+	s := f.secret(t)
+	data, err := f.keys.SecretData(0, 100)
+	require.NoError(t, err)
+	s.Data = data
+	require.NoError(t, f.c.Update(context.Background(), s))
+	f.dn.Status.OpCert.OnDiskCounter = 0
+	observedOnChain(f.dn, 0, time.Minute)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	require.Equal(t, 1, f.issuer.calls)
+	state, err := validateKeysSecret(f.secret(t), f.dn)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), state.Counter)
+}
+
+// A renewal window at least as long as the KES window makes every new bundle
+// due the moment it is staged; issuing would never stop.
+func TestAutoRotateRefusesRenewWindowAtKESWindow(t *testing.T) {
+	f := newRotateFixture(t)
+	f.dn.Spec.BlockProducer.Rotation.RenewBeforePeriods = 62
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Zero(t, f.issuer.calls)
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Equal(t, "RenewWindowTooLong", cond.Reason)
+}
+
+// A staged bundle that fails validation (here, below the on-chain counter)
+// is no reason to wait: it can never be rolled out.
+func TestAutoRotateReplacesRejectedStagedBundle(t *testing.T) {
+	f := newRotateFixture(t)
+	s := f.secret(t)
+	data, err := f.keys.SecretData(3, 160)
+	require.NoError(t, err)
+	s.Data = data
+	require.NoError(t, f.c.Update(context.Background(), s))
+	observedOnChain(f.dn, 4, time.Minute)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	require.Equal(t, 1, f.issuer.calls)
+	state, err := validateKeysSecret(f.secret(t), f.dn)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), state.Counter)
 }
 
 // Issue = on-chain + 1 even when the staged opcert already carries that

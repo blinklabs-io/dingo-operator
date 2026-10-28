@@ -91,7 +91,7 @@ func (r *DingoNodeReconciler) autoRotate(
 		!meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
 		return
 	}
-	floor, ok := onChainFloor(dn, time.Now())
+	floor, ok := observedOnChainCounter(dn, time.Now())
 	if !ok {
 		r.refuseIssue(
 			ctx, dn, "OnChainCounterUnknown",
@@ -108,6 +108,18 @@ func (r *DingoNodeReconciler) autoRotate(
 		return
 	}
 	maxEvolutions := st.ExpiryPeriod - st.OpCertKESPeriod
+	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
+	if renewBefore >= maxEvolutions {
+		r.refuseIssue(
+			ctx, dn, "RenewWindowTooLong",
+			fmt.Sprintf(
+				"renewBeforePeriods %d is not below the %d-period KES "+
+					"window, so every new opcert would be due at once",
+				renewBefore, maxEvolutions,
+			),
+		)
+		return
+	}
 
 	if r.APIReader == nil {
 		r.refuseIssue(
@@ -139,8 +151,10 @@ func (r *DingoNodeReconciler) autoRotate(
 		r.refuseIssue(ctx, dn, "KeysSecretInvalid", err.Error())
 		return
 	}
-	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
-	if stagedStart+maxEvolutions-st.CurrentPeriod > renewBefore {
+	// A staged bundle that does not validate can never be rolled out, so it
+	// is replaced rather than waited on.
+	if _, verr := validateKeysSecret(secret, dn); verr == nil &&
+		stagedStart+maxEvolutions-st.CurrentPeriod > renewBefore {
 		return
 	}
 
@@ -157,6 +171,11 @@ func (r *DingoNodeReconciler) autoRotate(
 		r.refuseIssue(ctx, dn, reason, message)
 	}
 
+	// Check the write is allowed before a signature is spent on it.
+	if err := r.Update(ctx, secret.DeepCopy(), client.DryRunAll); err != nil {
+		fail("SecretUpdateFailed", err.Error())
+		return
+	}
 	issuer, err := r.issuerFor(ctx, dn)
 	if err != nil {
 		fail("ColdSignerUnavailable", err.Error())
