@@ -570,6 +570,19 @@ func TestBlockProducerLeiosVoteKey(t *testing.T) {
 	_, ok = templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
 	assert.False(t, ok, "removing vote.skey must remove the vote env")
 
+	// The dingo chart's bls.skey wires the same env.
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data["bls.skey"] = voteEnvelope(t, 42)
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-ns")
+	got, ok = templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
+	require.True(t, ok, "bls.skey in the Secret must set the vote env")
+	assert.Equal(t, "/keys/vote.skey", got)
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	delete(secret.Data, "bls.skey")
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-ns")
+
 	// Restating the managed path in spec.environment passes validation, but
 	// with no vote.skey staged the env must still be withheld: Dingo would
 	// otherwise fail startup on the missing file.

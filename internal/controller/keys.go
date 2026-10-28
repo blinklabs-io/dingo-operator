@@ -47,6 +47,9 @@ const (
 	// keyFileVote is optional: the Leios BLS vote signing key. A Secret
 	// without it stays valid.
 	keyFileVote = resources.VoteKeyFile
+	// keyFileBLS is the name the dingo Helm chart gives the vote signing key.
+	// It is accepted in place of keyFileVote.
+	keyFileBLS = "bls.skey"
 	// keyFileNodeCert is the name the dingo Helm chart gives the operational
 	// certificate. It is accepted in place of keyFileOpCert so one Secret can
 	// serve both.
@@ -157,8 +160,12 @@ func validateKeysSecret(
 		return nil, err
 	}
 
-	if len(secret.Data[keyFileVote]) > 0 {
-		if err := checkVoteKey(secret.Data[keyFileVote]); err != nil {
+	voteData, voteFile, err := voteKeyFile(secret.Data)
+	if err != nil {
+		return nil, err
+	}
+	if voteData != nil {
+		if err := checkVoteKey(voteData, voteFile); err != nil {
 			return nil, err
 		}
 	}
@@ -289,6 +296,30 @@ func opCertFile(data map[string][]byte) ([]byte, string, error) {
 	return nil, "", nil
 }
 
+// voteKeyFile returns the optional Leios vote signing key from a keys Secret
+// and the file it came from. The key is vote.skey or the dingo chart's
+// bls.skey; an empty file counts as absent. Both may be present only when they
+// hold the same bytes. It returns nil data when neither is present.
+func voteKeyFile(data map[string][]byte) ([]byte, string, error) {
+	voteData, blsData := data[keyFileVote], data[keyFileBLS]
+	switch {
+	case len(voteData) > 0 && len(blsData) > 0:
+		if !bytes.Equal(voteData, blsData) {
+			return nil, "", fmt.Errorf(
+				"keys secret holds both %s and %s with different contents; "+
+					"keep only one",
+				keyFileVote, keyFileBLS,
+			)
+		}
+		return voteData, keyFileVote, nil
+	case len(voteData) > 0:
+		return voteData, keyFileVote, nil
+	case len(blsData) > 0:
+		return blsData, keyFileBLS, nil
+	}
+	return nil, "", nil
+}
+
 // onChainFloor returns the on-chain opcert counter to enforce against, and
 // whether there is one to enforce at all.
 //
@@ -385,10 +416,10 @@ const (
 // checkVoteKey validates the optional Leios vote signing key so a truncated or
 // misfiled key is a refused rotation rather than a node that starts with
 // voting disabled or fails at startup.
-func checkVoteKey(data []byte) error {
+func checkVoteKey(data []byte, name string) error {
 	if len(data) > voteKeyMaxSize {
 		return fmt.Errorf(
-			"%s exceeds %d bytes", keyFileVote, voteKeyMaxSize,
+			"%s exceeds %d bytes", name, voteKeyMaxSize,
 		)
 	}
 	var scalar []byte
@@ -396,7 +427,7 @@ func checkVoteKey(data []byte) error {
 	if bytes.HasPrefix(trimmed, []byte("{")) {
 		var env keyEnvelope
 		if err := json.Unmarshal(trimmed, &env); err != nil {
-			return fmt.Errorf("parse %s envelope: %w", keyFileVote, err)
+			return fmt.Errorf("parse %s envelope: %w", name, err)
 		}
 		// Dingo accepts any envelope whose type names a BLS or Leios key.
 		lower := strings.ToLower(env.Type)
@@ -404,20 +435,20 @@ func checkVoteKey(data []byte) error {
 			!strings.Contains(lower, "leios") {
 			return fmt.Errorf(
 				"%s has envelope type %q, expected a BLS vote signing key",
-				keyFileVote, env.Type,
+				name, env.Type,
 			)
 		}
 		payload, err := hex.DecodeString(env.CborHex)
 		if err != nil {
-			return fmt.Errorf("decode %s cborHex: %w", keyFileVote, err)
+			return fmt.Errorf("decode %s cborHex: %w", name, err)
 		}
 		n, err := cbor.Decode(payload, &scalar)
 		if err != nil {
-			return fmt.Errorf("decode %s cbor: %w", keyFileVote, err)
+			return fmt.Errorf("decode %s cbor: %w", name, err)
 		}
 		if n != len(payload) {
 			return fmt.Errorf(
-				"%s has trailing bytes after the key", keyFileVote,
+				"%s has trailing bytes after the key", name,
 			)
 		}
 	} else {
@@ -426,23 +457,23 @@ func checkVoteKey(data []byte) error {
 		if err != nil {
 			return fmt.Errorf(
 				"%s is neither a text envelope nor a hex scalar: %w",
-				keyFileVote, err,
+				name, err,
 			)
 		}
 	}
 	if len(scalar) != voteKeySize {
 		return fmt.Errorf(
 			"%s holds %d bytes, expected %d",
-			keyFileVote, len(scalar), voteKeySize,
+			name, len(scalar), voteKeySize,
 		)
 	}
 	if !slices.ContainsFunc(scalar, func(b byte) bool { return b != 0 }) {
-		return fmt.Errorf("%s is the zero scalar", keyFileVote)
+		return fmt.Errorf("%s is the zero scalar", name)
 	}
 	if new(big.Int).SetBytes(scalar).Cmp(fr.Modulus()) >= 0 {
 		return fmt.Errorf(
 			"%s scalar is not below the BLS12-381 field modulus",
-			keyFileVote,
+			name,
 		)
 	}
 	return nil

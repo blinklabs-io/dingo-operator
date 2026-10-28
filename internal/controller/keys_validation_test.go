@@ -189,6 +189,34 @@ func TestValidateKeysSecret(t *testing.T) {
 			dn: node(nil),
 		},
 		{
+			name: "valid with the chart's bls.skey",
+			data: withKey(goodData, "bls.skey", voteEnvelope(t, 42)),
+			dn:   node(nil),
+		},
+		{
+			name: "valid with identical vote.skey and bls.skey",
+			data: withKey(
+				withKey(goodData, "vote.skey", voteEnvelope(t, 42)),
+				"bls.skey", voteEnvelope(t, 42),
+			),
+			dn: node(nil),
+		},
+		{
+			name: "vote.skey and bls.skey that differ",
+			data: withKey(
+				withKey(goodData, "vote.skey", voteEnvelope(t, 42)),
+				"bls.skey", voteEnvelope(t, 43),
+			),
+			dn:      node(nil),
+			wantErr: "both vote.skey and bls.skey",
+		},
+		{
+			name:    "bls.skey that is not a key at all",
+			data:    withKey(goodData, "bls.skey", []byte("not-a-key")),
+			dn:      node(nil),
+			wantErr: "bls.skey",
+		},
+		{
 			name: "empty vote key is treated as absent",
 			data: withKey(goodData, "vote.skey", []byte{}),
 			dn:   node(nil),

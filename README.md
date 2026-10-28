@@ -37,7 +37,8 @@ operators.
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
   An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
-  text envelope or raw hex scalar) is staged the same way and wired to
+  text envelope or raw hex scalar; `bls.skey`, the dingo Helm chart's name, is
+  accepted in its place, and both may be present only if identical) is staged the same way and wired to
   `DINGO_LEIOS_VOTE_SIGNING_KEY_FILE`; without it nothing changes. It is checked
   with the rest of the bundle, including the scalar range Dingo requires, and
   `spec.environment` may neither point that variable elsewhere nor set it when
