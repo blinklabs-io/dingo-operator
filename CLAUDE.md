@@ -316,6 +316,13 @@ the pod onto it":
     bundle into a CrashLoop. Spec edits and operator upgrades are held back
     until the Secret validates. Fix the Secret; do not leave a refused bundle
     sitting in it.
+- On a missing keys Secret: `KeysValid=False`/`KeysSecretMissing`,
+  `Degraded=True` and a Warning Event. On an existing StatefulSet the live pod
+  template and its checksum are kept, as on rejection, so the operator does not
+  roll the forging pod onto one stuck in `ContainerCreating` (the Secret volume
+  is not optional). Pod recreation is not fenced: a recreated pod cannot start
+  until the Secret returns. With no StatefulSet yet, it is still created as
+  before, without a keys checksum.
 - The on-chain counter floor. `internal/onchain` dials the node's
   node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
   pool's counter as `status.opcert.onChainCounter` (with
