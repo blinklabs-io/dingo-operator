@@ -439,7 +439,7 @@ func (h *harness) createKeysReaderRBAC(ctx context.Context) {
 		Rules: []rbacv1.PolicyRule{{
 			APIGroups: []string{""},
 			Resources: []string{"secrets"},
-			Verbs:     []string{"get"},
+			Verbs:     []string{"get", "update"},
 		}},
 	}
 	require.NoError(h.t, h.client.Create(ctx, role),
@@ -1026,6 +1026,7 @@ const (
 	condDegraded         = "Degraded"
 	reasonOpCertAccepted = "OpCertAccepted"
 	reasonOpCertRejected = "OpCertRejected"
+	condOpCertIssued     = "OpCertIssued"
 )
 
 // The on-chain opcert counter condition and the reasons this suite names.
