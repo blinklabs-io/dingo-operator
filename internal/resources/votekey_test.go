@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +58,45 @@ func TestBuildEnvLeiosVoteKey(t *testing.T) {
 			MountVoteKey: true,
 		})
 		assert.NotContains(t, env, voteKeyEnv)
+	})
+
+	// spec.environment may restate the managed path; it must not set the env
+	// where no vote.skey is staged.
+	override := map[string]string{voteKeyEnv: VoteKeyPath}
+	for _, tc := range []struct {
+		name string
+		dn   func() *dingov1alpha1.DingoNode
+		opts RenderOptions
+	}{
+		{"override without a staged vote key", bpNode,
+			RenderOptions{MountKeys: true}},
+		{"override on a keyless pod", bpNode,
+			RenderOptions{MountVoteKey: true}},
+		{"override on a relay", relayNode,
+			RenderOptions{MountKeys: true, MountVoteKey: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := tc.dn()
+			dn.Spec.Environment = override
+			assert.NotContains(t, envMap(dn, tc.opts), voteKeyEnv)
+		})
+	}
+
+	t.Run("override restating the staged path is set once", func(t *testing.T) {
+		t.Parallel()
+		dn := bpNode()
+		dn.Spec.Environment = override
+		var got []string
+		for _, e := range BuildEnv(dn, RenderOptions{
+			MountKeys:    true,
+			MountVoteKey: true,
+		}) {
+			if e.Name == voteKeyEnv {
+				got = append(got, e.Value)
+			}
+		}
+		assert.Equal(t, []string{VoteKeyPath}, got)
 	})
 }
 

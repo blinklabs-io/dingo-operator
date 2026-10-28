@@ -36,8 +36,9 @@ operators.
   An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
   text envelope or raw hex scalar) is staged the same way and wired to
   `DINGO_LEIOS_VOTE_SIGNING_KEY_FILE`; without it nothing changes. It is checked
-  with the rest of the bundle, and `spec.environment` may not point that
-  variable elsewhere. On a network without Leios, Dingo logs a warning and
+  with the rest of the bundle, including the scalar range Dingo requires, and
+  `spec.environment` may neither point that variable elsewhere nor set it when
+  no vote key is staged. On a network without Leios, Dingo logs a warning and
   ignores the key. Dingo no longer reads `DINGO_LEIOS_VOTER_PUBLIC_KEYS`; the
   vote key must be registered on chain for the pool.
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete

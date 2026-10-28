@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"slices"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ import (
 	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/blinklabs-io/gouroboros/vrf"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -336,8 +338,9 @@ func checkKeyEnvelope(
 // voteKeyMaxSize and voteKeySize mirror Dingo's loader
 // (dingo/ledger/leios/keys.go): the file is read up to 1 KiB and holds a
 // 32-byte big-endian BLS12-381 scalar, either in a text envelope or as legacy
-// raw hex. The scalar's range against the field modulus is left to Dingo; the
-// operator has no BLS dependency.
+// raw hex. Dingo's ParseVoteSigningKey also requires the scalar to lie in
+// [1, r), r being the scalar field modulus; checkVoteKey enforces the same
+// range so a key Dingo would refuse at startup never rolls the pod.
 const (
 	voteKeyMaxSize = 1024
 	voteKeySize    = 32
@@ -399,6 +402,12 @@ func checkVoteKey(data []byte) error {
 	}
 	if !slices.ContainsFunc(scalar, func(b byte) bool { return b != 0 }) {
 		return fmt.Errorf("%s is the zero scalar", keyFileVote)
+	}
+	if new(big.Int).SetBytes(scalar).Cmp(fr.Modulus()) >= 0 {
+		return fmt.Errorf(
+			"%s scalar is not below the BLS12-381 field modulus",
+			keyFileVote,
+		)
 	}
 	return nil
 }
