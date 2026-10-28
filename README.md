@@ -181,6 +181,12 @@ Inspect the condition and PVC events when expansion is refused. Unsupported
 StorageClasses are not replaced. Decreasing the spec never shrinks existing
 volumes; reducing capacity requires a separate data migration.
 
+New StatefulSets name their data claim template `dingo-data`, so claims are
+`dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
+after a chart release adopts that release's existing claims. Claim templates are
+immutable, so a StatefulSet created by an earlier operator version keeps its
+`data` template and `data-<name>-<ordinal>` claims.
+
 Claims are retained when replicas scale down or a DingoNode is deleted. Retained
 ordinals are included in later size reconciliations. PVCs do not acquire a
 DingoNode owner reference, so deleting a node does not garbage-collect its chain

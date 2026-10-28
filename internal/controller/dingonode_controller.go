@@ -257,6 +257,13 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if hasTopo {
 		opts.TopologyChecksum = checksum(topoJSON)
 	}
+	// Claim templates are immutable: render the data mount with the name the
+	// live StatefulSet already has so its pods keep referencing that volume.
+	dataName, err := r.liveDataVolumeName(ctx, dn)
+	if err != nil {
+		return err
+	}
+	opts.DataVolumeName = dataName
 	// Roll the block-producer pod when its mounted key Secret changes so an
 	// externally-delivered key/opcert swap takes effect. The Secret is read via
 	// the uncached APIReader (get-only, no informer/watch) to avoid holding the

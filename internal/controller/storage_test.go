@@ -98,9 +98,9 @@ func TestReconcileStorage(t *testing.T) {
 			ctx := context.Background()
 			dn := storageNode()
 			dn.Spec.Replicas = &tc.replicas
-			pvc := storageClaim("data-relay-0", tc.request, tc.capacity)
+			pvc := storageClaim("dingo-data-relay-0", tc.request, tc.capacity)
 			if tc.replicas == 0 {
-				pvc.Name = "data-relay-3"
+				pvc.Name = "dingo-data-relay-3"
 			}
 			if tc.resizePending {
 				pvc.Status.Conditions = []corev1.PersistentVolumeClaimCondition{
@@ -110,8 +110,8 @@ func TestReconcileStorage(t *testing.T) {
 					},
 				}
 			}
-			foreign := storageClaim("data-relay-other-0", "10Gi", "10Gi")
-			malformed := storageClaim("data-relay-01", "10Gi", "10Gi")
+			foreign := storageClaim("dingo-data-relay-other-0", "10Gi", "10Gi")
+			malformed := storageClaim("dingo-data-relay-01", "10Gi", "10Gi")
 			c := fake.NewClientBuilder().
 				WithObjects(pvc, foreign, malformed).
 				WithStatusSubresource(pvc).
@@ -155,7 +155,7 @@ func TestReconcileStorageWaitsForPendingClaimCapacity(t *testing.T) {
 	dn := storageNode()
 	replicas := int32(1)
 	dn.Spec.Replicas = &replicas
-	pvc := storageClaim("data-relay-0", "60Gi", "60Gi")
+	pvc := storageClaim("dingo-data-relay-0", "60Gi", "60Gi")
 	pvc.Status = corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending}
 	c := fake.NewClientBuilder().WithObjects(pvc).Build()
 	r := &DingoNodeReconciler{Client: c}
@@ -172,7 +172,7 @@ func TestReconcileStorageWaitsForPendingClaimCapacity(t *testing.T) {
 
 func TestStorageExpansionConflictNeverShrinks(t *testing.T) {
 	ctx := context.Background()
-	pvc := storageClaim("data-relay-0", "30Gi", "30Gi")
+	pvc := storageClaim("dingo-data-relay-0", "30Gi", "30Gi")
 	var patches int
 	c := fake.NewClientBuilder().
 		WithObjects(pvc).
@@ -209,7 +209,7 @@ func TestStorageExpansionConflictNeverShrinks(t *testing.T) {
 func TestStorageFailureConditionIsPersisted(t *testing.T) {
 	ctx := context.Background()
 	dn := storageNode()
-	pvc := storageClaim("data-relay-0", "30Gi", "30Gi")
+	pvc := storageClaim("dingo-data-relay-0", "30Gi", "30Gi")
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, appsv1.AddToScheme(scheme))
@@ -281,7 +281,7 @@ func TestStorageWaitsForClaims(t *testing.T) {
 
 func TestStorageExpansionIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	pvc := storageClaim("data-relay-0", "60Gi", "60Gi")
+	pvc := storageClaim("dingo-data-relay-0", "60Gi", "60Gi")
 	c := fake.NewClientBuilder().
 		WithObjects(pvc).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -311,7 +311,7 @@ func TestStorageExpansionAdmission(t *testing.T) {
 	reconcile(t, ctx, r, dn.Name, dn.Namespace)
 	original := &appsv1.StatefulSet{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), original))
-	pvc := storageClaim("data-relay-0", "30Gi", "30Gi")
+	pvc := storageClaim("dingo-data-relay-0", "30Gi", "30Gi")
 	pvc.UID = ""
 	pvc.Spec.StorageClassName = new(sc.Name)
 	desiredStatus := pvc.Status
@@ -368,4 +368,37 @@ func TestStorageExpansionAdmission(t *testing.T) {
 		resource.MustParse("60Gi"),
 		*pvc.Spec.Resources.Requests.Storage(),
 	)
+}
+
+func legacyDataStatefulSet(t *testing.T) *appsv1.StatefulSet {
+	t.Helper()
+	sts := resources.BuildStatefulSet(
+		storageNode(),
+		resources.RenderOptions{Replicas: 1, DataVolumeName: "data"},
+	)
+	require.Equal(t, "data", sts.Spec.VolumeClaimTemplates[0].Name)
+	return sts
+}
+
+func TestReconcileStorageLegacyClaimName(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dn := storageNode()
+	legacy := storageClaim("data-relay-0", "30Gi", "30Gi")
+	current := storageClaim("dingo-data-relay-0", "30Gi", "30Gi")
+	c := fake.NewClientBuilder().
+		WithObjects(legacyDataStatefulSet(t), legacy).
+		Build()
+	r := &DingoNodeReconciler{Client: c}
+	require.NoError(t, r.reconcileStorage(ctx, dn))
+	got := &corev1.PersistentVolumeClaim{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(legacy), got))
+	assert.Equal(t, "60Gi", got.Spec.Resources.Requests.Storage().String())
+
+	// A node without a StatefulSet resizes dingo-data claims only.
+	c = fake.NewClientBuilder().WithObjects(current).Build()
+	r = &DingoNodeReconciler{Client: c}
+	require.NoError(t, r.reconcileStorage(ctx, storageNode()))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(current), got))
+	assert.Equal(t, "60Gi", got.Spec.Resources.Requests.Storage().String())
 }

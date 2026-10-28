@@ -1533,3 +1533,51 @@ func TestCRDRejectsInvalidTracingAndLogging(t *testing.T) {
 	}
 	require.NoError(t, c.Create(ctx, ok))
 }
+
+func TestReconcileKeepsLegacyDataVolumeName(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	dn := &dingov1alpha1.DingoNode{
+		TypeMeta:   metav1.TypeMeta{APIVersion: dingov1alpha1.GroupVersion.String(), Kind: "DingoNode"},
+		ObjectMeta: metav1.ObjectMeta{Name: "old", Namespace: "old-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+			Image: dingov1alpha1.ImageSpec{
+				Repository: "ghcr.io/blinklabs-io/dingo",
+				Tag:        "0.69.0",
+			},
+		},
+	}
+	existing := resources.BuildStatefulSet(
+		dn,
+		resources.RenderOptions{Replicas: 1, DataVolumeName: "data"},
+	)
+	existing.CreationTimestamp = metav1.Now()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), dn))
+
+	got := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Name: "old", Namespace: "old-ns"}, got))
+	require.Len(t, got.Spec.VolumeClaimTemplates, 1)
+	assert.Equal(t, "data", got.Spec.VolumeClaimTemplates[0].Name)
+	pod := got.Spec.Template.Spec
+	pods := append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...)
+	require.Greater(t, len(pod.InitContainers), 0, "mithril init container expected")
+	for _, c := range pods {
+		assert.Contains(t, c.VolumeMounts,
+			corev1.VolumeMount{Name: "data", MountPath: "/data"}, c.Name)
+		assert.NotContains(t, volumeMountNames(c.VolumeMounts), "dingo-data")
+	}
+}
+
+func volumeMountNames(mounts []corev1.VolumeMount) []string {
+	names := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		names = append(names, m.Name)
+	}
+	return names
+}

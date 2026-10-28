@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
@@ -23,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/retry"
@@ -223,4 +225,29 @@ func (r *DingoNodeReconciler) upsertPodMonitor(
 		return ctrl.SetControllerReference(dn, pm, r.Scheme)
 	})
 	return err
+}
+
+// liveDataVolumeName returns the data claim template name of the node's
+// existing StatefulSet, or "" when none exists so the default applies.
+// Claim templates are immutable, so StatefulSets created before the default
+// became dingo-data keep their original "data" name.
+func (r *DingoNodeReconciler) liveDataVolumeName(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (string, error) {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, client.ObjectKey{
+		Name:      dn.Name,
+		Namespace: dn.Namespace,
+	}, sts)
+	if apierrors.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read statefulset: %w", err)
+	}
+	if len(sts.Spec.VolumeClaimTemplates) == 0 {
+		return "", nil
+	}
+	return sts.Spec.VolumeClaimTemplates[0].Name, nil
 }

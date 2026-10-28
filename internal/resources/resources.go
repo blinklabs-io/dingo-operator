@@ -55,10 +55,13 @@ const (
 	keysInitName    = "prepare-block-producer-keys"
 	mithrilInitName = "mithril-sync"
 
-	dataVolumeName = "data"
-	dataMountPath  = "/data"
-	tmpVolumeName  = "tmp"
-	ipcVolumeName  = "ipc"
+	// DefaultDataVolumeName names the data volume claim template of new
+	// StatefulSets. It matches the dingo Helm chart, so claims are
+	// dingo-data-<name>-<ordinal>.
+	DefaultDataVolumeName = "dingo-data"
+	dataMountPath         = "/data"
+	tmpVolumeName         = "tmp"
+	ipcVolumeName         = "ipc"
 
 	keysSourceName = "block-producer-keys-source"
 	keysSourcePath = "/var/run/dingo-keys-source"
@@ -294,6 +297,18 @@ type RenderOptions struct {
 	// MountKeys mounts the block-producer key Secret. Keyless standby pods set
 	// this false.
 	MountKeys bool
+	// DataVolumeName is the data volume claim template name of the live
+	// StatefulSet. Claim templates are immutable, so an existing StatefulSet
+	// keeps its original name. Empty selects DefaultDataVolumeName.
+	DataVolumeName string
+}
+
+// dataVolume returns the data volume and claim template name to render.
+func (o RenderOptions) dataVolume() string {
+	if o.DataVolumeName != "" {
+		return o.DataVolumeName
+	}
+	return DefaultDataVolumeName
 }
 
 // BuildEnv assembles the container environment. Spec.Environment values take
@@ -524,7 +539,7 @@ func BuildStatefulSet(
 				},
 				Spec: podSpec,
 			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{dataPVC(dn)},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{dataPVC(dn, opts)},
 			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
 				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
 				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
@@ -636,7 +651,7 @@ func volumeMounts(
 	opts RenderOptions,
 ) []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{
-		{Name: dataVolumeName, MountPath: dataMountPath},
+		{Name: opts.dataVolume(), MountPath: dataMountPath},
 		{Name: tmpVolumeName, MountPath: "/tmp"},
 		{Name: ipcVolumeName, MountPath: "/ipc"},
 	}
@@ -761,7 +776,10 @@ func mountsBlockProducerKeys(
 	return IsBlockProducer(dn) && opts.MountKeys && dn.Spec.BlockProducer != nil
 }
 
-func dataPVC(dn *dingov1alpha1.DingoNode) corev1.PersistentVolumeClaim {
+func dataPVC(
+	dn *dingov1alpha1.DingoNode,
+	opts RenderOptions,
+) corev1.PersistentVolumeClaim {
 	accessMode := dn.Spec.Persistence.AccessMode
 	if accessMode == "" {
 		accessMode = corev1.ReadWriteOnce
@@ -772,7 +790,7 @@ func dataPVC(dn *dingov1alpha1.DingoNode) corev1.PersistentVolumeClaim {
 	}
 	pvc := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   dataVolumeName,
+			Name:   opts.dataVolume(),
 			Labels: map[string]string{"cardano_network": dn.Spec.Network},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{

@@ -56,8 +56,14 @@ func (r *DingoNodeReconciler) reconcileStorage(
 	}
 	// Claim templates are immutable. Resize the claims instead, including retained
 	// ordinals while scaled down, without adopting them into DingoNode garbage collection.
-	template := resources.BuildStatefulSet(dn, resources.RenderOptions{}).
-		Spec.VolumeClaimTemplates[0]
+	dataName, err := r.liveDataVolumeName(ctx, dn)
+	if err != nil {
+		return fail(err)
+	}
+	template := resources.BuildStatefulSet(
+		dn,
+		resources.RenderOptions{DataVolumeName: dataName},
+	).Spec.VolumeClaimTemplates[0]
 	size := template.Spec.Resources.Requests[corev1.ResourceStorage]
 	prefix := template.Name + "-" + dn.Name + "-"
 	activeClaims := int64(0)
