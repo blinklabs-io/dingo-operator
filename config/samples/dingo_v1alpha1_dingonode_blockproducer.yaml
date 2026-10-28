@@ -28,6 +28,7 @@ spec:
     rotation:
       # MonitorOnly: surface KES/opcert state and RotationDue; do not mutate keys.
       # Switch to Auto with a cold signer to fully automate opcert issuance.
+      # Auto also needs poolId, nodeToClient.enabled, and Secret update access.
       mode: MonitorOnly
       renewBeforePeriods: 8
       # coldSigner:
