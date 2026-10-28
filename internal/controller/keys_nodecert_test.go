@@ -54,7 +54,9 @@ func TestValidateKeysSecretNodeCert(t *testing.T) {
 					PoolID:            hex.EncodeToString(keys.PoolID),
 					SlotsPerKESPeriod: 120,
 					MaxKESEvolutions:  62,
-					Keys:              dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					Keys: dingov1alpha1.KeysSpec{
+						SecretRef: "keys",
+					},
 				},
 			},
 			Status: dingov1alpha1.DingoNodeStatus{

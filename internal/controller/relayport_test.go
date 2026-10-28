@@ -66,7 +66,10 @@ func TestTopologyDialsReferencedNodesRelayPort(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(relay("musashi", 3010), relay("plain", 0), bp).Build()
 
-	require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), bp))
+	require.NoError(
+		t,
+		reconcilerFor(c).reconcileResources(context.Background(), bp),
+	)
 
 	cm := &corev1.ConfigMap{}
 	require.NoError(t, c.Get(

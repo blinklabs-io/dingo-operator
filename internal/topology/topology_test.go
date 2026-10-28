@@ -35,7 +35,8 @@ func newNode(topo dingov1alpha1.TopologySpec) *dingov1alpha1.DingoNode {
 
 func TestRender(t *testing.T) {
 	t.Run("empty topology has no content", func(t *testing.T) {
-		_, hasContent, err := Render(newNode(dingov1alpha1.TopologySpec{}), "ns", nil)
+		dn := newNode(dingov1alpha1.TopologySpec{})
+		_, hasContent, err := Render(dn, "ns", nil)
 		require.NoError(t, err)
 		assert.False(t, hasContent)
 	})

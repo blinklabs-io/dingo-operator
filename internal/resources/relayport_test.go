@@ -26,7 +26,10 @@ import (
 
 const chartRelayPort = 3010
 
-func relayPortContainerPort(t *testing.T, dn *dingov1alpha1.DingoNode) corev1.ContainerPort {
+func relayPortContainerPort(
+	t *testing.T,
+	dn *dingov1alpha1.DingoNode,
+) corev1.ContainerPort {
 	t.Helper()
 	sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
 	for _, p := range sts.Spec.Template.Spec.Containers[0].Ports {
@@ -72,12 +75,23 @@ func TestRelayPortCustom(t *testing.T) {
 		assert.Equal(t, "relay", svc.Spec.Ports[0].Name, svc.Name)
 		assert.Equal(t, int32(chartRelayPort), svc.Spec.Ports[0].Port, svc.Name)
 		assert.Equal(
-			t, intstr.FromString("relay"), svc.Spec.Ports[0].TargetPort, svc.Name,
+			t,
+			intstr.FromString("relay"),
+			svc.Spec.Ports[0].TargetPort,
+			svc.Name,
 		)
 	}
 	// Private and metrics Services keep their fixed ports.
-	assert.Equal(t, int32(PortNodeToClient), BuildPrivateService(dn).Spec.Ports[0].Port)
-	assert.Equal(t, int32(portMetrics), BuildMetricsService(dn).Spec.Ports[0].Port)
+	assert.Equal(
+		t,
+		int32(PortNodeToClient),
+		BuildPrivateService(dn).Spec.Ports[0].Port,
+	)
+	assert.Equal(
+		t,
+		int32(portMetrics),
+		BuildMetricsService(dn).Spec.Ports[0].Port,
+	)
 
 	// Tcp readiness probe (images without the health endpoint) follows it.
 	legacy := relayNode()

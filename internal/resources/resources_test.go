@@ -1148,7 +1148,10 @@ func TestSupportsTracing(t *testing.T) {
 // presents the certificate to Dingo as /keys/opcert.cert.
 func TestKeyPreparationStagesNodeCertAsOpcert(t *testing.T) {
 	t.Parallel()
-	sts := BuildStatefulSet(bpNode(), RenderOptions{Replicas: 1, MountKeys: true})
+	sts := BuildStatefulSet(
+		bpNode(),
+		RenderOptions{Replicas: 1, MountKeys: true},
+	)
 	var script []string
 	for _, c := range sts.Spec.Template.Spec.InitContainers {
 		if c.Name == "prepare-block-producer-keys" {
@@ -1182,10 +1185,17 @@ func TestKeyPreparationStagesNodeCertAsOpcert(t *testing.T) {
 				files[k] = v
 			}
 			for name, body := range files {
-				require.NoError(t, os.WriteFile(filepath.Join(src, name), []byte(body), 0o600))
+				require.NoError(
+					t,
+					os.WriteFile(filepath.Join(src, name), []byte(body), 0o600),
+				)
 			}
 			cmd := exec.Command(script[0], script[1:]...)
-			cmd.Env = append(os.Environ(), "DINGO_KEYS_SOURCE="+src, "DINGO_KEYS_DESTINATION="+dst)
+			cmd.Env = append(
+				os.Environ(),
+				"DINGO_KEYS_SOURCE="+src,
+				"DINGO_KEYS_DESTINATION="+dst,
+			)
 			out, err := cmd.CombinedOutput()
 			if tc.wantErr {
 				require.Error(t, err, string(out))

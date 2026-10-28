@@ -56,7 +56,10 @@ func TestPodLabelsCannotOverrideOperatorLabels(t *testing.T) {
 	t.Parallel()
 	dn := relayNode()
 	// Validation rejects these; the builder must still not let them win.
-	dn.Spec.PodLabels = map[string]string{NodeLabel: "other", "cardano_network": "x"}
+	dn.Spec.PodLabels = map[string]string{
+		NodeLabel:         "other",
+		"cardano_network": "x",
+	}
 	got := BuildStatefulSet(dn, RenderOptions{Replicas: 1}).Spec.Template.Labels
 	assert.Equal(t, "relay", got[NodeLabel])
 	assert.Equal(t, "mainnet", got["cardano_network"])

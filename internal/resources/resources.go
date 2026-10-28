@@ -127,10 +127,12 @@ func ValidatePodLabels(dn *dingov1alpha1.DingoNode) error {
 	for _, key := range sortedKeys(dn.Spec.PodLabels) {
 		if errs := validation.IsQualifiedName(key); len(errs) > 0 {
 			return fmt.Errorf(
-				"podLabels key %q is invalid: %s", key, strings.Join(errs, "; "),
+				"podLabels key %q is invalid: %s",
+				key, strings.Join(errs, "; "),
 			)
 		}
-		if errs := validation.IsValidLabelValue(dn.Spec.PodLabels[key]); len(errs) > 0 {
+		value := dn.Spec.PodLabels[key]
+		if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
 			return fmt.Errorf(
 				"podLabels[%q] value is invalid: %s",
 				key, strings.Join(errs, "; "),

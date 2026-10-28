@@ -40,7 +40,11 @@ func TestRenderRelayRefPorts(t *testing.T) {
 	require.Len(t, doc.LocalRoots, 1)
 	points := doc.LocalRoots[0].AccessPoints
 	require.Len(t, points, 3)
-	assert.Equal(t, "musashi-headless.cardano.svc.cluster.local", points[0].Address)
+	assert.Equal(
+		t,
+		"musashi-headless.cardano.svc.cluster.local",
+		points[0].Address,
+	)
 	assert.Equal(t, int32(3010), points[0].Port)
 	assert.Equal(t, int32(3001), points[1].Port)
 	// A ref whose DingoNode is unknown keeps the default relay port.
