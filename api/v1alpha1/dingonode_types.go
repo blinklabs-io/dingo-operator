@@ -224,8 +224,10 @@ type KeysSpec struct {
 	// +kubebuilder:default=Secret
 	// +optional
 	SourceType KeySourceType `json:"sourceType,omitempty"`
-	// SecretRef names a Secret holding vrf.skey, kes.skey and opcert.cert in
-	// cardano-cli text-envelope JSON form.
+	// SecretRef names a Secret holding vrf.skey, kes.skey and the operational
+	// certificate in cardano-cli text-envelope JSON form. The certificate is
+	// opcert.cert or node.cert (the name the dingo Helm chart uses); a Secret
+	// may hold both only if they are identical.
 	// +kubebuilder:validation:MinLength=1
 	SecretRef string `json:"secretRef"`
 }
@@ -362,6 +364,18 @@ type MetricsSpec struct {
 
 // RelayServiceSpec configures public P2P exposure without publishing APIs or metrics.
 type RelayServiceSpec struct {
+	// Port is the node-to-node (relay) listener port. It is the container
+	// port, the port of every Service that publishes P2P, the NetworkPolicy
+	// port and CARDANO_PORT, and the port in-cluster peers dial when they list
+	// this node in topology.relayRefs. Images without the health listener are
+	// probed for readiness on it; others use the health port. It exists so a
+	// node deployed with the dingo Helm chart on a non-default port keeps that
+	// port after moving to a DingoNode. Defaults to 3001.
+	// +kubebuilder:default=3001
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +optional
 	Type corev1.ServiceType `json:"type,omitempty"`
@@ -534,6 +548,14 @@ type DingoNodeSpec struct {
 	// RelayService publishes only P2P on the <name>-relay Service.
 	// +optional
 	RelayService RelayServiceSpec `json:"relayService,omitempty"`
+	// PodLabels are extra labels for the pod template only; they are not added
+	// to selectors, Services or other objects. Use them to carry labels that
+	// PodMonitors or other tooling read from the pod (for example the alias,
+	// azs and group labels of a node moved from the dingo Helm chart). Keys in
+	// the operator's own namespaces (app.kubernetes.io/*, dingo.blinklabs.io/*)
+	// and cardano_network and cardano_service are rejected.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
 	// +optional
 	Persistence PersistenceSpec `json:"persistence,omitempty"`
 	// +optional
@@ -565,6 +587,13 @@ type DingoNodeSpec struct {
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 	// Environment passes extra CARDANO_*/DINGO_* variables to the container.
+	// The operator owns the relay (relayService.port, default 3001),
+	// node-to-client (3002), metrics (12798) and health (12799) listener ports:
+	// CARDANO_PORT, CARDANO_PRIVATE_PORT, CARDANO_METRICS_PORT and
+	// DINGO_HEALTH_PORT are rejected unless they equal those values. Change the
+	// relay port with relayService.port; publish it elsewhere with
+	// relayService.hostPort (the container's host port) or relayService.nodePort
+	// on a NodePort or LoadBalancer Service.
 	// +optional
 	Environment map[string]string `json:"environment,omitempty"`
 	// +optional

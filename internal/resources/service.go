@@ -25,7 +25,7 @@ func servicePorts(dn *dingov1alpha1.DingoNode) []corev1.ServicePort {
 	ports := []corev1.ServicePort{
 		{
 			Name:       "relay",
-			Port:       portRelay,
+			Port:       RelayPort(dn),
 			TargetPort: intstr.FromString("relay"),
 			Protocol:   corev1.ProtocolTCP,
 		},

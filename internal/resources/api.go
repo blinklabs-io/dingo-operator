@@ -85,6 +85,12 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 
 // ValidateAPIs rejects listener/Service disagreement before resources are changed.
 func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
+	if err := validateRelayPort(dn); err != nil {
+		return err
+	}
+	if err := validateManagedPortEnv(dn); err != nil {
+		return err
+	}
 	if a := dn.Spec.APIs; a != nil {
 		for i, peer := range a.IngressFrom {
 			selectors := peer.NamespaceSelector != nil ||
@@ -123,7 +129,7 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 		}
 	}
 	used := map[int32]string{
-		portRelay: "relay", PortNodeToClient: "private",
+		RelayPort(dn): "relay", PortNodeToClient: "private",
 		portMetrics: "metrics", portHealth: "health",
 	}
 	anyEnabled := false
@@ -175,15 +181,6 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 		}
 	}
 	if anyEnabled {
-		for key, want := range map[string]string{"CARDANO_PORT": "3001", "CARDANO_PRIVATE_PORT": "3002", "CARDANO_METRICS_PORT": "12798"} {
-			if v, ok := dn.Spec.Environment[key]; ok && v != want {
-				return fmt.Errorf(
-					"%s must be %s when API listeners are enabled",
-					key,
-					want,
-				)
-			}
-		}
 		if storageMode(dn) != "api" {
 			return errors.New("API listeners require spec.storageMode=api")
 		}
@@ -207,6 +204,65 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 			if value, ok := dn.Spec.Environment[key]; ok && value != want {
 				return fmt.Errorf("%s conflicts with utxorpcTLSSecretRef", key)
 			}
+		}
+	}
+	return nil
+}
+
+// validateRelayPort rejects a relay port that is out of range or already owned
+// by another fixed listener. Zero means the default.
+func validateRelayPort(dn *dingov1alpha1.DingoNode) error {
+	port := dn.Spec.RelayService.Port
+	if port < 0 || port > 65535 {
+		return errors.New("relayService.port must be between 1 and 65535")
+	}
+	for _, fixed := range []struct {
+		name string
+		port int32
+	}{
+		{"private", PortNodeToClient},
+		{"metrics", portMetrics},
+		{"health", portHealth},
+	} {
+		if port == fixed.port {
+			return fmt.Errorf(
+				"relayService.port %d conflicts with the %s port",
+				port, fixed.name,
+			)
+		}
+	}
+	return nil
+}
+
+// validateManagedPortEnv rejects environment overrides that move a listener
+// the operator wires into container ports, Services, NetworkPolicy, probes and
+// topology dialing. Those are fixed by the spec (the relay port by
+// relayService.port), so a moved listener would silently stop accepting
+// traffic. Restating the managed port is harmless.
+func validateManagedPortEnv(dn *dingov1alpha1.DingoNode) error {
+	for _, m := range []struct {
+		key  string
+		port int32
+	}{
+		{"CARDANO_PORT", RelayPort(dn)},
+		{"CARDANO_PRIVATE_PORT", PortNodeToClient},
+		{"CARDANO_METRICS_PORT", portMetrics},
+		{"DINGO_HEALTH_PORT", portHealth},
+	} {
+		value, ok := dn.Spec.Environment[m.key]
+		if !ok {
+			continue
+		}
+		// Dingo reads these through envconfig, which parses base-zero, so
+		// "03001" binds 1537; compare the value it would actually bind.
+		port, err := strconv.ParseUint(value, 0, 32)
+		if err != nil ||
+			strconv.FormatUint(port, 10) != strconv.Itoa(int(m.port)) {
+			return fmt.Errorf(
+				"%s is managed by the operator and must be %d or unset",
+				m.key,
+				m.port,
+			)
 		}
 	}
 	return nil

@@ -280,3 +280,58 @@ func TestValidateSpecTracingImage(t *testing.T) {
 	disabled.Spec.Tracing.Enabled = false
 	require.NoError(t, validateSpec(disabled))
 }
+
+func TestValidateSpecRejectsListenerPortEnvOverrides(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		key, value string
+		wantErr    bool
+	}{
+		{"CARDANO_PORT", "4001", true},
+		{"CARDANO_PRIVATE_PORT", "4002", true},
+		{"CARDANO_METRICS_PORT", "9000", true},
+		{"DINGO_HEALTH_PORT", "9001", true},
+		{"CARDANO_PORT", "not-a-port", true},
+		// Dingo parses these base-zero, so a leading zero is octal: 03001
+		// binds 1537 and 0x0BB9 binds 3001.
+		{"CARDANO_PORT", "03001", true},
+		{"CARDANO_PORT", "0x0BB9", false},
+		// Restating the operator's own port moves nothing.
+		{"CARDANO_PORT", "3001", false},
+		{"CARDANO_PRIVATE_PORT", "3002", false},
+		{"CARDANO_METRICS_PORT", "12798", false},
+		{"DINGO_HEALTH_PORT", "12799", false},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			t.Parallel()
+			dn := &dingov1alpha1.DingoNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "relay"},
+				Spec: dingov1alpha1.DingoNodeSpec{
+					Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+					Environment: map[string]string{tc.key: tc.value},
+				},
+			}
+			err := validateSpec(dn)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.key)
+			require.ErrorContains(t, err, "managed by the operator")
+		})
+	}
+}
+
+func TestValidateSpecPodLabels(t *testing.T) {
+	t.Parallel()
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+			PodLabels: map[string]string{"alias": "musashi"},
+		},
+	}
+	require.NoError(t, validateSpec(dn))
+	dn.Spec.PodLabels["dingo.blinklabs.io/node"] = "other"
+	require.ErrorContains(t, validateSpec(dn), "podLabels")
+}

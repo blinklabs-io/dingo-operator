@@ -68,7 +68,7 @@ const NodeToClientAccessAllowed = "allowed"
 const MetricsAccessLabel = "dingo.blinklabs.io/metrics"
 
 // BuildNetworkPolicy restricts inbound traffic to managed nodes. Relays accept
-// node-to-node traffic on port 3001 and metrics only from labelled clients.
+// node-to-node traffic on the relay port and metrics only from labelled clients.
 // Block producers additionally limit node-to-node ingress to declared relays,
 // and admit node-to-client only for opted-in clients when NtC is enabled.
 // Egress is left open so the node can reach DNS, peers, and Mithril aggregators.
@@ -87,7 +87,7 @@ func BuildNetworkPolicy(
 
 	var ingress []networkingv1.NetworkPolicyIngressRule
 	if !IsBlockProducer(dn) {
-		relayPort := intstr.FromInt32(portRelay)
+		relayPort := intstr.FromInt32(RelayPort(dn))
 		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
 			Ports: []networkingv1.NetworkPolicyPort{{
 				Protocol: &tcp,
@@ -102,7 +102,7 @@ func BuildNetworkPolicy(
 		// local-state-query, tx submission and mempool queries against a forging
 		// node with no NtC grant at all. Peering is a node-to-node
 		// relationship; it is not consent to drive the node as a client.
-		relayPort := intstr.FromInt32(portRelay)
+		relayPort := intstr.FromInt32(RelayPort(dn))
 		peerSelector := metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{

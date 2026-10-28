@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"sort"
 	"strings"
@@ -165,6 +166,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 	}
+	if err := resources.ValidatePodLabels(dn); err != nil {
+		return err
+	}
 	return resources.ValidateAPIs(dn)
 }
 
@@ -178,8 +182,16 @@ func checksum(s string) string {
 // keysChecksum returns a stable digest of a keys Secret's Data. Populating the
 // pod-template annotation with this value rolls the StatefulSet when key
 // material changes.
+//
+// The certificate is hashed under one name whichever of opcert.cert and
+// node.cert holds it, so renaming the file in the Secret does not roll the pod.
 func keysChecksum(secret *corev1.Secret) string {
-	return checksumData(secret.Data)
+	data := maps.Clone(secret.Data)
+	if cert, _, err := opCertFile(data); err == nil && cert != nil {
+		delete(data, keyFileNodeCert)
+		data[keyFileOpCert] = cert
+	}
+	return checksumData(data)
 }
 
 // configChecksum returns a stable digest of a config-bundle ConfigMap's

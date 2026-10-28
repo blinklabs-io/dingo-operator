@@ -261,19 +261,20 @@ certificate, never whether a delivered one is checked before it can reach the
 node. `Assisted` is therefore "validate an externally-delivered opcert and roll
 the pod onto it":
 
-- Validated: all three files present; `kes.skey`/`vrf.skey` are well-formed
-  text envelopes of the right kind; the opcert envelope parses and its
-  cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the signing
-  cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so another
-  pool's self-consistent certificate cannot pass — this leg is skipped when
-  `poolId` is empty, which the CRD permits; the delivered `kes.skey` is
+- Validated: all three files present (the certificate as `opcert.cert` or the
+  dingo chart's `node.cert`, identical if both); `kes.skey`/`vrf.skey` are
+  well-formed text envelopes of the right kind; the opcert envelope parses and
+  its cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the
+  signing cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so
+  another pool's self-consistent certificate cannot pass — this leg is skipped
+  when `poolId` is empty, which the CRD permits; the delivered `kes.skey` is
   exactly 608 bytes and its derived public key equals the certificate's KES
   vkey, so a new opcert shipped without its matching KES key is refused rather
   than CrashLooping the pod on Dingo's own "KES verification key mismatch";
   `vrf.skey` is a 32-byte seed or the 64-byte cardano-cli seed||pubkey form
   (matching `dingo/keystore/keyfile.go`); the counter does not regress below
-  `status.opcert.onDiskCounter` or below the on-chain counter (see below);
-  and the KES window covers the node's current period.
+  `status.opcert.onDiskCounter` or below the on-chain counter (see below); and
+  the KES window covers the node's current period.
   - The KES length check must precede the derivation: gouroboros
     `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
     check and panics on a short key.
@@ -297,21 +298,24 @@ the pod onto it":
   pod annotation changes, which rolls the pod.
 - On rejection: `KeysValid=False`/`OpCertRejected`, `Degraded=True` (the
   only signal in `kubectl get dingonode`, since the node keeps forging and
-  readiness stays green), plus a Warning Event. The reconcile carries the
-  checksum already on the live pod template forward so the rendered template
-  stays byte-identical and the operator does not roll the pod. (An empty
-  checksum would *remove* the annotation — itself a template change — and roll
-  the pod onto the rejected keys.) The reconcile does not fail: last-known-good
-  is the safe state.
+  readiness stays green), plus a Warning Event. The reconcile keeps the live
+  pod template of an existing StatefulSet unchanged until the Secret
+  validates, so the operator does not roll the pod — not for the keys, and not
+  for any other template change, including one introduced by an operator
+  upgrade or a spec edit. The checksum already on the live template is also
+  carried forward. (An empty checksum would *remove* the annotation — itself a
+  template change — and roll the pod onto the rejected keys.) The reconcile
+  does not fail: last-known-good is the safe state.
   - What this does and does not protect. An init container copies the Secret
     into a memory-backed `/keys` volume with owner-only permissions. The running
     pod therefore keeps its staged files when kubelet refreshes the source
     Secret, not just the keys already loaded by the process. Refusing a bundle
     still declines only to *initiate* a roll — it does not fence pod recreation.
-    An eviction, drain, reschedule, image bump, `configRef` change, or
-    `kubectl delete pod` stages the Secret's current contents, and Dingo's
-    startup validation turns a rejected bundle into a CrashLoop. Fix the Secret;
-    do not leave a refused bundle sitting in it.
+    An eviction, drain, reschedule, or `kubectl delete pod` stages the
+    Secret's current contents, and Dingo's startup validation turns a rejected
+    bundle into a CrashLoop. Spec edits and operator upgrades are held back
+    until the Secret validates. Fix the Secret; do not leave a refused bundle
+    sitting in it.
 - The on-chain counter floor. `internal/onchain` dials the node's
   node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
   pool's counter as `status.opcert.onChainCounter` (with
@@ -347,8 +351,7 @@ the pod onto it":
     `reconcileResources` is what validates the bundle and acts on the verdict.
     Be exact about what that buys, because it differs by case:
     - StatefulSet already exists — a genuine roll-prevention: the live
-      keys-checksum is carried forward, the pod template stays byte-identical,
-      and the process keeps forging on its loaded keys.
+      pod template is kept as it is, and the process keeps forging on its loaded keys.
     - Fresh cluster, no StatefulSet yet — nothing is prevented.
       `reconcileResources` applies the StatefulSet unconditionally, the keys
       Secret is mounted, and Dingo CrashLoops on the below-chain opcert exactly
@@ -399,9 +402,10 @@ the pod onto it":
     producer's NetworkPolicy admits port 3002 from pods labelled
     `dingo.blinklabs.io/node-to-client=allowed` — plus a matching label on the
     *namespace* when the client is in another one. That label is the only way
-    in: declared `relayRefs` peers get the node-to-node port (3001) and nothing
-    else. Peering is not consent to drive the node as a client, and the rule is
-    gated on the spec field so the policy cannot grant a port the operator does
+    in: declared `relayRefs` peers get the node-to-node port
+    (`relayService.port`, default 3001) and nothing else. Peering is not
+    consent to drive the node as a client, and the rule is gated on the spec
+    field so the policy cannot grant a port the operator does
     not query. Both gates are off by default, so the default posture is
     unchanged. The operator's own Deployment must carry that label; it lives
     in the `helm-charts` repo (`charts/dingo-operator/`), not here, so until the

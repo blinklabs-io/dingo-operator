@@ -1206,8 +1206,10 @@ spec:
                     properties:
                       secretRef:
                         description: |-
-                          SecretRef names a Secret holding vrf.skey, kes.skey and opcert.cert in
-                          cardano-cli text-envelope JSON form.
+                          SecretRef names a Secret holding vrf.skey, kes.skey and the operational
+                          certificate in cardano-cli text-envelope JSON form. The certificate is
+                          opcert.cert or node.cert (the name the dingo Helm chart uses); a Secret
+                          may hold both only if they are identical.
                         minLength: 1
                         type: string
                       sourceType:
@@ -1329,8 +1331,15 @@ spec:
               environment:
                 additionalProperties:
                   type: string
-                description: Environment passes extra CARDANO_*/DINGO_* variables
-                  to the container.
+                description: |-
+                  Environment passes extra CARDANO_*/DINGO_* variables to the container.
+                  The operator owns the relay (relayService.port, default 3001),
+                  node-to-client (3002), metrics (12798) and health (12799) listener ports:
+                  CARDANO_PORT, CARDANO_PRIVATE_PORT, CARDANO_METRICS_PORT and
+                  DINGO_HEALTH_PORT are rejected unless they equal those values. Change the
+                  relay port with relayService.port; publish it elsewhere with
+                  relayService.hostPort (the container's host port) or relayService.nodePort
+                  on a NodePort or LoadBalancer Service.
                 type: object
               image:
                 description: ImageSpec configures the Dingo container image.
@@ -1472,6 +1481,17 @@ spec:
                   storageClass:
                     description: StorageClass uses the cluster default when nil.
                     type: string
+                type: object
+              podLabels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  PodLabels are extra labels for the pod template only; they are not added
+                  to selectors, Services or other objects. Use them to carry labels that
+                  PodMonitors or other tooling read from the pod (for example the alias,
+                  azs and group labels of a node moved from the dingo Helm chart). Keys in
+                  the operator's own namespaces (app.kubernetes.io/*, dingo.blinklabs.io/*)
+                  and cardano_network and cardano_service are rejected.
                 type: object
               podSecurityContext:
                 description: PodSecurityContext overrides the operator's secure defaults.
@@ -1735,6 +1755,20 @@ spec:
                     format: int32
                     maximum: 65535
                     minimum: 0
+                    type: integer
+                  port:
+                    default: 3001
+                    description: |-
+                      Port is the node-to-node (relay) listener port. It is the container
+                      port, the port of every Service that publishes P2P, the NetworkPolicy
+                      port and CARDANO_PORT, and the port in-cluster peers dial when they list
+                      this node in topology.relayRefs. Images without the health listener are
+                      probed for readiness on it; others use the health port. It exists so a
+                      node deployed with the dingo Helm chart on a non-default port keeps that
+                      port after moving to a DingoNode. Defaults to 3001.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
                     type: integer
                   type:
                     description: Service Type string describes ingress methods for
