@@ -366,8 +366,9 @@ type MetricsSpec struct {
 type RelayServiceSpec struct {
 	// Port is the node-to-node (relay) listener port. It is the container
 	// port, the port of every Service that publishes P2P, the NetworkPolicy
-	// port, the readiness probe port and CARDANO_PORT, and the port in-cluster
-	// peers dial when they list this node in topology.relayRefs. It exists so a
+	// port and CARDANO_PORT, and the port in-cluster peers dial when they list
+	// this node in topology.relayRefs. Images without the health listener are
+	// probed for readiness on it; others use the health port. It exists so a
 	// node deployed with the dingo Helm chart on a non-default port keeps that
 	// port after moving to a DingoNode. Defaults to 3001.
 	// +kubebuilder:default=3001
