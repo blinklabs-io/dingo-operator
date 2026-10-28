@@ -240,8 +240,14 @@ func NewBursaSigner(cfg BursaConfig) (*BursaSigner, error) {
 			// A signer is built per rotation and used once, so idle
 			// connections would only pin the transport.
 			Transport: &http.Transport{
+				Proxy:             http.ProxyFromEnvironment,
 				TLSClientConfig:   tlsCfg,
 				DisableKeepAlives: true,
+			},
+			// A redirect would replay the signing request to a URL the
+			// configuration never named.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
 			},
 		},
 	}, nil

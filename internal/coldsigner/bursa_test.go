@@ -232,3 +232,25 @@ func TestBursaSignerBoundsErrorText(t *testing.T) {
 		assert.Less(t, len(err.Error()), 1024)
 	}
 }
+
+// A redirect would replay the signing request somewhere the configuration
+// never named.
+func TestBursaSignerRefusesRedirect(t *testing.T) {
+	f := newFakeBursa(t)
+	srv := httptest.NewTLSServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://elsewhere.invalid/v1/sign",
+				http.StatusTemporaryRedirect)
+		},
+	))
+	t.Cleanup(srv.Close)
+	s, err := NewBursaSigner(BursaConfig{
+		Endpoint: srv.URL, ColdKeyHash: f.keyHash, CACert: caPEM(srv),
+	})
+	require.NoError(t, err)
+	_, err = s.SignOpCertFromChain(
+		context.Background(), make([]byte, 32), 4, 900,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "307")
+}
