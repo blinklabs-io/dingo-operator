@@ -281,6 +281,33 @@ func TestValidateSpecTracingImage(t *testing.T) {
 	require.NoError(t, validateSpec(disabled))
 }
 
+func TestValidateSpecRejectsConflictingVoteKeyEnv(t *testing.T) {
+	t.Parallel()
+
+	node := func(env map[string]string) *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "bp"},
+			Spec: dingov1alpha1.DingoNodeSpec{
+				Role:    dingov1alpha1.RoleBlockProducer,
+				Network: "preview",
+				BlockProducer: &dingov1alpha1.BlockProducerSpec{
+					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+				},
+				Environment: env,
+			},
+		}
+	}
+	require.NoError(t, validateSpec(node(nil)))
+	require.NoError(t, validateSpec(node(map[string]string{
+		"DINGO_LEIOS_VOTE_SIGNING_KEY_FILE": "/keys/vote.skey",
+	})))
+	err := validateSpec(node(map[string]string{
+		"DINGO_LEIOS_VOTE_SIGNING_KEY_FILE": "/other/vote.skey",
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DINGO_LEIOS_VOTE_SIGNING_KEY_FILE")
+}
+
 func TestValidateSpecRejectsListenerPortEnvOverrides(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

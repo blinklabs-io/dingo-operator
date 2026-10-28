@@ -318,6 +318,8 @@ func (r *DingoNodeReconciler) reconcileResources(
 				r.rejectKeys(ctx, dn, verr)
 			} else {
 				opts.KeysChecksum = keysChecksum(secret)
+				voteData, _, _ := voteKeyFile(secret.Data)
+				opts.MountVoteKey = voteData != nil
 				dn.Status.OpCert.OnDiskCounter = state.Counter
 				meta.SetStatusCondition(
 					&dn.Status.Conditions,

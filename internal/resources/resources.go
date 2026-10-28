@@ -21,6 +21,7 @@ package resources
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -346,6 +347,10 @@ type RenderOptions struct {
 	// MountKeys mounts the block-producer key Secret. Keyless standby pods set
 	// this false.
 	MountKeys bool
+	// MountVoteKey sets DINGO_LEIOS_VOTE_SIGNING_KEY_FILE for the optional
+	// vote.skey in the keys Secret. Like the other key env it applies only
+	// where the keys are mounted.
+	MountVoteKey bool
 }
 
 // BuildEnv assembles the container environment. Spec.Environment values take
@@ -447,8 +452,23 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 			},
 		)
 	}
+	// The optional Leios vote key shares the key-mount gate, so a keyless
+	// standby never gets a vote signing key.
+	voteKey := mountsBlockProducerKeys(dn, opts) && opts.MountVoteKey
+	if voteKey {
+		env = append(env, corev1.EnvVar{Name: VoteKeyEnv, Value: VoteKeyPath})
+	}
 	env = append(env, apiEnv(dn)...)
-	return mergeEnv(env, dn.Spec.Environment)
+	env = mergeEnv(env, dn.Spec.Environment)
+	// The gate applies to the merged result too: a spec.environment override
+	// restating VoteKeyPath where no vote.skey is staged would point Dingo at
+	// a missing file and fail its startup.
+	if !voteKey {
+		env = slices.DeleteFunc(env, func(e corev1.EnvVar) bool {
+			return e.Name == VoteKeyEnv
+		})
+	}
+	return env
 }
 
 // mergeEnv overlays user-provided environment onto defaults, overriding by name
