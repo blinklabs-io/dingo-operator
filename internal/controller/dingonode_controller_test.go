@@ -1797,6 +1797,90 @@ func TestReconcileReusesRetainedDataClaims(t *testing.T) {
 	}
 }
 
+// Kubernetes binds a claim template to an existing PVC by name alone, so a
+// retained claim of another network under the selected name would mount that
+// network's database. Such claims must stop the reconcile, while one under a
+// name the node will not mount must not.
+func TestReconcileRefusesConflictingRetainedDataClaims(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	labelled := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
+		pvc := dataNameClaim(name)
+		pvc.Labels = labels
+		return pvc
+	}
+	mainnet := map[string]string{"cardano_network": "mainnet"}
+	preview := map[string]string{"cardano_network": "preview"}
+	for _, tc := range []struct {
+		name    string
+		claims  []*corev1.PersistentVolumeClaim
+		refused string
+		want    string
+	}{
+		{
+			name:    "default name of another network",
+			claims:  []*corev1.PersistentVolumeClaim{labelled("dingo-data-old-0", mainnet)},
+			refused: "dingo-data-old-0",
+		},
+		{
+			name: "selected name with an ordinal of another network",
+			claims: []*corev1.PersistentVolumeClaim{
+				labelled("dingo-data-old-0", preview),
+				labelled("dingo-data-old-1", mainnet),
+			},
+			refused: "dingo-data-old-1",
+		},
+		{
+			name: "legacy name of another network",
+			claims: []*corev1.PersistentVolumeClaim{
+				labelled("data-old-0", preview),
+				labelled("data-old-1", mainnet),
+			},
+			refused: "data-old-1",
+		},
+		{
+			name:    "unlabelled claim under the default name",
+			claims:  []*corev1.PersistentVolumeClaim{labelled("dingo-data-old-0", nil)},
+			refused: "dingo-data-old-0",
+		},
+		{
+			name:   "unmounted legacy name of another network",
+			claims: []*corev1.PersistentVolumeClaim{labelled("data-old-0", mainnet)},
+			want:   "dingo-data",
+		},
+		{
+			name: "unmounted default name of another network",
+			claims: []*corev1.PersistentVolumeClaim{
+				labelled("data-old-0", preview),
+				labelled("dingo-data-old-0", mainnet),
+			},
+			want: "data",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := fake.NewClientBuilder().WithScheme(scheme)
+			for _, pvc := range tc.claims {
+				b = b.WithObjects(pvc)
+			}
+			c := b.Build()
+			err := reconcilerFor(c).reconcileResources(context.Background(), dataNameNode())
+			if tc.refused == "" {
+				require.NoError(t, err)
+				assertDataVolume(t, c, tc.want)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.refused)
+			sts := &appsv1.StatefulSet{}
+			assert.True(t, apierrors.IsNotFound(c.Get(context.Background(),
+				types.NamespacedName{Name: "old", Namespace: "old-ns"}, sts)))
+		})
+	}
+}
+
 // The data volume must come from the StatefulSet CreateOrUpdate itself read, so
 // a stale earlier read cannot render a mount for a claim template it lacks.
 func TestUpsertStatefulSetUsesFetchedClaimTemplate(t *testing.T) {

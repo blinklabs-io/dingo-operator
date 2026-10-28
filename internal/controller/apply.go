@@ -247,6 +247,11 @@ func (r *DingoNodeReconciler) upsertPodMonitor(
 // existing StatefulSet keeps its name. Without one, claims retained from an
 // earlier StatefulSet decide it: dingo-data when any exist, as the dingo chart
 // creates them, else data, as earlier operator versions did.
+//
+// Kubernetes binds a claim template to an existing PVC by name without
+// checking its labels, so a retained claim under the selected name that is not
+// labelled with the node's network would mount another network's database.
+// Such a claim is refused rather than skipped.
 func (r *DingoNodeReconciler) dataVolumeName(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -266,22 +271,38 @@ func (r *DingoNodeReconciler) dataVolumeName(
 		return "", fmt.Errorf("read statefulset: %w", err)
 	}
 	claims := &corev1.PersistentVolumeClaimList{}
-	if err := r.List(ctx, claims, client.InNamespace(dn.Namespace),
-		client.MatchingLabels{"cardano_network": dn.Spec.Network}); err != nil {
+	if err := r.List(ctx, claims, client.InNamespace(dn.Namespace)); err != nil {
 		return "", fmt.Errorf("list data claims: %w", err)
 	}
-	legacy := false
+	matched := map[string]bool{}
+	foreign := map[string]string{}
 	for i := range claims.Items {
-		name := claims.Items[i].Name
-		if _, ok := claimOrdinal(name, resources.DefaultDataVolumeName, dn.Name); ok {
-			return resources.DefaultDataVolumeName, nil
-		}
-		if _, ok := claimOrdinal(name, legacyDataVolumeName, dn.Name); ok {
-			legacy = true
+		pvc := &claims.Items[i]
+		for _, template := range []string{
+			resources.DefaultDataVolumeName, legacyDataVolumeName,
+		} {
+			if _, ok := claimOrdinal(pvc.Name, template, dn.Name); !ok {
+				continue
+			}
+			if pvc.Labels["cardano_network"] == dn.Spec.Network {
+				matched[template] = true
+			} else if _, seen := foreign[template]; !seen {
+				foreign[template] = pvc.Name
+			}
 		}
 	}
-	if legacy {
-		return legacyDataVolumeName, nil
+	selected := resources.DefaultDataVolumeName
+	if !matched[selected] && matched[legacyDataVolumeName] {
+		selected = legacyDataVolumeName
 	}
-	return "", nil
+	if name, ok := foreign[selected]; ok {
+		return "", fmt.Errorf(
+			"retained claim %s is not labelled cardano_network=%s and would be mounted as this node's data volume",
+			name, dn.Spec.Network,
+		)
+	}
+	if selected == resources.DefaultDataVolumeName && !matched[selected] {
+		return "", nil
+	}
+	return selected, nil
 }
