@@ -261,19 +261,20 @@ certificate, never whether a delivered one is checked before it can reach the
 node. `Assisted` is therefore "validate an externally-delivered opcert and roll
 the pod onto it":
 
-- Validated: all three files present; `kes.skey`/`vrf.skey` are well-formed
-  text envelopes of the right kind; the opcert envelope parses and its
-  cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the signing
-  cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so another
-  pool's self-consistent certificate cannot pass — this leg is skipped when
-  `poolId` is empty, which the CRD permits; the delivered `kes.skey` is
+- Validated: all three files present (the certificate as `opcert.cert` or the
+  dingo chart's `node.cert`, identical if both); `kes.skey`/`vrf.skey` are
+  well-formed text envelopes of the right kind; the opcert envelope parses and
+  its cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the
+  signing cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so
+  another pool's self-consistent certificate cannot pass — this leg is skipped
+  when `poolId` is empty, which the CRD permits; the delivered `kes.skey` is
   exactly 608 bytes and its derived public key equals the certificate's KES
   vkey, so a new opcert shipped without its matching KES key is refused rather
   than CrashLooping the pod on Dingo's own "KES verification key mismatch";
   `vrf.skey` is a 32-byte seed or the 64-byte cardano-cli seed||pubkey form
   (matching `dingo/keystore/keyfile.go`); the counter does not regress below
-  `status.opcert.onDiskCounter` or below the on-chain counter (see below);
-  and the KES window covers the node's current period.
+  `status.opcert.onDiskCounter` or below the on-chain counter (see below); and
+  the KES window covers the node's current period.
   - The KES length check must precede the derivation: gouroboros
     `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
     check and panics on a short key.
@@ -399,9 +400,10 @@ the pod onto it":
     producer's NetworkPolicy admits port 3002 from pods labelled
     `dingo.blinklabs.io/node-to-client=allowed` — plus a matching label on the
     *namespace* when the client is in another one. That label is the only way
-    in: declared `relayRefs` peers get the node-to-node port (3001) and nothing
-    else. Peering is not consent to drive the node as a client, and the rule is
-    gated on the spec field so the policy cannot grant a port the operator does
+    in: declared `relayRefs` peers get the node-to-node port
+    (`relayService.port`, default 3001) and nothing else. Peering is not
+    consent to drive the node as a client, and the rule is gated on the spec
+    field so the policy cannot grant a port the operator does
     not query. Both gates are off by default, so the default posture is
     unchanged. The operator's own Deployment must carry that label; it lives
     in the `helm-charts` repo (`charts/dingo-operator/`), not here, so until the

@@ -67,8 +67,8 @@ operators.
   3002) is closed unless a client opts in: label the client pod
   `dingo.blinklabs.io/node-to-client=allowed`, and its namespace too when it is
   not the node's own. That label is the only way in — peers named in
-  `topology.relayRefs` get the node-to-node port (3001) and nothing else. Dingo
-  also binds node-to-client to loopback until
+  `topology.relayRefs` get the node-to-node port (`relayService.port`, default
+  3001) and nothing else. Dingo also binds node-to-client to loopback until
   `blockProducer.nodeToClient.enabled` is set, so both the listener and the
   policy have to be opened deliberately.
   Metrics also require an explicit grant: label the operator and Prometheus
