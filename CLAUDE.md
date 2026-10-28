@@ -449,11 +449,20 @@ metrics scrape on every reconcile:
    uses), carrying the read resourceVersion. `vrf.skey` is untouched.
 7. The next reconcile validates the new bundle and rolls the pod.
 
+A failure from step 4 on (signer unreachable or refusing, bundle rejected,
+Secret write denied) is remembered per node in memory, and the signer is not
+contacted again for `issueRetryInterval` (10 minutes). Without it a signer
+timeout would block every reconcile while `RotationDue` holds. A refusal sets
+`OpCertIssued=False` and a Warning Event but not `Degraded`: the node is still
+forging, and several refusals (counter not yet read, KES not yet scraped) are
+normal transient states.
+
 `validateSpec` requires, for `Auto`: `poolId`, `nodeToClient.enabled`, and a
 cold signer that can issue. Bursa needs an https `endpoint`, `mtlsSecretRef`
 (a Secret with `tls.crt`, `tls.key` and optionally `ca.crt`) and
 `coldKeyHash` equal to the pool ID; `secret` needs `secretRef` holding
-`cold.skey`. Auto writes the keys Secret, so the deployment must grant the
+`cold.skey` and is refused on mainnet (by name or network magic), since it
+keeps the cold key in the cluster. Auto writes the keys Secret, so the deployment must grant the
 operator `update` on Secrets in the keys namespaces, on top of `get`.
 
 ### HA
