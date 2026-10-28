@@ -29,6 +29,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,14 +50,20 @@ type fakeBursa struct {
 	// signedIssue, when non-zero, is the counter actually signed.
 	signedIssue uint64
 	otherKey    ed25519.PrivateKey
-	got         map[string]any
+	// errBody replaces the error text sent with status.
+	errBody string
+	got     map[string]any
 }
 
 func (f *fakeBursa) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	require.Equal(f.t, "/v1/sign", r.URL.Path)
 	require.NoError(f.t, json.NewDecoder(r.Body).Decode(&f.got))
 	if f.status != 0 {
-		http.Error(w, "opcert chain counter is below the recorded on-chain counter", f.status)
+		msg := "opcert chain counter is below the recorded on-chain counter"
+		if f.errBody != "" {
+			msg = f.errBody
+		}
+		http.Error(w, msg, f.status)
 		return
 	}
 	kes, _ := hex.DecodeString(f.got["kes_vkey"].(string))
@@ -208,4 +215,20 @@ func TestBursaSignerPresentsClientCertificate(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.SignOpCertFromChain(context.Background(), make([]byte, 32), 4, 900)
 	require.NoError(t, err)
+}
+
+// The error reaches a status condition, which has a size limit; a large error
+// page from the signer or a proxy in front of it must not fill it.
+func TestBursaSignerBoundsErrorText(t *testing.T) {
+	for _, status := range []int{http.StatusConflict, http.StatusBadGateway} {
+		f := newFakeBursa(t)
+		f.status = status
+		f.errBody = strings.Repeat("x", 60<<10)
+		_, s := startBursa(t, f)
+		_, err := s.SignOpCertFromChain(
+			context.Background(), make([]byte, 32), 4, 900,
+		)
+		require.Error(t, err)
+		assert.Less(t, len(err.Error()), 1024)
+	}
 }

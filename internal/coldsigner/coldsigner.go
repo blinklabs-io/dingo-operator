@@ -169,6 +169,9 @@ const (
 	bursaTimeout = 30 * time.Second
 	// bursaMaxResponse bounds the response body read from the signer.
 	bursaMaxResponse = 64 << 10
+	// bursaMaxErrorText bounds the signer text carried in an error, which
+	// ends up in a status condition and an Event.
+	bursaMaxErrorText = 256
 )
 
 // ErrCounterConflict is returned when the signer refuses the chain counter
@@ -233,8 +236,13 @@ func NewBursaSigner(cfg BursaConfig) (*BursaSigner, error) {
 	return &BursaSigner{
 		cfg: cfg,
 		client: &http.Client{
-			Timeout:   bursaTimeout,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg},
+			Timeout: bursaTimeout,
+			// A signer is built per rotation and used once, so idle
+			// connections would only pin the transport.
+			Transport: &http.Transport{
+				TLSClientConfig:   tlsCfg,
+				DisableKeepAlives: true,
+			},
 		},
 	}, nil
 }
@@ -294,11 +302,11 @@ func (b *BursaSigner) SignOpCertFromChain(
 	switch {
 	case res.StatusCode == http.StatusConflict:
 		return nil, fmt.Errorf(
-			"%w: %s", ErrCounterConflict, bytes.TrimSpace(body),
+			"%w: %s", ErrCounterConflict, errorText(body),
 		)
 	case res.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf(
-			"bursa signer: %s: %s", res.Status, bytes.TrimSpace(body),
+			"bursa signer: %s: %s", res.Status, errorText(body),
 		)
 	}
 	var out bursaOpCertResponse
@@ -306,6 +314,15 @@ func (b *BursaSigner) SignOpCertFromChain(
 		return nil, fmt.Errorf("bursa signer: decode response: %w", err)
 	}
 	return b.verify(out, kesVkey, chainCounter, kesPeriod)
+}
+
+// errorText returns the start of a signer error body for an error message.
+func errorText(body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) <= bursaMaxErrorText {
+		return string(body)
+	}
+	return strings.ToValidUTF8(string(body[:bursaMaxErrorText]), "") + "..."
 }
 
 func (b *BursaSigner) verify(
