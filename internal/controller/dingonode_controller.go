@@ -82,6 +82,9 @@ type DingoNodeReconciler struct {
 	// counter validation falls back to the operator's own last accepted counter.
 	OnChain       onchain.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
+	// ColdSigner overrides the cold signer Auto rotation issues opcerts with.
+	// Nil builds it from spec.blockProducer.rotation.coldSigner.
+	ColdSigner ColdSignerFactory
 
 	// onChainMu guards onChainAttempts.
 	onChainMu sync.Mutex
@@ -502,6 +505,7 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	// Scraped for every node, not just block producers: a relay that stops
 	// following the chain serves stale answers to everything downstream.
 	r.refreshForgeStatus(ctx, dn)
+	r.autoRotate(ctx, dn)
 
 	// A wedged node keeps its pod Ready, so Ready alone would report it
 	// healthy. Phase is downgraded to Degraded while the pipeline is unhealthy,
