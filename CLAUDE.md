@@ -119,7 +119,7 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   repositories and unrecognized tags retain the conservative `100:101`
   non-root compatibility default. Set `spec.podSecurityContext` when a custom
   or unrecognized image uses different IDs; an explicit context is preserved
-  before, without a keys checksum.
+  unchanged.
 - Cold keys never enter the cluster. The operator issues opcerts by sending
   the signable to a pluggable cold-signer (Bursa); it generates KES/VRF keys
   itself but never holds the cold key.
