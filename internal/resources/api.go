@@ -224,8 +224,11 @@ func validateManagedPortEnv(dn *dingov1alpha1.DingoNode) error {
 		if !ok {
 			continue
 		}
-		port, err := strconv.ParseInt(value, 10, 32)
-		if err != nil || port != int64(m.port) {
+		// Dingo reads these through envconfig, which parses base-zero, so
+		// "03001" binds 1537; compare the value it would actually bind.
+		port, err := strconv.ParseUint(value, 0, 32)
+		if err != nil ||
+			strconv.FormatUint(port, 10) != strconv.Itoa(int(m.port)) {
 			return fmt.Errorf(
 				"%s is managed by the operator and must be %d or unset",
 				m.key,

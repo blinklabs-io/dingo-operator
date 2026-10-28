@@ -292,6 +292,10 @@ func TestValidateSpecRejectsListenerPortEnvOverrides(t *testing.T) {
 		{"CARDANO_METRICS_PORT", "9000", true},
 		{"DINGO_HEALTH_PORT", "9001", true},
 		{"CARDANO_PORT", "not-a-port", true},
+		// Dingo parses these base-zero, so a leading zero is octal: 03001
+		// binds 1537 and 0x0BB9 binds 3001.
+		{"CARDANO_PORT", "03001", true},
+		{"CARDANO_PORT", "0x0BB9", false},
 		// Restating the operator's own port moves nothing.
 		{"CARDANO_PORT", "3001", false},
 		{"CARDANO_PRIVATE_PORT", "3002", false},
