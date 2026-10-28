@@ -165,6 +165,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 	}
+	if err := resources.ValidatePodLabels(dn); err != nil {
+		return err
+	}
 	return resources.ValidateAPIs(dn)
 }
 

@@ -1480,6 +1480,17 @@ spec:
                     description: StorageClass uses the cluster default when nil.
                     type: string
                 type: object
+              podLabels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  PodLabels are extra labels for the pod template only; they are not added
+                  to selectors, Services or other objects. Use them to carry labels that
+                  PodMonitors or other tooling read from the pod (for example the alias,
+                  azs and group labels of a node moved from the dingo Helm chart). Keys in
+                  the operator's own namespaces (app.kubernetes.io/*, dingo.blinklabs.io/*)
+                  and cardano_network and cardano_service are rejected.
+                type: object
               podSecurityContext:
                 description: PodSecurityContext overrides the operator's secure defaults.
                 properties:

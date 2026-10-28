@@ -321,3 +321,17 @@ func TestValidateSpecRejectsListenerPortEnvOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSpecPodLabels(t *testing.T) {
+	t.Parallel()
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+			PodLabels: map[string]string{"alias": "musashi"},
+		},
+	}
+	require.NoError(t, validateSpec(dn))
+	dn.Spec.PodLabels["dingo.blinklabs.io/node"] = "other"
+	require.ErrorContains(t, validateSpec(dn), "podLabels")
+}

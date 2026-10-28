@@ -20,6 +20,7 @@ package resources
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 )
 
@@ -105,6 +107,44 @@ func RelayPort(dn *dingov1alpha1.DingoNode) int32 {
 		return p
 	}
 	return portRelay
+}
+
+// podLabels returns the pod template labels: spec.podLabels under the
+// operator's own labels, which always win.
+func podLabels(dn *dingov1alpha1.DingoNode) map[string]string {
+	labels := make(map[string]string, len(dn.Spec.PodLabels)+6)
+	maps.Copy(labels, dn.Spec.PodLabels)
+	maps.Copy(labels, Labels(dn))
+	return labels
+}
+
+// ValidatePodLabels rejects spec.podLabels keys that are not valid label keys,
+// values that are not valid label values, and keys the operator owns:
+// app.kubernetes.io/*, dingo.blinklabs.io/*, cardano_network and
+// cardano_service. Those select, route or authorise, so a user-set value could
+// detach the pod from its Services or grant access.
+func ValidatePodLabels(dn *dingov1alpha1.DingoNode) error {
+	for _, key := range sortedKeys(dn.Spec.PodLabels) {
+		if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+			return fmt.Errorf(
+				"podLabels key %q is invalid: %s", key, strings.Join(errs, "; "),
+			)
+		}
+		if errs := validation.IsValidLabelValue(dn.Spec.PodLabels[key]); len(errs) > 0 {
+			return fmt.Errorf(
+				"podLabels[%q] value is invalid: %s",
+				key, strings.Join(errs, "; "),
+			)
+		}
+		if strings.HasPrefix(key, "app.kubernetes.io/") ||
+			strings.HasPrefix(key, "dingo.blinklabs.io/") ||
+			key == "cardano_network" || key == "cardano_service" {
+			return fmt.Errorf(
+				"podLabels key %q is reserved for the operator", key,
+			)
+		}
+	}
+	return nil
 }
 
 // IsBlockProducer reports whether the node forges blocks.
@@ -537,7 +577,7 @@ func BuildStatefulSet(
 			Selector: &metav1.LabelSelector{MatchLabels: SelectorLabels(dn)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labels,
+					Labels:      podLabels(dn),
 					Annotations: podAnnotations,
 				},
 				Spec: podSpec,

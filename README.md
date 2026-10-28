@@ -252,6 +252,12 @@ externalTrafficPolicy, loadBalancerSourceRanges, nodePort, and hostPort. HostPor
 requires CNI support and sufficient hosts for replicas. Keep the original
 ClusterIP endpoint while migrating existing clients to the tiered Services.
 
+`spec.podLabels` adds labels to the pod template only (not to selectors,
+Services or other objects), for example the alias, azs and group labels a
+PodMonitor reads from a node moved from the dingo Helm chart. Keys under
+`app.kubernetes.io/` and `dingo.blinklabs.io/`, and `cardano_network` and
+`cardano_service`, belong to the operator and are rejected.
+
 The managed NetworkPolicy admits only enabled API ports. `apis.ingressFrom` uses
 standard NetworkPolicy peers; each peer's namespace and pod selectors are ANDed.
 With no explicit peers, API clients must carry `dingo.blinklabs.io/api=allowed` on

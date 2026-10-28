@@ -545,6 +545,14 @@ type DingoNodeSpec struct {
 	// RelayService publishes only P2P on the <name>-relay Service.
 	// +optional
 	RelayService RelayServiceSpec `json:"relayService,omitempty"`
+	// PodLabels are extra labels for the pod template only; they are not added
+	// to selectors, Services or other objects. Use them to carry labels that
+	// PodMonitors or other tooling read from the pod (for example the alias,
+	// azs and group labels of a node moved from the dingo Helm chart). Keys in
+	// the operator's own namespaces (app.kubernetes.io/*, dingo.blinklabs.io/*)
+	// and cardano_network and cardano_service are rejected.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
 	// +optional
 	Persistence PersistenceSpec `json:"persistence,omitempty"`
 	// +optional
