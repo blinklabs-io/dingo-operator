@@ -362,6 +362,17 @@ type MetricsSpec struct {
 
 // RelayServiceSpec configures public P2P exposure without publishing APIs or metrics.
 type RelayServiceSpec struct {
+	// Port is the node-to-node (relay) listener port. It is the container
+	// port, the port of every Service that publishes P2P, the NetworkPolicy
+	// port, the readiness probe port and CARDANO_PORT, and the port in-cluster
+	// peers dial when they list this node in topology.relayRefs. It exists so a
+	// node deployed with the dingo Helm chart on a non-default port keeps that
+	// port after moving to a DingoNode. Defaults to 3001.
+	// +kubebuilder:default=3001
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +optional
 	Type corev1.ServiceType `json:"type,omitempty"`
@@ -565,12 +576,13 @@ type DingoNodeSpec struct {
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 	// Environment passes extra CARDANO_*/DINGO_* variables to the container.
-	// The operator owns the relay (3001), node-to-client (3002), metrics (12798)
-	// and health (12799) listener ports: CARDANO_PORT, CARDANO_PRIVATE_PORT,
-	// CARDANO_METRICS_PORT and DINGO_HEALTH_PORT are rejected unless they equal
-	// those values. The relay Service always targets 3001; publish the relay
-	// elsewhere with relayService.hostPort (the container's host port) or
-	// relayService.nodePort on a NodePort or LoadBalancer Service.
+	// The operator owns the relay (relayService.port, default 3001),
+	// node-to-client (3002), metrics (12798) and health (12799) listener ports:
+	// CARDANO_PORT, CARDANO_PRIVATE_PORT, CARDANO_METRICS_PORT and
+	// DINGO_HEALTH_PORT are rejected unless they equal those values. Change the
+	// relay port with relayService.port; publish it elsewhere with
+	// relayService.hostPort (the container's host port) or relayService.nodePort
+	// on a NodePort or LoadBalancer Service.
 	// +optional
 	Environment map[string]string `json:"environment,omitempty"`
 	// +optional

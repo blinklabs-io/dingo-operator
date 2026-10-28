@@ -85,6 +85,9 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 
 // ValidateAPIs rejects listener/Service disagreement before resources are changed.
 func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
+	if err := validateRelayPort(dn); err != nil {
+		return err
+	}
 	if err := validateManagedPortEnv(dn); err != nil {
 		return err
 	}
@@ -126,7 +129,7 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 		}
 	}
 	used := map[int32]string{
-		portRelay: "relay", PortNodeToClient: "private",
+		RelayPort(dn): "relay", PortNodeToClient: "private",
 		portMetrics: "metrics", portHealth: "health",
 	}
 	anyEnabled := false
@@ -206,16 +209,42 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 	return nil
 }
 
+// validateRelayPort rejects a relay port that is out of range or already owned
+// by another fixed listener. Zero means the default.
+func validateRelayPort(dn *dingov1alpha1.DingoNode) error {
+	port := dn.Spec.RelayService.Port
+	if port < 0 || port > 65535 {
+		return errors.New("relayService.port must be between 1 and 65535")
+	}
+	for _, fixed := range []struct {
+		name string
+		port int32
+	}{
+		{"private", PortNodeToClient},
+		{"metrics", portMetrics},
+		{"health", portHealth},
+	} {
+		if port == fixed.port {
+			return fmt.Errorf(
+				"relayService.port %d conflicts with the %s port",
+				port, fixed.name,
+			)
+		}
+	}
+	return nil
+}
+
 // validateManagedPortEnv rejects environment overrides that move a listener
 // the operator wires into container ports, Services, NetworkPolicy, probes and
-// topology dialing. Those stay on fixed ports, so a moved listener would
-// silently stop accepting traffic. Restating the managed port is harmless.
+// topology dialing. Those are fixed by the spec (the relay port by
+// relayService.port), so a moved listener would silently stop accepting
+// traffic. Restating the managed port is harmless.
 func validateManagedPortEnv(dn *dingov1alpha1.DingoNode) error {
 	for _, m := range []struct {
 		key  string
 		port int32
 	}{
-		{"CARDANO_PORT", portRelay},
+		{"CARDANO_PORT", RelayPort(dn)},
 		{"CARDANO_PRIVATE_PORT", PortNodeToClient},
 		{"CARDANO_METRICS_PORT", portMetrics},
 		{"DINGO_HEALTH_PORT", portHealth},

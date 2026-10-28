@@ -73,6 +73,7 @@ const (
 	configBundleMountPath  = "/cardano-config"
 	configBundleFileName   = "config.json"
 
+	// portRelay is the default node-to-node listener port; see RelayPort.
 	portRelay = 3001
 	// PortNodeToClient is the port on which Dingo serves node-to-client (the
 	// "private" container port). Dingo listens for NtC over TCP here as well as
@@ -96,6 +97,15 @@ const (
 	dingoUID = 1000
 	dingoGID = 1000
 )
+
+// RelayPort returns the node-to-node listener port: spec.relayService.port, or
+// 3001 when unset.
+func RelayPort(dn *dingov1alpha1.DingoNode) int32 {
+	if p := dn.Spec.RelayService.Port; p != 0 {
+		return p
+	}
+	return portRelay
+}
 
 // IsBlockProducer reports whether the node forges blocks.
 func IsBlockProducer(dn *dingov1alpha1.DingoNode) bool {
@@ -319,6 +329,14 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		// of failing loudly. Exposure stays bounded by the NetworkPolicy,
 		// which admits only clients labelled for metrics access.
 		{Name: "DINGO_METRICS_BIND_ADDR", Value: "0.0.0.0"},
+	}
+	// Dingo listens on 3001 unless told otherwise; the default is left unset so
+	// existing pod templates do not change.
+	if port := RelayPort(dn); port != portRelay {
+		env = append(env, corev1.EnvVar{
+			Name:  "CARDANO_PORT",
+			Value: strconv.FormatInt(int64(port), 10),
+		})
 	}
 	if dn.Spec.NetworkMagic != nil {
 		env = append(env, corev1.EnvVar{
@@ -544,7 +562,7 @@ func containerPorts(dn *dingov1alpha1.DingoNode) []corev1.ContainerPort {
 	ports := []corev1.ContainerPort{
 		{
 			Name:          "relay",
-			ContainerPort: portRelay,
+			ContainerPort: RelayPort(dn),
 			HostPort:      dn.Spec.RelayService.HostPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
@@ -599,7 +617,7 @@ func readinessProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
 	if supportsHealthProbes(dn) {
 		return httpProbe(portHealth, "/readyz", 3, 15)
 	}
-	return tcpProbe(portRelay, 3, 15)
+	return tcpProbe(RelayPort(dn), 3, 15)
 }
 
 func tcpProbe(port, failureThreshold, periodSeconds int32) *corev1.Probe {

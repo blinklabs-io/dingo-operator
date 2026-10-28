@@ -239,12 +239,41 @@ func (r *DingoNodeReconciler) Reconcile(
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
+// relayRefPorts resolves the relay port of every in-cluster node listed in
+// topology.relayRefs, so peers are dialed on the port the referenced DingoNode
+// serves rather than an assumed one. A ref with no DingoNode is left out and
+// keeps the default port: it may be created later, or be a node this operator
+// does not manage. A change to a peer's port reaches this node on its next
+// periodic reconcile, since the peer is not watched.
+func (r *DingoNodeReconciler) relayRefPorts(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (map[string]int32, error) {
+	ports := make(map[string]int32, len(dn.Spec.Topology.RelayRefs))
+	for _, ref := range dn.Spec.Topology.RelayRefs {
+		peer := &dingov1alpha1.DingoNode{}
+		key := types.NamespacedName{Name: ref, Namespace: dn.Namespace}
+		if err := r.Get(ctx, key, peer); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, fmt.Errorf("get relayRef %q: %w", ref, err)
+		}
+		ports[ref] = resources.RelayPort(peer)
+	}
+	return ports, nil
+}
+
 // reconcileResources applies all child objects for the node.
 func (r *DingoNodeReconciler) reconcileResources(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) error {
-	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace)
+	peerPorts, err := r.relayRefPorts(ctx, dn)
+	if err != nil {
+		return err
+	}
+	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace, peerPorts)
 	if err != nil {
 		return err
 	}
