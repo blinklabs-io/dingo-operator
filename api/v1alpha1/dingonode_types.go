@@ -240,14 +240,18 @@ type ColdSignerSpec struct {
 	// Endpoint is the Bursa signer URL (required when Type=bursa).
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
-	// MTLSSecretRef names a Secret with client cert/key/ca for the signer.
+	// MTLSSecretRef names a Secret with the signer client certificate and key
+	// (tls.crt, tls.key) and optionally the signer CA (ca.crt). Required when
+	// Type=bursa and Mode=Auto.
 	// +optional
 	MTLSSecretRef string `json:"mtlsSecretRef,omitempty"`
 	// ColdKeyHash is the blake2b224 hash of the cold verification key; the
-	// signer selects the matching key.
+	// signer selects the matching key. With Mode=Auto it must equal the pool
+	// ID.
 	// +optional
 	ColdKeyHash string `json:"coldKeyHash,omitempty"`
-	// SecretRef names a Secret holding the cold key (only when Type=secret).
+	// SecretRef names a Secret holding the cold key as a cardano-cli text
+	// envelope in cold.skey (only when Type=secret). DEV/TESTNET ONLY.
 	// +optional
 	SecretRef string `json:"secretRef,omitempty"`
 }

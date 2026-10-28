@@ -192,9 +192,9 @@ func TestValidateSpec(t *testing.T) {
 			},
 		},
 		{
-			// Auto rotation is not implemented yet; it must be rejected rather
-			// than silently accepted, even with a cold signer configured.
-			name: "auto rotation rejected as unsupported",
+			// Auto rotation needs a pool ID, the signer's cold key hash and
+			// client credentials; an endpoint alone is not enough.
+			name: "auto rotation with only a signer endpoint",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
@@ -334,4 +334,133 @@ func TestValidateSpecPodLabels(t *testing.T) {
 	require.NoError(t, validateSpec(dn))
 	dn.Spec.PodLabels["dingo.blinklabs.io/node"] = "other"
 	require.ErrorContains(t, validateSpec(dn), "podLabels")
+}
+
+func TestValidateSpecAutoRotation(t *testing.T) {
+	poolID := strings.Repeat("ab", 28)
+	auto := func(
+		mutate func(*dingov1alpha1.BlockProducerSpec),
+	) *dingov1alpha1.DingoNode {
+		bp := &dingov1alpha1.BlockProducerSpec{
+			PoolID:       poolID,
+			Keys:         dingov1alpha1.KeysSpec{SecretRef: "keys"},
+			NodeToClient: dingov1alpha1.NodeToClientSpec{Enabled: true},
+			Rotation: dingov1alpha1.RotationSpec{
+				Mode: dingov1alpha1.RotationModeAuto,
+				ColdSigner: dingov1alpha1.ColdSignerSpec{
+					Type:          dingov1alpha1.ColdSignerBursa,
+					Endpoint:      "https://signer:8443",
+					MTLSSecretRef: "signer-mtls",
+					ColdKeyHash:   poolID,
+				},
+			},
+		}
+		if mutate != nil {
+			mutate(bp)
+		}
+		return &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
+			Role:          dingov1alpha1.RoleBlockProducer,
+			Network:       "preview",
+			BlockProducer: bp,
+		}}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*dingov1alpha1.BlockProducerSpec)
+		wantErr string
+	}{
+		{name: "bursa signer"},
+		{
+			name: "bursa is the default signer",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.Type = ""
+			},
+		},
+		{
+			name: "cold key hash in upper case",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.ColdKeyHash = strings.ToUpper(poolID)
+			},
+		},
+		{
+			name: "secret signer",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
+					Type:      dingov1alpha1.ColdSignerSecret,
+					SecretRef: "cold",
+				}
+			},
+		},
+		{
+			name: "no pool id",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.PoolID = ""
+			},
+			wantErr: "poolId",
+		},
+		{
+			name: "node-to-client disabled",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.NodeToClient.Enabled = false
+			},
+			wantErr: "nodeToClient",
+		},
+		{
+			name: "signer none",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
+					Type: dingov1alpha1.ColdSignerNone,
+				}
+			},
+			wantErr: "coldSigner",
+		},
+		{
+			name: "bursa without endpoint",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.Endpoint = ""
+			},
+			wantErr: "endpoint",
+		},
+		{
+			name: "bursa over plain http",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.Endpoint = "http://signer:8443"
+			},
+			wantErr: "https",
+		},
+		{
+			name: "bursa without client credentials",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.MTLSSecretRef = ""
+			},
+			wantErr: "mtlsSecretRef",
+		},
+		{
+			name: "bursa cold key of another pool",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.ColdKeyHash = strings.Repeat("cd", 28)
+			},
+			wantErr: "coldKeyHash",
+		},
+		{
+			name: "secret signer without secret",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
+					Type: dingov1alpha1.ColdSignerSecret,
+				}
+			},
+			wantErr: "secretRef",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSpec(auto(tc.mutate))
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }

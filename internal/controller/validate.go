@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -120,19 +121,16 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				st,
 			)
 		}
+		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
+			if err := validateAutoRotation(bp); err != nil {
+				return err
+			}
+		}
 		// Reject configuration for features that are not implemented yet, rather
 		// than accepting them and silently doing nothing. A block producer set
-		// to Auto rotation or ActiveStandby would otherwise appear healthy while
-		// its KES key drifts toward expiry with no rotation, or while the
-		// operator provides no failover at all. These branches are relaxed when
-		// the P2/P3 rotation and HA pipelines land (cold-signer validation
-		// returns here for Auto at that point).
-		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
-			return errors.New(
-				"rotation mode Auto is not supported in this operator version; " +
-					"use MonitorOnly or Assisted",
-			)
-		}
+		// to ActiveStandby would otherwise appear healthy while the operator
+		// provides no failover at all. This branch is relaxed when the P3 HA
+		// pipeline lands.
 		if bp.HA.Strategy == dingov1alpha1.HAActiveStandby {
 			return errors.New(
 				"ha strategy ActiveStandby is not supported in this operator " +
@@ -177,6 +175,74 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 func checksum(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// validateAutoRotation checks what Auto rotation needs before it can issue
+// an opcert: the pool ID and the node-to-client listener that together give
+// the on-chain counter it issues from, and a cold signer that can sign for
+// that pool.
+func validateAutoRotation(bp *dingov1alpha1.BlockProducerSpec) error {
+	if bp.PoolID == "" {
+		return errors.New(
+			"rotation mode Auto requires spec.blockProducer.poolId",
+		)
+	}
+	pool, err := parsePoolID(bp.PoolID)
+	if err != nil {
+		return err
+	}
+	if !bp.NodeToClient.Enabled {
+		return errors.New(
+			"rotation mode Auto requires " +
+				"spec.blockProducer.nodeToClient.enabled to read the " +
+				"on-chain opcert counter",
+		)
+	}
+	cs := bp.Rotation.ColdSigner
+	switch cs.Type {
+	case dingov1alpha1.ColdSignerBursa, "":
+		if cs.Endpoint == "" {
+			return errors.New(
+				"rotation mode Auto with the bursa signer requires " +
+					"coldSigner.endpoint",
+			)
+		}
+		u, err := url.Parse(cs.Endpoint)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf(
+				"coldSigner.endpoint must be an https URL: %q", cs.Endpoint,
+			)
+		}
+		if cs.MTLSSecretRef == "" {
+			return errors.New(
+				"rotation mode Auto with the bursa signer requires " +
+					"coldSigner.mtlsSecretRef",
+			)
+		}
+		if !strings.EqualFold(cs.ColdKeyHash, pool.String()) {
+			return errors.New(
+				"coldSigner.coldKeyHash must equal the pool ID " +
+					"(blake2b-224 of the cold verification key)",
+			)
+		}
+	case dingov1alpha1.ColdSignerSecret:
+		if cs.SecretRef == "" {
+			return errors.New(
+				"rotation mode Auto with the secret signer requires " +
+					"coldSigner.secretRef",
+			)
+		}
+	case dingov1alpha1.ColdSignerNone:
+		return errors.New(
+			"rotation mode Auto cannot issue with coldSigner type none",
+		)
+	default:
+		return fmt.Errorf(
+			"rotation mode Auto cannot issue with coldSigner type %q",
+			cs.Type,
+		)
+	}
+	return nil
 }
 
 // keysChecksum returns a stable digest of a keys Secret's Data. Populating the
