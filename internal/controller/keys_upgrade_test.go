@@ -143,3 +143,61 @@ func TestBlockProducerRejectedKeysKeepUpgradedTemplate(t *testing.T) {
 		keysAnnotation(t, ctx, c, "bp", "upgrade-ns"),
 	)
 }
+
+// TestBlockProducerMissingKeysKeepLiveTemplate deletes the keys Secret of a
+// producer whose StatefulSet already exists. The live pod template, checksum
+// annotation included, must stay unchanged: rendering without the checksum
+// would roll the healthy forging pod, and the replacement could not start
+// without the Secret. Once a valid Secret returns, reconcile proceeds normally.
+func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "missing-ns")
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	good, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	secret := &corev1.Secret{
+		ObjectMeta: objectMeta("pool-keys", "missing-ns"),
+		Data:       good,
+	}
+	require.NoError(t, c.Create(ctx, secret))
+
+	dn := blockProducerNode(
+		"bp", "missing-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "missing-ns")
+	accepted := keysAnnotation(t, ctx, c, "bp", "missing-ns")
+	require.NotEmpty(t, accepted)
+	want := podTemplate(t, ctx, c, "bp", "missing-ns")
+
+	require.NoError(t, c.Delete(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "missing-ns")
+	assert.Equal(
+		t,
+		want,
+		podTemplate(t, ctx, c, "bp", "missing-ns"),
+		"a missing keys Secret must leave the live template unchanged",
+	)
+	assert.Equal(
+		t,
+		accepted,
+		keysAnnotation(t, ctx, c, "bp", "missing-ns"),
+		"the live keys checksum must be carried forward",
+	)
+
+	// A valid Secret returning applies the rotated bundle's checksum.
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	fixed, err := keys.SecretData(3, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: objectMeta("pool-keys", "missing-ns"),
+		Data:       fixed,
+	}))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "missing-ns")
+	now := keysAnnotation(t, ctx, c, "bp", "missing-ns")
+	assert.NotEmpty(t, now)
+	assert.NotEqual(t, accepted, now)
+}

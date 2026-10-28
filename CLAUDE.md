@@ -306,6 +306,10 @@ the pod onto it":
   carried forward. (An empty checksum would *remove* the annotation — itself a
   template change — and roll the pod onto the rejected keys.) The reconcile
   does not fail: last-known-good is the safe state.
+- A missing keys Secret on an existing StatefulSet is treated the same way:
+  the live template and its checksum are kept, so the forging pod is not
+  replaced by one stuck in `ContainerCreating` (the Secret volume is not
+  optional). With no StatefulSet yet, the first render is unchanged.
   - What this does and does not protect. An init container copies the Secret
     into a memory-backed `/keys` volume with owner-only permissions. The running
     pod therefore keeps its staged files when kubelet refreshes the source
