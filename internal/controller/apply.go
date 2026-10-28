@@ -139,10 +139,15 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 	return err
 }
 
+// upsertStatefulSet applies the node's StatefulSet. keepTemplate leaves the pod
+// template of an existing StatefulSet as it is live: set while the keys Secret
+// is rejected, so no template change, including one from an operator upgrade,
+// rolls the pod onto the rejected Secret.
 func (r *DingoNodeReconciler) upsertStatefulSet(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 	opts resources.RenderOptions,
+	keepTemplate bool,
 ) error {
 	desired := resources.BuildStatefulSet(dn, opts)
 	sts := &appsv1.StatefulSet{
@@ -157,7 +162,9 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
 			sts.Spec.Replicas = desired.Spec.Replicas
-			sts.Spec.Template = desired.Spec.Template
+			if !keepTemplate {
+				sts.Spec.Template = desired.Spec.Template
+			}
 			sts.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
 			sts.Spec.MinReadySeconds = desired.Spec.MinReadySeconds
 			retention := desired.Spec.PersistentVolumeClaimRetentionPolicy

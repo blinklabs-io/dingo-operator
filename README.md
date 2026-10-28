@@ -30,7 +30,10 @@ operators.
   delivered bundle is validated (opcert signature, pool binding, KES-key
   binding, counter, KES period) before the operator rolls the pod onto it; a
   refused bundle sets `KeysValid=False` and `Degraded=True` and is not rolled
-  out. The live pod keeps its staged keys when the Secret changes. Any later pod
+  out. The certificate may be named `opcert.cert` or `node.cert` (the dingo
+  Helm chart's name), so a chart key Secret works unchanged; if both are present
+  they must be identical, and it is staged at `/keys/opcert.cert` either way.
+  The live pod keeps its staged keys when the Secret changes. Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
@@ -64,8 +67,8 @@ operators.
   3002) is closed unless a client opts in: label the client pod
   `dingo.blinklabs.io/node-to-client=allowed`, and its namespace too when it is
   not the node's own. That label is the only way in — peers named in
-  `topology.relayRefs` get the node-to-node port (3001) and nothing else. Dingo
-  also binds node-to-client to loopback until
+  `topology.relayRefs` get the node-to-node port (`relayService.port`, default
+  3001) and nothing else. Dingo also binds node-to-client to loopback until
   `blockProducer.nodeToClient.enabled` is set, so both the listener and the
   policy have to be opened deliberately.
   Metrics also require an explicit grant: label the operator and Prometheus
@@ -252,6 +255,12 @@ externalTrafficPolicy, loadBalancerSourceRanges, nodePort, and hostPort. HostPor
 requires CNI support and sufficient hosts for replicas. Keep the original
 ClusterIP endpoint while migrating existing clients to the tiered Services.
 
+`spec.podLabels` adds labels to the pod template only (not to selectors,
+Services or other objects), for example the alias, azs and group labels a
+PodMonitor reads from a node moved from the dingo Helm chart. Keys under
+`app.kubernetes.io/` and `dingo.blinklabs.io/`, and `cardano_network` and
+`cardano_service`, belong to the operator and are rejected.
+
 The managed NetworkPolicy admits only enabled API ports. `apis.ingressFrom` uses
 standard NetworkPolicy peers; each peer's namespace and pod selectors are ANDed.
 With no explicit peers, API clients must carry `dingo.blinklabs.io/api=allowed` on
@@ -267,11 +276,17 @@ is omitted. When `spec.apis` is present, contradictory environment overrides,
 port collisions and loopback binding are rejected before resources change.
 `CARDANO_PORT`, `CARDANO_PRIVATE_PORT`, `CARDANO_METRICS_PORT` and
 `DINGO_HEALTH_PORT` in `spec.environment` are rejected unless they equal the
-operator's fixed ports (3001, 3002, 12798, 12799); container ports, Services,
-NetworkPolicy and topology dialing use those ports. The relay Service always
-targets 3001; publish the relay elsewhere with `relayService.hostPort` (the
-container's host port) or `relayService.nodePort` on a NodePort or LoadBalancer
-Service.
+operator's ports (relay `relayService.port`, default 3001; 3002, 12798, 12799);
+container ports, Services, NetworkPolicy and topology dialing use those ports.
+Set `relayService.port` to run the relay on another port, for example 3010 to
+match a node previously deployed with the dingo Helm chart: it becomes the
+container port, the port of every Service that publishes P2P, the NetworkPolicy
+port, the readiness-probe port of images without the health listener, and
+`CARDANO_PORT` (which is left unset at the default). A node that lists this one in `topology.relayRefs` dials the port
+configured on this `DingoNode`; a peer's port change is picked up on its next
+periodic reconcile. Publish the relay elsewhere with `relayService.hostPort`
+(the container's host port) or `relayService.nodePort` on a NodePort or
+LoadBalancer Service.
 Core storage mode is rejected only when an API listener is enabled. Kupo uses
 `DINGO_PLUGINS_API_KUPO_CONFIG_PORT`.
 

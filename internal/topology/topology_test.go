@@ -35,7 +35,8 @@ func newNode(topo dingov1alpha1.TopologySpec) *dingov1alpha1.DingoNode {
 
 func TestRender(t *testing.T) {
 	t.Run("empty topology has no content", func(t *testing.T) {
-		_, hasContent, err := Render(newNode(dingov1alpha1.TopologySpec{}), "ns")
+		dn := newNode(dingov1alpha1.TopologySpec{})
+		_, hasContent, err := Render(dn, "ns", nil)
 		require.NoError(t, err)
 		assert.False(t, hasContent)
 	})
@@ -46,7 +47,7 @@ func TestRender(t *testing.T) {
 				{Address: "relay.example.com", Port: 3001, Valency: 2, Trustable: true},
 			},
 		})
-		out, hasContent, err := Render(dn, "ns")
+		out, hasContent, err := Render(dn, "ns", nil)
 		require.NoError(t, err)
 		assert.True(t, hasContent)
 
@@ -62,7 +63,7 @@ func TestRender(t *testing.T) {
 		dn := newNode(dingov1alpha1.TopologySpec{
 			RelayRefs: []string{"relay-0", "relay-1"},
 		})
-		out, hasContent, err := Render(dn, "cardano")
+		out, hasContent, err := Render(dn, "cardano", nil)
 		require.NoError(t, err)
 		assert.True(t, hasContent)
 
@@ -83,7 +84,7 @@ func TestRender(t *testing.T) {
 			AutoPeerRelays: &off,
 			RelayRefs:      []string{"relay-0"},
 		})
-		_, hasContent, err := Render(dn, "ns")
+		_, hasContent, err := Render(dn, "ns", nil)
 		require.NoError(t, err)
 		assert.False(t, hasContent)
 	})

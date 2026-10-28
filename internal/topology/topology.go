@@ -24,8 +24,9 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 )
 
-// relayNtNPort is the node-to-node port used for in-cluster peer access points.
-const relayNtNPort = 3001
+// defaultRelayPort is the node-to-node port of a peer whose own port is not
+// known (a relayRefs entry with no DingoNode of that name).
+const defaultRelayPort = 3001
 
 // accessPoint is a single peer address.
 type accessPoint struct {
@@ -62,7 +63,9 @@ func InClusterPeerAddress(name, namespace string) string {
 	return fmt.Sprintf("%s-headless.%s.svc.cluster.local", name, namespace)
 }
 
-// Render builds a topology.json document for the node. It returns the rendered
+// Render builds a topology.json document for the node. peerPorts maps a
+// relayRefs name to the relay port its DingoNode configures; names without an
+// entry are dialed on 3001. It returns the rendered
 // JSON and whether any custom topology content exists. When false, the caller
 // should omit the topology so Dingo falls back to its built-in bootstrap peers
 // (relays with no explicit topology). Block producers should always configure
@@ -70,6 +73,7 @@ func InClusterPeerAddress(name, namespace string) string {
 func Render(
 	dn *dingov1alpha1.DingoNode,
 	namespace string,
+	peerPorts map[string]int32,
 ) (string, bool, error) {
 	spec := dn.Spec.Topology
 
@@ -78,9 +82,13 @@ func Render(
 	autoPeer := spec.AutoPeerRelays == nil || *spec.AutoPeerRelays
 	if autoPeer {
 		for _, ref := range spec.RelayRefs {
+			port, ok := peerPorts[ref]
+			if !ok {
+				port = defaultRelayPort
+			}
 			roots = append(roots, accessPoint{
 				Address: InClusterPeerAddress(ref, namespace),
-				Port:    relayNtNPort,
+				Port:    port,
 			})
 		}
 	}
