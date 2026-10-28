@@ -141,8 +141,8 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 
 // upsertStatefulSet applies the node's StatefulSet. keepTemplate leaves the pod
 // template of an existing StatefulSet as it is live: set while the keys Secret
-// is rejected, so no template change, including one from an operator upgrade,
-// rolls the pod onto the rejected Secret.
+// is rejected or missing, so no template change, including one from an operator
+// upgrade, rolls the pod onto the rejected Secret or onto one that cannot start.
 func (r *DingoNodeReconciler) upsertStatefulSet(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
