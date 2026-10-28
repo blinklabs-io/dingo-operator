@@ -1143,3 +1143,62 @@ func TestSupportsTracing(t *testing.T) {
 		})
 	}
 }
+
+// The staging script accepts the dingo Helm chart's node.cert and always
+// presents the certificate to Dingo as /keys/opcert.cert.
+func TestKeyPreparationStagesNodeCertAsOpcert(t *testing.T) {
+	t.Parallel()
+	sts := BuildStatefulSet(bpNode(), RenderOptions{Replicas: 1, MountKeys: true})
+	var script []string
+	for _, c := range sts.Spec.Template.Spec.InitContainers {
+		if c.Name == "prepare-block-producer-keys" {
+			script = c.Command
+		}
+	}
+	require.Len(t, script, 3)
+	assert.Equal(
+		t,
+		"/keys/opcert.cert",
+		envMap(bpNode(), RenderOptions{MountKeys: true})["CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE"],
+	)
+
+	for _, tc := range []struct {
+		name    string
+		files   map[string]string
+		want    string
+		wantErr bool
+	}{
+		{"node.cert only", map[string]string{"node.cert": "chart-cert"}, "chart-cert", false},
+		{"opcert.cert only", map[string]string{"opcert.cert": "op-cert"}, "op-cert", false},
+		{"both", map[string]string{"opcert.cert": "same", "node.cert": "same"}, "same", false},
+		{"empty opcert.cert", map[string]string{"opcert.cert": "", "node.cert": "chart-cert"}, "chart-cert", false},
+		{"neither", map[string]string{}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src, dst := t.TempDir(), t.TempDir()
+			files := map[string]string{"vrf.skey": "vrf", "kes.skey": "kes"}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			for name, body := range files {
+				require.NoError(t, os.WriteFile(filepath.Join(src, name), []byte(body), 0o600))
+			}
+			cmd := exec.Command(script[0], script[1:]...)
+			cmd.Env = append(os.Environ(), "DINGO_KEYS_SOURCE="+src, "DINGO_KEYS_DESTINATION="+dst)
+			out, err := cmd.CombinedOutput()
+			if tc.wantErr {
+				require.Error(t, err, string(out))
+				return
+			}
+			require.NoError(t, err, string(out))
+			got, err := os.ReadFile(filepath.Join(dst, "opcert.cert"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+			assert.NoFileExists(t, filepath.Join(dst, "node.cert"))
+			info, err := os.Stat(filepath.Join(dst, "opcert.cert"))
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		})
+	}
+}

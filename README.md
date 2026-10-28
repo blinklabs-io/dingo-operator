@@ -30,7 +30,10 @@ operators.
   delivered bundle is validated (opcert signature, pool binding, KES-key
   binding, counter, KES period) before the operator rolls the pod onto it; a
   refused bundle sets `KeysValid=False` and `Degraded=True` and is not rolled
-  out. The live pod keeps its staged keys when the Secret changes. Any later pod
+  out. The certificate may be named `opcert.cert` or `node.cert` (the dingo
+  Helm chart's name), so a chart key Secret works unchanged; if both are present
+  they must be identical, and it is staged at `/keys/opcert.cert` either way.
+  The live pod keeps its staged keys when the Secret changes. Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete

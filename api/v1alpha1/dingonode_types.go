@@ -224,8 +224,10 @@ type KeysSpec struct {
 	// +kubebuilder:default=Secret
 	// +optional
 	SourceType KeySourceType `json:"sourceType,omitempty"`
-	// SecretRef names a Secret holding vrf.skey, kes.skey and opcert.cert in
-	// cardano-cli text-envelope JSON form.
+	// SecretRef names a Secret holding vrf.skey, kes.skey and the operational
+	// certificate in cardano-cli text-envelope JSON form. The certificate is
+	// opcert.cert or node.cert (the name the dingo Helm chart uses); a Secret
+	// may hold both only if they are identical.
 	// +kubebuilder:validation:MinLength=1
 	SecretRef string `json:"secretRef"`
 }

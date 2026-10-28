@@ -47,9 +47,16 @@ const prepareBlockProducerKeysScript = `set -eu
 source_dir="${DINGO_KEYS_SOURCE:-/var/run/dingo-keys-source}"
 destination_dir="${DINGO_KEYS_DESTINATION:-/keys}"
 umask 077
-for name in vrf.skey kes.skey opcert.cert; do
+for name in vrf.skey kes.skey; do
   cp "${source_dir}/${name}" "${destination_dir}/${name}"
 done
+# The operational certificate is opcert.cert or, as in the dingo Helm chart,
+# node.cert. Dingo is always pointed at /keys/opcert.cert.
+cert=node.cert
+if [ -s "${source_dir}/opcert.cert" ]; then
+  cert=opcert.cert
+fi
+cp "${source_dir}/${cert}" "${destination_dir}/opcert.cert"
 chmod 0600 \
   "${destination_dir}/vrf.skey" \
   "${destination_dir}/kes.skey" \
