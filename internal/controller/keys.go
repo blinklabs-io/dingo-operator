@@ -47,6 +47,10 @@ const (
 	// keyFileVote is optional: the Leios BLS vote signing key. A Secret
 	// without it stays valid.
 	keyFileVote = resources.VoteKeyFile
+	// keyFileNodeCert is the name the dingo Helm chart gives the operational
+	// certificate. It is accepted in place of keyFileOpCert so one Secret can
+	// serve both.
+	keyFileNodeCert = "node.cert"
 )
 
 // Envelope "type" prefixes cardano-cli writes for the two signing keys. Only
@@ -117,10 +121,17 @@ func validateKeysSecret(
 	}
 
 	var missing []string
-	for _, k := range []string{keyFileKES, keyFileVRF, keyFileOpCert} {
+	for _, k := range []string{keyFileKES, keyFileVRF} {
 		if len(secret.Data[k]) == 0 {
 			missing = append(missing, k)
 		}
+	}
+	certData, certFile, err := opCertFile(secret.Data)
+	if err != nil {
+		return nil, err
+	}
+	if certData == nil {
+		missing = append(missing, keyFileOpCert+" or "+keyFileNodeCert)
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf(
@@ -152,9 +163,9 @@ func validateKeysSecret(
 		}
 	}
 
-	oc, coldVkey, err := opcert.Parse(secret.Data[keyFileOpCert])
+	oc, coldVkey, err := opcert.Parse(certData)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", keyFileOpCert, err)
+		return nil, fmt.Errorf("parse %s: %w", certFile, err)
 	}
 	if err := ledger.VerifyOpCertSignature(oc, coldVkey); err != nil {
 		return nil, fmt.Errorf("verify opcert signature: %w", err)
@@ -251,6 +262,31 @@ func validateKeysSecret(
 	}
 
 	return &keyState{Counter: counter, KESPeriod: startPeriod}, nil
+}
+
+// opCertFile returns the operational certificate from a keys Secret and the
+// file it came from. The certificate is opcert.cert or the dingo chart's
+// node.cert; an empty file counts as absent. Both may be present only when they
+// hold the same bytes, since the operator cannot tell which one the owner
+// meant. It returns nil data when neither is present.
+func opCertFile(data map[string][]byte) ([]byte, string, error) {
+	opcertData, nodeData := data[keyFileOpCert], data[keyFileNodeCert]
+	switch {
+	case len(opcertData) > 0 && len(nodeData) > 0:
+		if !bytes.Equal(opcertData, nodeData) {
+			return nil, "", fmt.Errorf(
+				"keys secret holds both %s and %s with different contents; "+
+					"keep only one",
+				keyFileOpCert, keyFileNodeCert,
+			)
+		}
+		return opcertData, keyFileOpCert, nil
+	case len(opcertData) > 0:
+		return opcertData, keyFileOpCert, nil
+	case len(nodeData) > 0:
+		return nodeData, keyFileNodeCert, nil
+	}
+	return nil, "", nil
 }
 
 // onChainFloor returns the on-chain opcert counter to enforce against, and

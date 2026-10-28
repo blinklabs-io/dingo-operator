@@ -20,7 +20,8 @@ spec:
       - relay
   blockProducer:
     # A Secret holding cardano-cli text-envelope files: vrf.skey, kes.skey,
-    # opcert.cert. An init container stages them at /keys with mode 0600.
+    # opcert.cert (or node.cert, as in the dingo Helm chart). An init container
+    # stages them at /keys with mode 0600.
     # On a Leios network the Secret may also hold vote.skey (BLS vote signing
     # key); it is staged the same way and wired to
     # DINGO_LEIOS_VOTE_SIGNING_KEY_FILE.

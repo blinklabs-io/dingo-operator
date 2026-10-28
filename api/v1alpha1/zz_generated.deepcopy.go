@@ -175,6 +175,13 @@ func (in *DingoNodeSpec) DeepCopyInto(out *DingoNodeSpec) {
 		(*in).DeepCopyInto(*out)
 	}
 	in.RelayService.DeepCopyInto(&out.RelayService)
+	if in.PodLabels != nil {
+		in, out := &in.PodLabels, &out.PodLabels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	in.Persistence.DeepCopyInto(&out.Persistence)
 	in.Resources.DeepCopyInto(&out.Resources)
 	if in.NodeSelector != nil {

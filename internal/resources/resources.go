@@ -20,6 +20,7 @@ package resources
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 )
 
@@ -74,6 +76,7 @@ const (
 	configBundleMountPath  = "/cardano-config"
 	configBundleFileName   = "config.json"
 
+	// portRelay is the default node-to-node listener port; see RelayPort.
 	portRelay = 3001
 	// PortNodeToClient is the port on which Dingo serves node-to-client (the
 	// "private" container port). Dingo listens for NtC over TCP here as well as
@@ -97,6 +100,55 @@ const (
 	dingoUID = 1000
 	dingoGID = 1000
 )
+
+// RelayPort returns the node-to-node listener port: spec.relayService.port, or
+// 3001 when unset.
+func RelayPort(dn *dingov1alpha1.DingoNode) int32 {
+	if p := dn.Spec.RelayService.Port; p != 0 {
+		return p
+	}
+	return portRelay
+}
+
+// podLabels returns the pod template labels: spec.podLabels under the
+// operator's own labels, which always win.
+func podLabels(dn *dingov1alpha1.DingoNode) map[string]string {
+	labels := make(map[string]string, len(dn.Spec.PodLabels)+6)
+	maps.Copy(labels, dn.Spec.PodLabels)
+	maps.Copy(labels, Labels(dn))
+	return labels
+}
+
+// ValidatePodLabels rejects spec.podLabels keys that are not valid label keys,
+// values that are not valid label values, and keys the operator owns:
+// app.kubernetes.io/*, dingo.blinklabs.io/*, cardano_network and
+// cardano_service. Those select, route or authorise, so a user-set value could
+// detach the pod from its Services or grant access.
+func ValidatePodLabels(dn *dingov1alpha1.DingoNode) error {
+	for _, key := range sortedKeys(dn.Spec.PodLabels) {
+		if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+			return fmt.Errorf(
+				"podLabels key %q is invalid: %s",
+				key, strings.Join(errs, "; "),
+			)
+		}
+		value := dn.Spec.PodLabels[key]
+		if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
+			return fmt.Errorf(
+				"podLabels[%q] value is invalid: %s",
+				key, strings.Join(errs, "; "),
+			)
+		}
+		if strings.HasPrefix(key, "app.kubernetes.io/") ||
+			strings.HasPrefix(key, "dingo.blinklabs.io/") ||
+			key == "cardano_network" || key == "cardano_service" {
+			return fmt.Errorf(
+				"podLabels key %q is reserved for the operator", key,
+			)
+		}
+	}
+	return nil
+}
 
 // IsBlockProducer reports whether the node forges blocks.
 func IsBlockProducer(dn *dingov1alpha1.DingoNode) bool {
@@ -325,6 +377,14 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		// which admits only clients labelled for metrics access.
 		{Name: "DINGO_METRICS_BIND_ADDR", Value: "0.0.0.0"},
 	}
+	// Dingo listens on 3001 unless told otherwise; the default is left unset so
+	// existing pod templates do not change.
+	if port := RelayPort(dn); port != portRelay {
+		env = append(env, corev1.EnvVar{
+			Name:  "CARDANO_PORT",
+			Value: strconv.FormatInt(int64(port), 10),
+		})
+	}
 	if dn.Spec.NetworkMagic != nil {
 		env = append(env, corev1.EnvVar{
 			Name:  "CARDANO_NETWORK_MAGIC",
@@ -539,7 +599,7 @@ func BuildStatefulSet(
 			Selector: &metav1.LabelSelector{MatchLabels: SelectorLabels(dn)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labels,
+					Labels:      podLabels(dn),
 					Annotations: podAnnotations,
 				},
 				Spec: podSpec,
@@ -564,7 +624,7 @@ func containerPorts(dn *dingov1alpha1.DingoNode) []corev1.ContainerPort {
 	ports := []corev1.ContainerPort{
 		{
 			Name:          "relay",
-			ContainerPort: portRelay,
+			ContainerPort: RelayPort(dn),
 			HostPort:      dn.Spec.RelayService.HostPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
@@ -619,7 +679,7 @@ func readinessProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
 	if supportsHealthProbes(dn) {
 		return httpProbe(portHealth, "/readyz", 3, 15)
 	}
-	return tcpProbe(portRelay, 3, 15)
+	return tcpProbe(RelayPort(dn), 3, 15)
 }
 
 func tcpProbe(port, failureThreshold, periodSeconds int32) *corev1.Probe {
