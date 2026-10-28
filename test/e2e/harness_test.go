@@ -215,6 +215,12 @@ const (
 	// bundle on its next requeueInterval (2m) pass.
 	keysDeliveryTimeout = 4 * time.Minute
 
+	// autoIssueTimeout bounds Auto issuance after the on-chain counter is
+	// observed. The counter can be seen ~5 min after node creation, while
+	// rotation (R = 58) is due at KES period 4 (~8 min) and the reconciler
+	// may notice only one requeueInterval (2m) later, at ~10 min.
+	autoIssueTimeout = 6 * time.Minute
+
 	// podRollTimeout bounds the StatefulSet controller replacing the pod once
 	// the pod template's keys-checksum annotation changes.
 	podRollTimeout = 3 * time.Minute

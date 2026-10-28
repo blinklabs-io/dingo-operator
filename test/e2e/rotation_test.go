@@ -400,9 +400,9 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 			// around 5-7 min), and a fresh opcert issued at period P stays
 			// not-due until P + 62 - current <= 58 (i.e. current >=
 			// P + 4), giving ~4 periods (~8 min) of headroom to cover the
-			// roll, forging and the once-only window. The wait for
-			// OpCertIssued must allow for rotation becoming due at ~8 min
-			// plus one requeue interval.
+			// roll, forging and the once-only window. The OpCertIssued
+			// wait (autoIssueTimeout) allows for rotation becoming due at
+			// ~8 min plus one requeue interval.
 			spec.BlockProducer.Rotation.RenewBeforePeriods = 58
 			spec.BlockProducer.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
 				Type:      dingov1alpha1.ColdSignerSecret,
@@ -441,7 +441,7 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 	require.GreaterOrEqual(t, onChain, int64(0))
 	expectedCounter := onChain + 1
 
-	h.waitFor(ctx, keysDeliveryTimeout,
+	h.waitFor(ctx, autoIssueTimeout,
 		"the operator to issue a new opcert in Auto mode",
 		func(ctx context.Context) (bool, error) {
 			n, err := h.getNodeErr(ctx)
@@ -521,7 +521,8 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 			return true
 		}
 		if int64(oc2.IssueNumber) != expectedCounter {
-			t.Errorf("opcert counter advanced from %d to %d", expectedCounter, oc2.IssueNumber)
+			t.Errorf("opcert counter advanced from %d to %d",
+				expectedCounter, oc2.IssueNumber)
 			return true
 		}
 		cert2 := s2.Data["opcert.cert"]
