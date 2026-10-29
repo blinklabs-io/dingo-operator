@@ -30,7 +30,9 @@ operators.
   delivered bundle is validated (opcert signature, pool binding, KES-key
   binding, counter, KES period) before the operator rolls the pod onto it; a
   refused bundle sets `KeysValid=False` and `Degraded=True` and is not rolled
-  out. A missing Secret is reported the same way, and the running pod is not
+  out. While it is refused, the live pod template is kept, so spec edits and
+  operator upgrades are held too, and the `KeysValid` and `Degraded` messages
+  say a pod template update is held. A missing Secret is reported the same way, and the running pod is not
   rolled onto a template that cannot mount it. The certificate may be named `opcert.cert` or `node.cert` (the dingo
   Helm chart's name), so a chart key Secret works unchanged; if both are present
   they must be identical, and it is staged at `/keys/opcert.cert` either way.

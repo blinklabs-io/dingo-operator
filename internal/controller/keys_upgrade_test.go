@@ -127,6 +127,12 @@ func TestBlockProducerRejectedKeysKeepUpgradedTemplate(t *testing.T) {
 		podTemplate(t, ctx, c, "bp", "upgrade-ns"),
 		"a rejected bundle must leave the earlier operator's template live",
 	)
+	// The withheld template change must be visible in status.
+	keysValid, degraded := keysConditions(t, ctx, c, "bp", "upgrade-ns")
+	require.NotNil(t, keysValid)
+	assert.Contains(t, keysValid.Message, templateHeldMessage)
+	require.NotNil(t, degraded)
+	assert.Contains(t, degraded.Message, templateHeldMessage)
 
 	// A valid replacement bundle applies the current template.
 	require.NoError(t, c.Get(
@@ -190,6 +196,10 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 		podTemplate(t, ctx, c, "bp", "missing-ns"),
 		"a missing keys Secret must leave the live template unchanged",
 	)
+	// The live template already matches the render, so nothing is held.
+	keysValid, _ := keysConditions(t, ctx, c, "bp", "missing-ns")
+	require.NotNil(t, keysValid)
+	assert.NotContains(t, keysValid.Message, templateHeldMessage)
 	assert.Equal(
 		t,
 		accepted,
@@ -197,7 +207,8 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 		"the live keys checksum must be carried forward",
 	)
 	// The pod keeps running, so the missing Secret must be visible in status.
-	keysValid, degraded := keysConditions(t, ctx, c, "bp", "missing-ns")
+	var degraded *metav1.Condition
+	keysValid, degraded = keysConditions(t, ctx, c, "bp", "missing-ns")
 	require.NotNil(t, keysValid)
 	assert.Equal(t, metav1.ConditionFalse, keysValid.Status)
 	assert.Equal(t, "KeysSecretMissing", keysValid.Reason)
