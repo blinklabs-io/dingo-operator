@@ -17,10 +17,12 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -328,26 +330,92 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 // opcert.cert first and falling back to node.cert.
 func (h *harness) opcertFromKeysSecret(
 	ctx context.Context,
-) (*ledger.OpCert, []byte, error) {
+) (*ledger.OpCert, error) {
 	s := &corev1.Secret{}
 	if err := h.client.Get(ctx, types.NamespacedName{
 		Name:      keysSecretRef,
 		Namespace: h.namespace,
 	}, s); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	certData := s.Data["opcert.cert"]
 	if len(certData) == 0 {
 		certData = s.Data["node.cert"]
 	}
 	if len(certData) == 0 {
-		return nil, nil, fmt.Errorf("no opcert found")
+		return nil, errors.New("no opcert found")
 	}
-	oc, vkey, err := opcert.Parse(certData)
+	oc, _, err := opcert.Parse(certData)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return oc, vkey, nil
+	return oc, nil
+}
+
+// toUint64 converts a non-negative counter to uint64, failing the test on a
+// negative value instead of wrapping it.
+func toUint64(t *testing.T, v int64) uint64 {
+	t.Helper()
+	if v < 0 {
+		t.Fatalf("counter %d must not be negative", v)
+	}
+	return uint64(v)
+}
+
+// assertOpCertIssuedOnce polls the keys Secret for window and fails if the
+// KES key or the opcert changes from the given values.
+//
+// It is a plain loop rather than assert.Never: Never runs each check in its
+// own goroutine and returns when its timer fires, so a check started on the
+// last tick can still be running when the test returns and its deferred
+// cancel() aborts the in-flight Get with "context canceled", failing a test
+// whose assertions all held.
+func (h *harness) assertOpCertIssuedOnce(
+	ctx context.Context,
+	t *testing.T,
+	window, poll time.Duration,
+	firstKES, firstCert []byte,
+	counter uint64,
+) {
+	t.Helper()
+	deadline := time.NewTimer(window)
+	defer deadline.Stop()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return
+		case <-ctx.Done():
+			t.Fatalf("context ended while asserting issue-once: %v", ctx.Err())
+		case <-ticker.C:
+		}
+		s := &corev1.Secret{}
+		if err := h.client.Get(ctx, types.NamespacedName{
+			Name:      keysSecretRef,
+			Namespace: h.namespace,
+		}, s); err != nil {
+			t.Fatalf("get keys secret while asserting issue-once: %v", err)
+		}
+		if !bytes.Equal(firstKES, s.Data["kes.skey"]) {
+			t.Fatalf("kes.skey changed on a subsequent reconcile")
+		}
+		cert := s.Data["opcert.cert"]
+		if len(cert) == 0 {
+			cert = s.Data["node.cert"]
+		}
+		oc, _, err := opcert.Parse(cert)
+		if err != nil {
+			t.Fatalf("parse opcert while asserting issue-once: %v", err)
+		}
+		if oc.IssueNumber != counter {
+			t.Fatalf("opcert counter advanced from %d to %d",
+				counter, oc.IssueNumber)
+		}
+		if !bytes.Equal(firstCert, cert) {
+			t.Fatalf("opcert bytes changed on a subsequent reconcile")
+		}
+	}
 }
 
 // TestAutoRotationIssuesAndForgesOnNewOpCert proves Auto rotation issues a
@@ -387,7 +455,7 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 		withNodeToClient(),
 		func(spec *dingov1alpha1.DingoNodeSpec) error {
 			if spec.BlockProducer == nil {
-				return fmt.Errorf("block producer missing")
+				return errors.New("block producer missing")
 			}
 			spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAuto
 			// The devnet's initial opcert starts at KES period 0 with a
@@ -439,7 +507,7 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 			return true, nil
 		})
 	require.GreaterOrEqual(t, onChain, int64(0))
-	expectedCounter := onChain + 1
+	expectedCounter := toUint64(t, onChain) + 1
 
 	h.waitFor(ctx, autoIssueTimeout,
 		"the operator to issue a new opcert in Auto mode",
@@ -455,11 +523,11 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 	h.waitFor(ctx, keysDeliveryTimeout,
 		fmt.Sprintf("the keys Secret opcert counter to become %d", expectedCounter),
 		func(ctx context.Context) (bool, error) {
-			oc, _, err := h.opcertFromKeysSecret(ctx)
+			oc, err := h.opcertFromKeysSecret(ctx)
 			if err != nil {
 				return false, err
 			}
-			return int64(oc.IssueNumber) == expectedCounter, nil
+			return oc.IssueNumber == expectedCounter, nil
 		})
 
 	var after string
@@ -499,43 +567,11 @@ func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
 	require.NotEmpty(t, firstCert, "rotated opcert must be present")
 	oc, _, err := opcert.Parse(firstCert)
 	require.NoError(t, err)
-	require.Equal(t, uint64(expectedCounter), oc.IssueNumber,
+	require.Equal(t, expectedCounter, oc.IssueNumber,
 		"the rotated opcert counter must be on-chain + 1")
 
-	assert.Never(t, func() bool {
-		s2 := &corev1.Secret{}
-		if err := h.client.Get(ctx, types.NamespacedName{
-			Name:      keysSecretRef,
-			Namespace: h.namespace,
-		}, s2); err != nil {
-			t.Errorf("failed to get keys secret while asserting issue-once: %v", err)
-			return true
-		}
-		if !assert.ObjectsAreEqual(firstKES, s2.Data["kes.skey"]) {
-			t.Errorf("kes.skey changed on subsequent reconcile")
-			return true
-		}
-		oc2, _, err := h.opcertFromKeysSecret(ctx)
-		if err != nil {
-			t.Errorf("failed to parse opcert while asserting issue-once: %v", err)
-			return true
-		}
-		if int64(oc2.IssueNumber) != expectedCounter {
-			t.Errorf("opcert counter advanced from %d to %d",
-				expectedCounter, oc2.IssueNumber)
-			return true
-		}
-		cert2 := s2.Data["opcert.cert"]
-		if len(cert2) == 0 {
-			cert2 = s2.Data["node.cert"]
-		}
-		if !assert.ObjectsAreEqual(firstCert, cert2) {
-			t.Errorf("opcert bytes changed on subsequent reconcile")
-			return true
-		}
-		return false
-	}, 30*time.Second, 5*time.Second,
-		"the operator issued a second opcert on the next reconcile")
+	h.assertOpCertIssuedOnce(ctx, t, 30*time.Second, 5*time.Second,
+		firstKES, firstCert, expectedCounter)
 }
 
 // rawKeyEnvelopeForTest renders raw as a cardano-cli text envelope of envType.
