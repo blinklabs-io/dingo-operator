@@ -32,6 +32,24 @@ KUBECONFIG_PATH="${KUBECONFIG_PATH:-${ROOT_DIR}/.e2e/kubeconfig}"
 
 mkdir -p "$(dirname "${KUBECONFIG_PATH}")"
 
+# version_ge A B: true when version A is at least B.
+version_ge() {
+  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]
+}
+
+# With Docker's containerd image store, the images are exported per platform
+# (see the import below), and `docker save --platform` needs API 1.48
+# (Engine 28). Check before creating the cluster.
+containerd_store=false
+if docker info --format '{{.DriverStatus}}' | grep -q 'io.containerd.snapshotter'; then
+  containerd_store=true
+  docker_api="$(docker version --format '{{.Server.APIVersion}}')"
+  if ! version_ge "${docker_api}" 1.48; then
+    echo "[e2e] Docker's containerd image store needs Docker API 1.48 (Engine 28) or later for the image import; this server has API ${docker_api}" >&2
+    exit 1
+  fi
+fi
+
 if k3d cluster list "${CLUSTER_NAME}" >/dev/null 2>&1; then
   echo "[e2e] cluster ${CLUSTER_NAME} already exists"
 else
@@ -50,7 +68,19 @@ if ! docker image inspect "${DINGO_IMAGE}" >/dev/null 2>&1; then
 fi
 
 echo "[e2e] importing ${OPERATOR_IMAGE} and ${DINGO_IMAGE}"
-k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
+# With Docker's containerd image store, a pulled multi-platform image keeps
+# its index but only the host platform's layers, and `k3d image import`
+# fails with "content digest ... not found". Exporting the host platform
+# alone gives k3d a complete archive.
+if [ "${containerd_store}" = true ]; then
+  images_tar="$(mktemp -t dingo-operator-e2e-images.XXXXXX.tar)"
+  trap 'rm -f "${images_tar}"' EXIT
+  docker save --platform "linux/$(docker version --format '{{.Server.Arch}}')" \
+    --output "${images_tar}" "${OPERATOR_IMAGE}" "${DINGO_IMAGE}"
+  k3d image import "${images_tar}" --cluster "${CLUSTER_NAME}"
+else
+  k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
+fi
 
 echo "[e2e] writing kubeconfig to ${KUBECONFIG_PATH}"
 k3d kubeconfig write "${CLUSTER_NAME}" \
