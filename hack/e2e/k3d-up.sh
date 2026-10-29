@@ -50,7 +50,19 @@ if ! docker image inspect "${DINGO_IMAGE}" >/dev/null 2>&1; then
 fi
 
 echo "[e2e] importing ${OPERATOR_IMAGE} and ${DINGO_IMAGE}"
-k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
+# With Docker's containerd image store, a pulled multi-platform image keeps
+# its index but only the host platform's layers, and `k3d image import`
+# fails with "content digest ... not found". Exporting the host platform
+# alone gives k3d a complete archive.
+if docker info --format '{{.DriverStatus}}' | grep -q 'io.containerd.snapshotter'; then
+  images_tar="$(mktemp -t dingo-operator-e2e-images.XXXXXX.tar)"
+  trap 'rm -f "${images_tar}"' EXIT
+  docker save --platform "linux/$(docker version --format '{{.Server.Arch}}')" \
+    --output "${images_tar}" "${OPERATOR_IMAGE}" "${DINGO_IMAGE}"
+  k3d image import "${images_tar}" --cluster "${CLUSTER_NAME}"
+else
+  k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
+fi
 
 echo "[e2e] writing kubeconfig to ${KUBECONFIG_PATH}"
 k3d kubeconfig write "${CLUSTER_NAME}" \
