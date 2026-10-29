@@ -17,10 +17,12 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"encoding/hex"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -284,4 +286,100 @@ func keysConditions(
 	))
 	return meta.FindStatusCondition(dn.Status.Conditions, condKeysValid),
 		meta.FindStatusCondition(dn.Status.Conditions, condDegraded)
+}
+
+// TestBlockProducerMissingVoteKeyNotHeld deletes a keys Secret that carried
+// vote.skey. The live template sets the vote key variable, and the render
+// without the Secret would drop it only because the Secret is missing, so no
+// template update is reported as held.
+func TestBlockProducerMissingVoteKeyNotHeld(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "vote-missing-ns")
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	good, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	secret := &corev1.Secret{
+		ObjectMeta: objectMeta("pool-keys", "vote-missing-ns"),
+		Data:       withKey(good, "vote.skey", voteEnvelope(t, 42)),
+	}
+	require.NoError(t, c.Create(ctx, secret))
+
+	dn := blockProducerNode(
+		"bp", "vote-missing-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-missing-ns")
+	want := podTemplate(t, ctx, c, "bp", "vote-missing-ns")
+	require.Contains(t, envNames(want), resources.VoteKeyEnv)
+
+	require.NoError(t, c.Delete(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-missing-ns")
+	assert.Equal(t, want, podTemplate(t, ctx, c, "bp", "vote-missing-ns"))
+	keysValid, _ := keysConditions(t, ctx, c, "bp", "vote-missing-ns")
+	require.NotNil(t, keysValid)
+	assert.Equal(t, "KeysSecretMissing", keysValid.Reason)
+	assert.NotContains(t, keysValid.Message, templateHeldMessage)
+}
+
+// envNames returns the names of the dingo container's environment variables.
+func envNames(tmpl corev1.PodTemplateSpec) []string {
+	var names []string
+	for _, c := range tmpl.Spec.Containers {
+		for _, e := range c.Env {
+			names = append(names, e.Name)
+		}
+	}
+	return names
+}
+
+// dryRunFailingClient refuses every dry-run update, as an admission webhook
+// that rejects the request would.
+type dryRunFailingClient struct {
+	client.Client
+}
+
+func (c dryRunFailingClient) Update(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.UpdateOption,
+) error {
+	o := &client.UpdateOptions{}
+	o.ApplyOptions(opts)
+	if len(o.DryRun) > 0 {
+		return errors.New("dry run refused")
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
+// TestBlockProducerHeldTemplateUnknownIsReported fails the dry run that
+// compares a held template with the live one. A failed comparison cannot show
+// that nothing is held, so the held update is still reported.
+func TestBlockProducerHeldTemplateUnknownIsReported(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "dryrun-ns")
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	good, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	secret := &corev1.Secret{
+		ObjectMeta: objectMeta("pool-keys", "dryrun-ns"),
+		Data:       good,
+	}
+	require.NoError(t, c.Create(ctx, secret))
+	dn := blockProducerNode(
+		"bp", "dryrun-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", "dryrun-ns")
+
+	require.NoError(t, c.Delete(ctx, secret))
+	reconcile(t, ctx, reconcilerFor(dryRunFailingClient{c}), "bp", "dryrun-ns")
+	keysValid, _ := keysConditions(t, ctx, c, "bp", "dryrun-ns")
+	require.NotNil(t, keysValid)
+	assert.Contains(t, keysValid.Message, templateHeldMessage)
 }

@@ -168,6 +168,12 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			len(sts.Spec.VolumeClaimTemplates) > 0 {
 			renderOpts.DataVolumeName = sts.Spec.VolumeClaimTemplates[0].Name
 		}
+		// A held template is compared with the render, not applied. Carry the
+		// live vote key state, as the keys checksum is, so the refused or
+		// missing Secret alone does not count as a template change.
+		if keepTemplate && !sts.CreationTimestamp.IsZero() {
+			renderOpts.MountVoteKey = setsVoteKey(sts.Spec.Template)
+		}
 		desired := resources.BuildStatefulSet(dn, renderOpts)
 		sts.Labels = desired.Labels
 		if sts.CreationTimestamp.IsZero() {
@@ -197,16 +203,30 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 	probe := sts.DeepCopy()
 	probe.Spec.Template = *withheld
 	if err := r.Update(ctx, probe, client.DryRunAll); err != nil {
-		log.FromContext(ctx).V(1).Info(
+		// A failed comparison cannot show that nothing is held, so report the
+		// update as held.
+		log.FromContext(ctx).Info(
 			"unable to compare withheld pod template",
 			"error", err.Error(),
 		)
-		return false, nil
+		return true, nil
 	}
 	return !equality.Semantic.DeepEqual(
 		probe.Spec.Template,
 		sts.Spec.Template,
 	), nil
+}
+
+// setsVoteKey reports whether a pod template sets the vote key variable.
+func setsVoteKey(tmpl corev1.PodTemplateSpec) bool {
+	for _, c := range tmpl.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == resources.VoteKeyEnv {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *DingoNodeReconciler) upsertPDB(
