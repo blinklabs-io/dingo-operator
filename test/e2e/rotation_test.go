@@ -17,13 +17,21 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
+	"github.com/blinklabs-io/gouroboros/cbor"
+	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -316,4 +324,267 @@ func TestAssistedRotationRejectsCounterRegression(t *testing.T) {
 	assert.Equal(t, goodPod.UID, pod.UID,
 		"the pod forging at the end must be the one that was forging before "+
 			"the refused delivery")
+}
+
+// opcertFromKeysSecret reads the opcert from the keys Secret, trying
+// opcert.cert first and falling back to node.cert.
+func (h *harness) opcertFromKeysSecret(
+	ctx context.Context,
+) (*ledger.OpCert, error) {
+	s := &corev1.Secret{}
+	if err := h.client.Get(ctx, types.NamespacedName{
+		Name:      keysSecretRef,
+		Namespace: h.namespace,
+	}, s); err != nil {
+		return nil, err
+	}
+	certData := s.Data["opcert.cert"]
+	if len(certData) == 0 {
+		certData = s.Data["node.cert"]
+	}
+	if len(certData) == 0 {
+		return nil, errors.New("no opcert found")
+	}
+	oc, _, err := opcert.Parse(certData)
+	if err != nil {
+		return nil, err
+	}
+	return oc, nil
+}
+
+// toUint64 converts a non-negative counter to uint64, failing the test on a
+// negative value instead of wrapping it.
+func toUint64(t *testing.T, v int64) uint64 {
+	t.Helper()
+	if v < 0 {
+		t.Fatalf("counter %d must not be negative", v)
+		return 0
+	}
+	return uint64(v)
+}
+
+// assertOpCertIssuedOnce polls the keys Secret for window and fails if the
+// KES key or the opcert changes from the given values.
+//
+// It is a plain loop rather than assert.Never: Never runs each check in its
+// own goroutine and returns when its timer fires, so a check started on the
+// last tick can still be running when the test returns and its deferred
+// cancel() aborts the in-flight Get with "context canceled", failing a test
+// whose assertions all held.
+func (h *harness) assertOpCertIssuedOnce(
+	ctx context.Context,
+	t *testing.T,
+	window, poll time.Duration,
+	firstKES, firstCert []byte,
+	counter uint64,
+) {
+	t.Helper()
+	deadline := time.NewTimer(window)
+	defer deadline.Stop()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return
+		case <-ctx.Done():
+			t.Fatalf("context ended while asserting issue-once: %v", ctx.Err())
+		case <-ticker.C:
+		}
+		s := &corev1.Secret{}
+		if err := h.client.Get(ctx, types.NamespacedName{
+			Name:      keysSecretRef,
+			Namespace: h.namespace,
+		}, s); err != nil {
+			t.Fatalf("get keys secret while asserting issue-once: %v", err)
+		}
+		if !bytes.Equal(firstKES, s.Data["kes.skey"]) {
+			t.Fatalf("kes.skey changed on a subsequent reconcile")
+		}
+		cert := s.Data["opcert.cert"]
+		if len(cert) == 0 {
+			cert = s.Data["node.cert"]
+		}
+		oc, _, err := opcert.Parse(cert)
+		if err != nil {
+			t.Fatalf("parse opcert while asserting issue-once: %v", err)
+		}
+		if oc.IssueNumber != counter {
+			t.Fatalf("opcert counter advanced from %d to %d",
+				counter, oc.IssueNumber)
+		}
+		if !bytes.Equal(firstCert, cert) {
+			t.Fatalf("opcert bytes changed on a subsequent reconcile")
+		}
+	}
+}
+
+// TestAutoRotationIssuesAndForgesOnNewOpCert proves Auto rotation issues a
+// new opcert and the node keeps forging on it. The secret cold signer is used
+// (devnet only), with the pool's cold key in a Secret under cold.skey as a
+// cardano-cli text envelope.
+func TestAutoRotationIssuesAndForgesOnNewOpCert(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	h := newHarness(t)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(h.diagnostics(ctx))
+		}
+	})
+
+	h.grantKeysUpdateRBAC(ctx)
+
+	dn := h.applyDevNet(ctx)
+
+	// The secret cold signer holds the cold key in a Secret; create it before
+	// the node so the first Auto reconcile does not hit ColdSignerUnavailable
+	// and back off for 10 minutes.
+	coldEnv := rawKeyEnvelopeForTest(
+		t, "StakePoolSigningKey_ed25519", dn.Keys.ColdSKey.Seed(),
+	)
+	require.NoError(t, h.client.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cold-skey",
+			Namespace: h.namespace,
+		},
+		Data: map[string][]byte{"cold.skey": coldEnv},
+	}))
+
+	h.applyDingoNode(ctx, dn,
+		withNodeToClient(),
+		func(spec *dingov1alpha1.DingoNodeSpec) error {
+			if spec.BlockProducer == nil {
+				return errors.New("block producer missing")
+			}
+			spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAuto
+			// The devnet's initial opcert starts at KES period 0 with a
+			// 62-period window (120 s per period). Rotation is due when
+			// 62 - current <= R, so the first rotation is due at
+			// current >= 62 - R. Because the initial opcert starts at 0,
+			// time-to-first-due and time-until-a-fresh-opcert-is-due-again
+			// are BOTH 62 - R periods. With R = 58 the first rotation is
+			// due around period 4 (~8 min; the on-chain counter is observed
+			// around 5-7 min), and a fresh opcert issued at period P stays
+			// not-due until P + 62 - current <= 58 (i.e. current >=
+			// P + 4), giving ~4 periods (~8 min) of headroom to cover the
+			// roll, forging and the once-only window. The OpCertIssued
+			// wait (autoIssueTimeout) allows for rotation becoming due at
+			// ~8 min plus one requeue interval.
+			spec.BlockProducer.Rotation.RenewBeforePeriods = 58
+			spec.BlockProducer.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
+				Type:      dingov1alpha1.ColdSignerSecret,
+				SecretRef: "cold-skey",
+			}
+			return nil
+		},
+	)
+
+	oldUID := h.waitPodReady(ctx).UID
+	h.waitForged(ctx, 1)
+
+	before, err := h.stsKeysChecksum(ctx)
+	require.NoError(t, err, "read the live keys-checksum annotation")
+	require.NotEmpty(t, before,
+		"the operator must already have checksummed the devnet's own keys")
+
+	// Auto issuance needs a fresh on-chain counter and a scraped KES period.
+	// The first node-to-client dial always fails (Service not yet created) and
+	// the next is 5 min later, so this is the longest wait in the suite.
+	var onChain int64
+	h.waitFor(ctx, onChainCounterTimeout,
+		"the on-chain opcert counter to be observed",
+		func(ctx context.Context) (bool, error) {
+			n, err := h.getNodeErr(ctx)
+			if err != nil {
+				return false, err
+			}
+			if !conditionIs(n, condOnChainCounter, metav1.ConditionTrue,
+				reasonOnChainObserved) {
+				return false, nil
+			}
+			onChain = n.Status.OpCert.OnChainCounter
+			return true, nil
+		})
+	require.GreaterOrEqual(t, onChain, int64(0))
+	expectedCounter := toUint64(t, onChain) + 1
+
+	h.waitFor(ctx, autoIssueTimeout,
+		"the operator to issue a new opcert in Auto mode",
+		func(ctx context.Context) (bool, error) {
+			n, err := h.getNodeErr(ctx)
+			if err != nil {
+				return false, err
+			}
+			return conditionIs(n, condOpCertIssued, metav1.ConditionTrue,
+				"OpCertIssued"), nil
+		})
+
+	h.waitFor(ctx, keysDeliveryTimeout,
+		fmt.Sprintf("the keys Secret opcert counter to become %d", expectedCounter),
+		func(ctx context.Context) (bool, error) {
+			oc, err := h.opcertFromKeysSecret(ctx)
+			if err != nil {
+				return false, err
+			}
+			return oc.IssueNumber == expectedCounter, nil
+		})
+
+	var after string
+	h.waitFor(ctx, keysDeliveryTimeout,
+		"the keys-checksum annotation to change after Auto rotation",
+		func(ctx context.Context) (bool, error) {
+			var err error
+			after, err = h.stsKeysChecksum(ctx)
+			if err != nil {
+				return false, err
+			}
+			if after == "" || after == before {
+				return false, nil
+			}
+			return true, nil
+		})
+
+	newPod := h.waitPodReplaced(ctx, oldUID)
+	t.Logf("pod rolled: %s -> %s", oldUID, newPod.UID)
+
+	// Forging after the roll proves the new opcert is live: the forged counter
+	// resets on process start.
+	h.waitForged(ctx, 1)
+
+	// Assert it issues once: derive firstKES and the first opcert from
+	// the same Secret read.
+	s := &corev1.Secret{}
+	require.NoError(t, h.client.Get(ctx, types.NamespacedName{
+		Name:      keysSecretRef,
+		Namespace: h.namespace,
+	}, s))
+	firstKES := append([]byte(nil), s.Data["kes.skey"]...)
+	firstCert := append([]byte(nil), s.Data["opcert.cert"]...)
+	if len(firstCert) == 0 {
+		firstCert = append([]byte(nil), s.Data["node.cert"]...)
+	}
+	require.NotEmpty(t, firstCert, "rotated opcert must be present")
+	oc, _, err := opcert.Parse(firstCert)
+	require.NoError(t, err)
+	require.Equal(t, expectedCounter, oc.IssueNumber,
+		"the rotated opcert counter must be on-chain + 1")
+
+	h.assertOpCertIssuedOnce(ctx, t, 30*time.Second, 5*time.Second,
+		firstKES, firstCert, expectedCounter)
+}
+
+// rawKeyEnvelopeForTest renders raw as a cardano-cli text envelope of envType.
+func rawKeyEnvelopeForTest(t *testing.T, envType string, raw []byte) []byte {
+	t.Helper()
+	payload, err := cbor.Encode(raw)
+	require.NoError(t, err)
+	out, err := json.Marshal(map[string]string{
+		"type":        envType,
+		"description": "test",
+		"cborHex":     hex.EncodeToString(payload),
+	})
+	require.NoError(t, err)
+	return out
 }

@@ -215,6 +215,12 @@ const (
 	// bundle on its next requeueInterval (2m) pass.
 	keysDeliveryTimeout = 4 * time.Minute
 
+	// autoIssueTimeout bounds Auto issuance after the on-chain counter is
+	// observed. The counter can be seen ~5 min after node creation, while
+	// rotation (R = 58) is due at KES period 4 (~8 min) and the reconciler
+	// may notice only one requeueInterval (2m) later, at ~10 min.
+	autoIssueTimeout = 6 * time.Minute
+
 	// podRollTimeout bounds the StatefulSet controller replacing the pod once
 	// the pod template's keys-checksum annotation changes.
 	podRollTimeout = 3 * time.Minute
@@ -464,6 +470,28 @@ func (h *harness) createKeysReaderRBAC(ctx context.Context) {
 	require.NoError(h.t, h.client.Create(ctx, binding),
 		"create keys-reader RoleBinding in %s", h.namespace)
 	h.t.Logf("keys-reader RBAC scoped to namespace %s", h.namespace)
+}
+
+// grantKeysUpdateRBAC adds update to the namespace's keys Role. Call only
+// from tests that require the operator to write the keys Secret.
+func (h *harness) grantKeysUpdateRBAC(ctx context.Context) {
+	h.t.Helper()
+
+	role := &rbacv1.Role{}
+	require.NoError(h.t,
+		h.client.Get(ctx, types.NamespacedName{
+			Name:      keysReaderName,
+			Namespace: h.namespace,
+		}, role),
+		"get keys-reader Role in %s", h.namespace,
+	)
+	role.Rules = []rbacv1.PolicyRule{{
+		APIGroups: []string{""},
+		Resources: []string{"secrets"},
+		Verbs:     []string{"get", "update"},
+	}}
+	require.NoError(h.t, h.client.Update(ctx, role),
+		"update keys-reader Role in %s", h.namespace)
 }
 
 // operatorServiceAccountUser is the SA username the API server authorizes the
@@ -1026,6 +1054,7 @@ const (
 	condDegraded         = "Degraded"
 	reasonOpCertAccepted = "OpCertAccepted"
 	reasonOpCertRejected = "OpCertRejected"
+	condOpCertIssued     = "OpCertIssued"
 )
 
 // The on-chain opcert counter condition and the reasons this suite names.

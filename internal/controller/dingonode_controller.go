@@ -82,6 +82,19 @@ type DingoNodeReconciler struct {
 	// counter validation falls back to the operator's own last accepted counter.
 	OnChain       onchain.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
+	// ColdSigner overrides the cold signer Auto rotation issues opcerts with.
+	// Nil builds it from spec.blockProducer.rotation.coldSigner.
+	ColdSigner ColdSignerFactory
+
+	// issueMu guards issueFailures.
+	issueMu sync.Mutex
+	// issueFailures remembers, per node, the last Auto rotation that failed
+	// once it had set out to reach the cold signer. RotationDue stays True
+	// until a rotation lands, so without this a signer that is down, or a
+	// Secret the operator may not update, would be retried on every reconcile:
+	// a signing round trip (and a timeout, for an unreachable signer) each
+	// time. In-memory for the same reasons as onChainAttempts.
+	issueFailures map[types.NamespacedName]issueFailure
 
 	// onChainMu guards onChainAttempts.
 	onChainMu sync.Mutex
@@ -166,12 +179,14 @@ func (r *DingoNodeReconciler) Reconcile(
 	if err := r.Get(ctx, req.NamespacedName, dn); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetOnChainAttempt(req.NamespacedName)
+			r.forgetIssueFailure(req.NamespacedName)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !dn.DeletionTimestamp.IsZero() {
 		// Owner references handle garbage collection; nothing else to do.
 		r.forgetOnChainAttempt(req.NamespacedName)
+		r.forgetIssueFailure(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
@@ -566,6 +581,7 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	// Scraped for every node, not just block producers: a relay that stops
 	// following the chain serves stale answers to everything downstream.
 	r.refreshForgeStatus(ctx, dn)
+	r.autoRotate(ctx, dn)
 
 	// A wedged node keeps its pod Ready, so Ready alone would report it
 	// healthy. Phase is downgraded to Degraded while the pipeline is unhealthy,

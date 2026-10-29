@@ -432,20 +432,50 @@ proven end to end against a real forging node in `test/e2e/rotation_test.go`
 (`make e2e`) — which is what establishes that the roll actually resumes forging
 on the new key, something envtest cannot show.
 
-Full `Auto` rotation:
+Full `Auto` rotation (`internal/controller/rotate.go`), run after the
+metrics scrape on every reconcile:
 
-1. Detect: `remainingPeriods <= renewBeforePeriods` → `RotationDue`.
-2. Resolve the authoritative counter from the node (interim: operator-tracked
-   status + the node's startup stale-counter rejection). Target = on-chain + 1.
-3. Generate a new KES keypair; compute `OpCertSignableBytes`.
-4. Cold-sign via the pluggable signer (Bursa over mTLS). Note Bursa's watermark
-   is an equivocation guard, not a monotonic counter guard — the operator
-   enforces counter anti-regression against the on-chain value itself.
-5. Assemble + verify the opcert (`VerifyOpCertSignature`); abort on mismatch.
-6. Write the new `kes.skey` + `opcert.cert` into the keys Secret. An accepted
-   rollout stages them into the pod's private `/keys` volume with mode `0600`.
-7. Roll in: v1 restarts the pod (fenced for BPs); future hot-reload avoids the
-   restart.
+1. Detect: `RotationDue=True` (`remainingPeriods <= renewBeforePeriods`).
+2. Refuse (`OpCertIssued=False`, Warning Event) without calling the signer when
+   the on-chain counter is not fresh for this pool
+   (`observedOnChainCounter`; an observed 0 counts, unlike `onChainFloor`),
+   the KES period has not been scraped, or `renewBeforePeriods` is not below
+   the KES window (every new opcert would be due at once). A pool that has
+   never minted has no on-chain counter, so it cannot auto-rotate; deliver its
+   first opcert with `Assisted`.
+3. Skip if the keys Secret already holds a bundle that validates and is not
+   due. The running pod keeps reporting its old opcert until it rolls and is
+   scraped again, so this check is what keeps one rotation from issuing on
+   every reconcile. A staged bundle that fails validation is replaced. A
+   dry-run update of the Secret then checks the write is allowed before a
+   signature is spent on it.
+4. Generate a KES key and ask the cold signer for an opcert at on-chain
+   counter + 1, starting at the current KES period
+   (`coldsigner.Issuer.SignOpCertFromChain`). Reissuing the same number is
+   valid while the pool has not forged with it. Bursa chooses the number from
+   the counter and keeps a per-key floor; the operator verifies the issue
+   number, the cold key against `coldKeyHash`, and the signature.
+5. Run `validateKeysSecret` on the candidate Secret and abort on any failure,
+   so self-issued material passes the same checks as a delivered bundle.
+6. Update the keys Secret (`kes.skey` and the opcert under the name it already
+   uses), carrying the read resourceVersion. `vrf.skey` is untouched.
+7. The next reconcile validates the new bundle and rolls the pod.
+
+A failure from step 4 on (signer unreachable or refusing, bundle rejected,
+Secret write denied) is remembered per node in memory, and the signer is not
+contacted again for `issueRetryInterval` (10 minutes). Without it a signer
+timeout would block every reconcile while `RotationDue` holds. A refusal sets
+`OpCertIssued=False` and a Warning Event but not `Degraded`: the node is still
+forging, and several refusals (counter not yet read, KES not yet scraped) are
+normal transient states.
+
+`validateSpec` requires, for `Auto`: `poolId`, `nodeToClient.enabled`, and a
+cold signer that can issue. Bursa needs an https `endpoint`, `mtlsSecretRef`
+(a Secret with `tls.crt`, `tls.key` and optionally `ca.crt`) and
+`coldKeyHash` equal to the pool ID; `secret` needs `secretRef` holding
+`cold.skey` and is refused on mainnet (by name or network magic), since it
+keeps the cold key in the cluster. Auto writes the keys Secret, so the deployment must grant the
+operator `update` on Secrets in the keys namespaces, on top of `get`.
 
 ### HA
 
@@ -463,11 +493,11 @@ Full `Auto` rotation:
 - P1 (done) — block producers: key mounting, KES/opcert status from metrics,
   `MonitorOnly`/`Assisted` rotation, `SingleActive` HA.
 - P2 — full auto rotation: Bursa cold-signer, counter-safe issuance, `Auto`
-  mode (pod-restart rollout).
+  mode (pod-restart rollout). Implemented; see above.
 - P3 — `ActiveStandby` + credential hot-reload.
 
-P2/P3 depend on the upstream work below; the cold-signer interface and
-rotation-due monitoring are already in place.
+P3 depends on the upstream work below; P2's Bursa backend depends on bursa
+#1081.
 
 ### Upstream dependencies (filed)
 
@@ -479,8 +509,10 @@ through the existing PodMonitor. Remaining Dingo dependencies: dingo
 hot-reload), [#2871](https://github.com/blinklabs-io/dingo/issues/2871) (expose
 on-chain opcert counter), [#2873](https://github.com/blinklabs-io/dingo/issues/2873)
 (SPO forging metrics); bursa
-[#592](https://github.com/blinklabs-io/bursa/issues/592) (opcert CBOR envelope +
-external cold-signer sign type); dingoctl
+[#1081](https://github.com/blinklabs-io/bursa/issues/1081) (opcert issued from
+the on-chain counter via `chain_counter`, which `BursaSigner` sends; bursa
+[#592](https://github.com/blinklabs-io/bursa/issues/592), the opcert sign type,
+is closed); dingoctl
 [#14](https://github.com/blinklabs-io/dingoctl/issues/14)
 (`reload` + readiness/leader-state); bark
 [#17](https://github.com/blinklabs-io/bark/issues/17) (LifecycleService).
