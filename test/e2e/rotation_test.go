@@ -358,6 +358,7 @@ func toUint64(t *testing.T, v int64) uint64 {
 	t.Helper()
 	if v < 0 {
 		t.Fatalf("counter %d must not be negative", v)
+		return 0
 	}
 	return uint64(v)
 }
