@@ -218,7 +218,7 @@ func TestBuildStatefulSet(t *testing.T) {
 		require.Len(t, sts.Spec.Template.Spec.Containers, 1)
 		assert.Equal(t, "dingo", sts.Spec.Template.Spec.Containers[0].Name)
 		require.Len(t, sts.Spec.VolumeClaimTemplates, 1)
-		assert.Equal(t, dataVolumeName, sts.Spec.VolumeClaimTemplates[0].Name)
+		assert.Equal(t, "dingo-data", sts.Spec.VolumeClaimTemplates[0].Name)
 	})
 
 	t.Run(
@@ -1142,6 +1142,30 @@ func TestSupportsTracing(t *testing.T) {
 			assert.Equal(t, tc.wants, SupportsTracing(dn))
 		})
 	}
+}
+
+func TestDataVolumeNaming(t *testing.T) {
+	t.Parallel()
+	dataMount := corev1.VolumeMount{Name: "dingo-data", MountPath: "/data"}
+	sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
+	require.Len(t, sts.Spec.VolumeClaimTemplates, 1)
+	assert.Equal(t, "dingo-data", sts.Spec.VolumeClaimTemplates[0].Name)
+	pod := sts.Spec.Template.Spec
+	require.NotEmpty(t, pod.InitContainers)
+	assert.Contains(t, pod.Containers[0].VolumeMounts, dataMount)
+	for _, c := range pod.InitContainers {
+		if c.Name == mithrilInitName {
+			assert.Contains(t, c.VolumeMounts, dataMount)
+		}
+	}
+
+	legacy := BuildStatefulSet(
+		relayNode(),
+		RenderOptions{Replicas: 1, DataVolumeName: "data"},
+	)
+	assert.Equal(t, "data", legacy.Spec.VolumeClaimTemplates[0].Name)
+	legacyMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
+	assert.Contains(t, legacy.Spec.Template.Spec.Containers[0].VolumeMounts, legacyMount)
 }
 
 // The staging script accepts the dingo Helm chart's node.cert and always

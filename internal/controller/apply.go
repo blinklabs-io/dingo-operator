@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
@@ -23,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/retry"
@@ -149,11 +151,19 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 	opts resources.RenderOptions,
 	keepTemplate bool,
 ) error {
-	desired := resources.BuildStatefulSet(dn, opts)
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
+		ObjectMeta: objectMeta(dn.Name, dn.Namespace),
 	}
 	err := createOrUpdateWithRetry(ctx, r.Client, sts, func() error {
+		renderOpts := opts
+		// Claim templates are immutable. Mount the data volume under the
+		// template name of the StatefulSet this update is based on, so an
+		// earlier stale read cannot render a mount for a claim it lacks.
+		if !sts.CreationTimestamp.IsZero() &&
+			len(sts.Spec.VolumeClaimTemplates) > 0 {
+			renderOpts.DataVolumeName = sts.Spec.VolumeClaimTemplates[0].Name
+		}
+		desired := resources.BuildStatefulSet(dn, renderOpts)
 		sts.Labels = desired.Labels
 		if sts.CreationTimestamp.IsZero() {
 			// Create: set the full spec, including immutable fields.
@@ -230,4 +240,69 @@ func (r *DingoNodeReconciler) upsertPodMonitor(
 		return ctrl.SetControllerReference(dn, pm, r.Scheme)
 	})
 	return err
+}
+
+// dataVolumeName returns the data claim template name for the node's
+// StatefulSet, or "" to use the default. Claim templates are immutable, so an
+// existing StatefulSet keeps its name. Without one, claims retained from an
+// earlier StatefulSet decide it: dingo-data when any exist, as the dingo chart
+// creates them, else data, as earlier operator versions did.
+//
+// Kubernetes binds a claim template to an existing PVC by name without
+// checking its labels, so a retained claim under the selected name that is not
+// labelled with the node's network would mount another network's database.
+// Such a claim is refused rather than skipped.
+func (r *DingoNodeReconciler) dataVolumeName(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (string, error) {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, client.ObjectKey{
+		Name:      dn.Name,
+		Namespace: dn.Namespace,
+	}, sts)
+	if err == nil {
+		if len(sts.Spec.VolumeClaimTemplates) == 0 {
+			return "", nil
+		}
+		return sts.Spec.VolumeClaimTemplates[0].Name, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("read statefulset: %w", err)
+	}
+	claims := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(dn.Namespace)); err != nil {
+		return "", fmt.Errorf("list data claims: %w", err)
+	}
+	matched := map[string]bool{}
+	foreign := map[string]string{}
+	for i := range claims.Items {
+		pvc := &claims.Items[i]
+		for _, template := range []string{
+			resources.DefaultDataVolumeName, legacyDataVolumeName,
+		} {
+			if _, ok := claimOrdinal(pvc.Name, template, dn.Name); !ok {
+				continue
+			}
+			if pvc.Labels["cardano_network"] == dn.Spec.Network {
+				matched[template] = true
+			} else if _, seen := foreign[template]; !seen {
+				foreign[template] = pvc.Name
+			}
+		}
+	}
+	selected := resources.DefaultDataVolumeName
+	if !matched[selected] && matched[legacyDataVolumeName] {
+		selected = legacyDataVolumeName
+	}
+	if name, ok := foreign[selected]; ok {
+		return "", fmt.Errorf(
+			"retained claim %s is not labelled cardano_network=%s and would be mounted as this node's data volume",
+			name, dn.Spec.Network,
+		)
+	}
+	if selected == resources.DefaultDataVolumeName && !matched[selected] {
+		return "", nil
+	}
+	return selected, nil
 }

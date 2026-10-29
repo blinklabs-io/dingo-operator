@@ -194,7 +194,7 @@ echo "mithril bootstrap complete"
 	// sync" must be pointed at the mounted config bundle just like the main
 	// container; otherwise it fails to load config.json before bootstrap.
 	mounts := []corev1.VolumeMount{
-		{Name: dataVolumeName, MountPath: dataMountPath},
+		{Name: opts.dataVolume(), MountPath: dataMountPath},
 		{Name: tmpVolumeName, MountPath: "/tmp"},
 	}
 	if dn.Spec.ConfigRef != "" {

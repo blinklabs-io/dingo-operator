@@ -47,6 +47,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -1678,4 +1679,235 @@ func TestCRDRejectsInvalidTracingAndLogging(t *testing.T) {
 		},
 	}
 	require.NoError(t, c.Create(ctx, ok))
+}
+
+func TestReconcileKeepsLegacyDataVolumeName(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	dn := &dingov1alpha1.DingoNode{
+		TypeMeta:   metav1.TypeMeta{APIVersion: dingov1alpha1.GroupVersion.String(), Kind: "DingoNode"},
+		ObjectMeta: metav1.ObjectMeta{Name: "old", Namespace: "old-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+			Image: dingov1alpha1.ImageSpec{
+				Repository: "ghcr.io/blinklabs-io/dingo",
+				Tag:        "0.69.0",
+			},
+		},
+	}
+	existing := resources.BuildStatefulSet(
+		dn,
+		resources.RenderOptions{Replicas: 1, DataVolumeName: "data"},
+	)
+	existing.CreationTimestamp = metav1.Now()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), dn))
+
+	got := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Name: "old", Namespace: "old-ns"}, got))
+	require.Len(t, got.Spec.VolumeClaimTemplates, 1)
+	assert.Equal(t, "data", got.Spec.VolumeClaimTemplates[0].Name)
+	pod := got.Spec.Template.Spec
+	pods := append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...)
+	require.Greater(t, len(pod.InitContainers), 0, "mithril init container expected")
+	for _, c := range pods {
+		assert.Contains(t, c.VolumeMounts,
+			corev1.VolumeMount{Name: "data", MountPath: "/data"}, c.Name)
+		assert.NotContains(t, volumeMountNames(c.VolumeMounts), "dingo-data")
+	}
+}
+
+func volumeMountNames(mounts []corev1.VolumeMount) []string {
+	names := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		names = append(names, m.Name)
+	}
+	return names
+}
+
+func dataNameNode() *dingov1alpha1.DingoNode {
+	return &dingov1alpha1.DingoNode{
+		TypeMeta:   metav1.TypeMeta{APIVersion: dingov1alpha1.GroupVersion.String(), Kind: "DingoNode"},
+		ObjectMeta: metav1.ObjectMeta{Name: "old", Namespace: "old-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+			Image: dingov1alpha1.ImageSpec{
+				Repository: "ghcr.io/blinklabs-io/dingo",
+				Tag:        "0.69.0",
+			},
+		},
+	}
+}
+
+func dataNameClaim(name string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name:      name,
+		Namespace: "old-ns",
+		Labels:    map[string]string{"cardano_network": "preview"},
+	}}
+}
+
+func assertDataVolume(t *testing.T, c client.Client, want string) {
+	t.Helper()
+	got := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Name: "old", Namespace: "old-ns"}, got))
+	require.Len(t, got.Spec.VolumeClaimTemplates, 1)
+	assert.Equal(t, want, got.Spec.VolumeClaimTemplates[0].Name)
+	pod := got.Spec.Template.Spec
+	for _, ctr := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
+		assert.Contains(t, ctr.VolumeMounts,
+			corev1.VolumeMount{Name: want, MountPath: "/data"}, ctr.Name)
+	}
+}
+
+func TestReconcileReusesRetainedDataClaims(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	for _, tc := range []struct {
+		name   string
+		claims []string
+		want   string
+	}{
+		{"none", nil, "dingo-data"},
+		{"legacy", []string{"data-old-0"}, "data"},
+		{"chart", []string{"dingo-data-old-0"}, "dingo-data"},
+		{"both", []string{"data-old-0", "dingo-data-old-0"}, "dingo-data"},
+		{"other node", []string{"data-old-other-0", "data-older-0"}, "dingo-data"},
+		{"malformed ordinal", []string{"data-old-01"}, "dingo-data"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := fake.NewClientBuilder().WithScheme(scheme)
+			for _, name := range tc.claims {
+				b = b.WithObjects(dataNameClaim(name))
+			}
+			c := b.Build()
+			dn := dataNameNode()
+			require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), dn))
+			assertDataVolume(t, c, tc.want)
+		})
+	}
+}
+
+// Kubernetes binds a claim template to an existing PVC by name alone, so a
+// retained claim of another network under the selected name would mount that
+// network's database. Such claims must stop the reconcile, while one under a
+// name the node will not mount must not.
+func TestReconcileRefusesConflictingRetainedDataClaims(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	labelled := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
+		pvc := dataNameClaim(name)
+		pvc.Labels = labels
+		return pvc
+	}
+	mainnet := map[string]string{"cardano_network": "mainnet"}
+	preview := map[string]string{"cardano_network": "preview"}
+	for _, tc := range []struct {
+		name    string
+		claims  []*corev1.PersistentVolumeClaim
+		refused string
+		want    string
+	}{
+		{
+			name:    "default name of another network",
+			claims:  []*corev1.PersistentVolumeClaim{labelled("dingo-data-old-0", mainnet)},
+			refused: "dingo-data-old-0",
+		},
+		{
+			name: "selected name with an ordinal of another network",
+			claims: []*corev1.PersistentVolumeClaim{
+				labelled("dingo-data-old-0", preview),
+				labelled("dingo-data-old-1", mainnet),
+			},
+			refused: "dingo-data-old-1",
+		},
+		{
+			name: "legacy name of another network",
+			claims: []*corev1.PersistentVolumeClaim{
+				labelled("data-old-0", preview),
+				labelled("data-old-1", mainnet),
+			},
+			refused: "data-old-1",
+		},
+		{
+			name:    "unlabelled claim under the default name",
+			claims:  []*corev1.PersistentVolumeClaim{labelled("dingo-data-old-0", nil)},
+			refused: "dingo-data-old-0",
+		},
+		{
+			name:   "unmounted legacy name of another network",
+			claims: []*corev1.PersistentVolumeClaim{labelled("data-old-0", mainnet)},
+			want:   "dingo-data",
+		},
+		{
+			name: "unmounted default name of another network",
+			claims: []*corev1.PersistentVolumeClaim{
+				labelled("data-old-0", preview),
+				labelled("dingo-data-old-0", mainnet),
+			},
+			want: "data",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := fake.NewClientBuilder().WithScheme(scheme)
+			for _, pvc := range tc.claims {
+				b = b.WithObjects(pvc)
+			}
+			c := b.Build()
+			err := reconcilerFor(c).reconcileResources(context.Background(), dataNameNode())
+			if tc.refused == "" {
+				require.NoError(t, err)
+				assertDataVolume(t, c, tc.want)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.refused)
+			sts := &appsv1.StatefulSet{}
+			assert.True(t, apierrors.IsNotFound(c.Get(context.Background(),
+				types.NamespacedName{Name: "old", Namespace: "old-ns"}, sts)))
+		})
+	}
+}
+
+// The data volume must come from the StatefulSet CreateOrUpdate itself read, so
+// a stale earlier read cannot render a mount for a claim template it lacks.
+func TestUpsertStatefulSetUsesFetchedClaimTemplate(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	dn := dataNameNode()
+	existing := resources.BuildStatefulSet(
+		dn,
+		resources.RenderOptions{Replicas: 1, DataVolumeName: "data"},
+	)
+	existing.CreationTimestamp = metav1.Now()
+	stsGets := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*appsv1.StatefulSet); ok {
+					stsGets++
+					if stsGets == 1 {
+						return apierrors.NewNotFound(appsv1.Resource("statefulsets"), key.Name)
+					}
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), dn))
+	assertDataVolume(t, c, "data")
 }

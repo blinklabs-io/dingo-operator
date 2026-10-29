@@ -286,6 +286,13 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if hasTopo {
 		opts.TopologyChecksum = checksum(topoJSON)
 	}
+	// Claim templates are immutable: a new StatefulSet takes the name of
+	// retained claims; upsertStatefulSet keeps an existing one's name.
+	dataName, err := r.dataVolumeName(ctx, dn)
+	if err != nil {
+		return err
+	}
+	opts.DataVolumeName = dataName
 	// Set when the keys Secret is rejected or missing: the live pod template is
 	// kept.
 	keepTemplate := false

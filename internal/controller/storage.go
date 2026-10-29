@@ -32,7 +32,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const condStorageReady = "StorageReady"
+const (
+	condStorageReady = "StorageReady"
+	// legacyDataVolumeName is the data claim template name of StatefulSets
+	// created before the default became resources.DefaultDataVolumeName.
+	legacyDataVolumeName = "data"
+)
+
+// claimOrdinal returns the ordinal of a StatefulSet claim named
+// <template>-<node>-<ordinal>, rejecting other nodes and non-canonical ordinals.
+func claimOrdinal(name, template, node string) (int64, bool) {
+	suffix, ok := strings.CutPrefix(name, template+"-"+node+"-")
+	if !ok {
+		return 0, false
+	}
+	ordinal, err := strconv.ParseInt(suffix, 10, 32)
+	if err != nil || ordinal < 0 || strconv.FormatInt(ordinal, 10) != suffix {
+		return 0, false
+	}
+	return ordinal, true
+}
 
 func (r *DingoNodeReconciler) reconcileStorage(
 	ctx context.Context, dn *dingov1alpha1.DingoNode,
@@ -56,21 +75,21 @@ func (r *DingoNodeReconciler) reconcileStorage(
 	}
 	// Claim templates are immutable. Resize the claims instead, including retained
 	// ordinals while scaled down, without adopting them into DingoNode garbage collection.
-	template := resources.BuildStatefulSet(dn, resources.RenderOptions{}).
-		Spec.VolumeClaimTemplates[0]
+	dataName, err := r.dataVolumeName(ctx, dn)
+	if err != nil {
+		return fail(err)
+	}
+	template := resources.BuildStatefulSet(
+		dn,
+		resources.RenderOptions{DataVolumeName: dataName},
+	).Spec.VolumeClaimTemplates[0]
 	size := template.Spec.Resources.Requests[corev1.ResourceStorage]
-	prefix := template.Name + "-" + dn.Name + "-"
 	activeClaims := int64(0)
 	replicas := int64(desiredReplicas(dn))
 	for i := range claims.Items {
 		pvc := &claims.Items[i]
-		suffix, ok := strings.CutPrefix(pvc.Name, prefix)
+		ordinal, ok := claimOrdinal(pvc.Name, template.Name, dn.Name)
 		if !ok {
-			continue
-		}
-		ordinal, err := strconv.ParseInt(suffix, 10, 32)
-		if err != nil || ordinal < 0 ||
-			strconv.FormatInt(ordinal, 10) != suffix {
 			continue
 		}
 		if ordinal < replicas {

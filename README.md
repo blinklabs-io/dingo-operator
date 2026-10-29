@@ -195,6 +195,19 @@ Inspect the condition and PVC events when expansion is refused. Unsupported
 StorageClasses are not replaced. Decreasing the spec never shrinks existing
 volumes; reducing capacity requires a separate data migration.
 
+New StatefulSets name their data claim template `dingo-data`, so claims are
+`dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
+after the chart's StatefulSet adopts its existing claims once that StatefulSet
+is removed; the chart names it after the release when the release name contains
+`dingo`, and `<release>-dingo` otherwise. Claim templates are immutable, so a
+StatefulSet created by an earlier operator version keeps its `data` template and
+`data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
+node whose retained claims exist, it uses their template name, preferring
+`dingo-data` when both are present. Only claims labelled with the node's
+`cardano_network` count. Kubernetes reuses a claim by name alone, so the
+operator refuses to create the StatefulSet while a claim under the template name
+it would use belongs to another network or has no network label.
+
 Claims are retained when replicas scale down or a DingoNode is deleted. Retained
 ordinals are included in later size reconciliations. PVCs do not acquire a
 DingoNode owner reference, so deleting a node does not garbage-collect its chain
