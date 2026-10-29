@@ -23,6 +23,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// PDBEnabled reports whether a block producer gets its PodDisruptionBudget.
+// It is on unless spec.blockProducer.podDisruptionBudget.enabled is false.
+func PDBEnabled(dn *dingov1alpha1.DingoNode) bool {
+	bp := dn.Spec.BlockProducer
+	if bp == nil || bp.PodDisruptionBudget.Enabled == nil {
+		return true
+	}
+	return *bp.PodDisruptionBudget.Enabled
+}
+
 // BuildPodDisruptionBudget keeps at least one node available during voluntary
 // disruptions. For a single-active block producer this blocks voluntary evicts
 // that would leave zero forgers.

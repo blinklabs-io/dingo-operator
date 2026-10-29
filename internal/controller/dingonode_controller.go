@@ -419,8 +419,12 @@ func (r *DingoNodeReconciler) reconcileResources(
 		return fmt.Errorf("apply statefulset: %w", err)
 	}
 	if resources.IsBlockProducer(dn) {
-		if err := r.upsertPDB(ctx, dn); err != nil {
-			return fmt.Errorf("apply poddisruptionbudget: %w", err)
+		if resources.PDBEnabled(dn) {
+			if err := r.upsertPDB(ctx, dn); err != nil {
+				return fmt.Errorf("apply poddisruptionbudget: %w", err)
+			}
+		} else if err := r.deletePDB(ctx, dn); err != nil {
+			return fmt.Errorf("delete poddisruptionbudget: %w", err)
 		}
 	}
 	if err := r.upsertNetworkPolicy(ctx, dn); err != nil {

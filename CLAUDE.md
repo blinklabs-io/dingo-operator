@@ -480,7 +480,9 @@ operator `update` on Secrets in the keys namespaces, on top of `get`.
 ### HA
 
 - `SingleActive` (default): `replicas: 1` + pod anti-affinity + PDB +
-  NetworkPolicy → exactly one forger; rely on reschedule.
+  NetworkPolicy → exactly one forger; rely on reschedule. With one replica the
+  PDB blocks every voluntary eviction, so a drain never completes;
+  `spec.blockProducer.podDisruptionBudget.enabled: false` removes it.
 - `ActiveStandby`: keyless hot standby; the operator holds a Lease and only the
   holder is keyed. Promotion is fenced (old primary confirmed down/keyless)
   so two nodes can never forge. `failover: Automatic | Manual` (default

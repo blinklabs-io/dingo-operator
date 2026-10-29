@@ -68,7 +68,11 @@ operators.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
 - **Safe HA** — `SingleActive` (default) or `ActiveStandby` with fenced,
-  lease-based promotion so exactly one node ever forges.
+  lease-based promotion so exactly one node ever forges. A block producer gets
+  a PodDisruptionBudget that keeps its one pod available, so `kubectl drain` of
+  its node does not complete. Set
+  `spec.blockProducer.podDisruptionBudget.enabled: false` to let a drain evict
+  it; the operator then deletes the budget.
 - **Secure by default** — non-root, read-only root filesystem with writable
   `/tmp` and `/ipc` volumes, dropped capabilities, no privilege escalation,
   RuntimeDefault seccomp, no node service-account token, least-privilege RBAC,
