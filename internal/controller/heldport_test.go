@@ -19,17 +19,23 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func relayServicePort(
@@ -209,4 +215,56 @@ func TestHeldTemplateKeepsLiveRelayPort(t *testing.T) {
 	assert.Equal(t, int32(4001), topologyPortFor(
 		t, ctx, c, "rl", ns, "bp-headless.held-port-ns.svc.cluster.local",
 	))
+}
+
+// A peer's relay port is resolved from its live StatefulSet. A failed read
+// must fail the reconcile rather than fall back to the spec port, which a held
+// template does not serve; only an absent StatefulSet means the spec port.
+func TestRelayRefPortsPropagatesStatefulSetReadError(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	const ns = "held-port-ns"
+	bp := blockProducerNode("bp", ns, "pool-keys", "pool")
+	bp.Spec.RelayService.Port = 4001
+	rl := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "rl", Namespace: ns},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:     dingov1alpha1.RoleRelay,
+			Network:  "preview",
+			Topology: dingov1alpha1.TopologySpec{RelayRefs: []string{"bp"}},
+		},
+	}
+	sentinel := errors.New("statefulset read failed")
+	stsGetErr := func(
+		ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+		obj client.Object, opts ...client.GetOption,
+	) error {
+		if _, ok := obj.(*appsv1.StatefulSet); ok {
+			return sentinel
+		}
+		return cl.Get(ctx, key, obj, opts...)
+	}
+
+	t.Run("read error", func(t *testing.T) {
+		t.Parallel()
+		c := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(bp.DeepCopy(), rl.DeepCopy()).
+			WithInterceptorFuncs(interceptor.Funcs{Get: stsGetErr}).
+			Build()
+		ports, err := reconcilerFor(c).relayRefPorts(context.Background(), rl)
+		require.ErrorIs(t, err, sentinel)
+		assert.Nil(t, ports)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		t.Parallel()
+		c := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(bp.DeepCopy(), rl.DeepCopy()).
+			Build()
+		ports, err := reconcilerFor(c).relayRefPorts(context.Background(), rl)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]int32{"bp": 4001}, ports)
+	})
 }

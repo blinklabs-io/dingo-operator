@@ -279,31 +279,40 @@ func (r *DingoNodeReconciler) relayRefPorts(
 			}
 			return nil, fmt.Errorf("get relayRef %q: %w", ref, err)
 		}
-		ports[ref] = r.servedRelayPort(ctx, peer)
+		port, err := r.servedRelayPort(ctx, peer)
+		if err != nil {
+			return nil, fmt.Errorf("relayRef %q: %w", ref, err)
+		}
+		ports[ref] = port
 	}
 	return ports, nil
 }
 
 // servedRelayPort returns the relay port the node's pods listen on. It is the
 // spec port except for a block producer whose pod template is held, where the
-// live template still carries the previous port.
+// live template still carries the previous port. A failed read is returned
+// rather than answered with the spec port, which a held template does not
+// serve; only an absent StatefulSet means the spec port.
 func (r *DingoNodeReconciler) servedRelayPort(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) int32 {
+) (int32, error) {
 	port := resources.RelayPort(dn)
 	if !resources.IsBlockProducer(dn) {
-		return port
+		return port, nil
 	}
 	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
 	if err := r.Get(ctx, key, sts); err != nil {
-		return port
+		if apierrors.IsNotFound(err) {
+			return port, nil
+		}
+		return 0, fmt.Errorf("read statefulset %q: %w", dn.Name, err)
 	}
 	if live, ok := resources.TemplateRelayPort(sts.Spec.Template); ok {
-		return live
+		return live, nil
 	}
-	return port
+	return port, nil
 }
 
 // reconcileResources applies all child objects for the node.
@@ -424,7 +433,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// the pod cannot yet serve.
 	served := dn
 	if keepTemplate {
-		if port := r.servedRelayPort(ctx, dn); port != resources.RelayPort(dn) {
+		port, err := r.servedRelayPort(ctx, dn)
+		if err != nil {
+			return err
+		}
+		if port != resources.RelayPort(dn) {
 			// A shallow copy suffices: the builders only read the spec.
 			shallow := *dn
 			shallow.Spec.RelayService.Port = port
