@@ -49,7 +49,8 @@ operators.
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
   Prometheus endpoint, including blockfetch delay and fetch duration, ledger
   block-apply batch latency, and the KES/opcert metrics used for status and
-  rotation monitoring.
+  rotation monitoring. Series carry the pod's `cardano_network`,
+  `cardano_service` and `spec.podLabels` labels, and `instance` is the pod name.
 - **Tracing and logging** — `spec.tracing` exports OpenTelemetry spans over
   OTLP/HTTP (endpoint, service name defaulting to the node name, sample ratio)
   and needs a Dingo image of v0.82.0 or later, which the operator checks before
@@ -281,7 +282,8 @@ ClusterIP endpoint while migrating existing clients to the tiered Services.
 
 `spec.podLabels` adds labels to the pod template only (not to selectors,
 Services or other objects), for example the alias, azs and group labels a
-PodMonitor reads from a node moved from the dingo Helm chart. Keys under
+PodMonitor reads from a node moved from the dingo Helm chart. The managed
+PodMonitor copies them onto the node's metrics. Keys under
 `app.kubernetes.io/` and `dingo.blinklabs.io/`, and `cardano_network` and
 `cardano_service`, belong to the operator and are rejected.
 

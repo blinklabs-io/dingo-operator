@@ -15,6 +15,9 @@
 package resources
 
 import (
+	"maps"
+	"slices"
+
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -52,15 +55,35 @@ func BuildPodMonitor(dn *dingov1alpha1.DingoNode) *unstructured.Unstructured {
 		},
 		// Required for Prometheus >= v3.0.0 with Dingo's text exposition format.
 		"fallbackScrapeProtocol": "PrometheusText0.0.4",
+		"podTargetLabels":        podTargetLabels(dn),
 		"podMetricsEndpoints": []any{
 			map[string]any{
 				"port":     "metrics",
 				"path":     metricsPath,
 				"interval": interval,
+				// Name the series by pod rather than by pod IP and port,
+				// which change when the pod is recreated.
+				"relabelings": []any{
+					map[string]any{
+						"sourceLabels": []any{"__meta_kubernetes_pod_name"},
+						"targetLabel":  "instance",
+					},
+				},
 			},
 		},
 	}
 	return pm
+}
+
+// podTargetLabels lists the pod labels copied onto every scraped series: the
+// network and service labels, then the spec.podLabels keys in sorted order.
+func podTargetLabels(dn *dingov1alpha1.DingoNode) []any {
+	out := make([]any, 0, 2+len(dn.Spec.PodLabels))
+	out = append(out, "cardano_network", "cardano_service")
+	for _, k := range slices.Sorted(maps.Keys(dn.Spec.PodLabels)) {
+		out = append(out, k)
+	}
+	return out
 }
 
 func toInterfaceMap(in map[string]string) map[string]any {
