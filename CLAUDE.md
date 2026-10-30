@@ -314,8 +314,10 @@ the pod onto it":
     An eviction, drain, reschedule, or `kubectl delete pod` stages the
     Secret's current contents, and Dingo's startup validation turns a rejected
     bundle into a CrashLoop. Spec edits and operator upgrades are held back
-    until the Secret validates. Fix the Secret; do not leave a refused bundle
-    sitting in it.
+    until the Secret validates; while one is held, the `KeysValid` and
+    `Degraded` messages end with "pod template update held until the keys
+    Secret validates". Fix the Secret; do not leave a refused bundle sitting
+    in it.
 - On a missing keys Secret: `KeysValid=False`/`KeysSecretMissing`,
   `Degraded=True` and a Warning Event. On an existing StatefulSet the live pod
   template and its checksum are kept, as on rejection, so the operator does not

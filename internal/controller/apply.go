@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,6 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // createOrUpdateWithRetry runs controllerutil.CreateOrUpdate, retrying on
@@ -145,16 +147,19 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 // template of an existing StatefulSet as it is live: set while the keys Secret
 // is rejected or missing, so no template change, including one from an operator
 // upgrade, rolls the pod onto the rejected Secret or onto one that cannot start.
+// It reports whether a template change was withheld.
 func (r *DingoNodeReconciler) upsertStatefulSet(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 	opts resources.RenderOptions,
 	keepTemplate bool,
-) error {
+) (bool, error) {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: objectMeta(dn.Name, dn.Namespace),
 	}
+	var withheld *corev1.PodTemplateSpec
 	err := createOrUpdateWithRetry(ctx, r.Client, sts, func() error {
+		withheld = nil
 		renderOpts := opts
 		// Claim templates are immutable. Mount the data volume under the
 		// template name of the StatefulSet this update is based on, so an
@@ -162,6 +167,12 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		if !sts.CreationTimestamp.IsZero() &&
 			len(sts.Spec.VolumeClaimTemplates) > 0 {
 			renderOpts.DataVolumeName = sts.Spec.VolumeClaimTemplates[0].Name
+		}
+		// A held template is compared with the render, not applied. Carry the
+		// live vote key state, as the keys checksum is, so the refused or
+		// missing Secret alone does not count as a template change.
+		if keepTemplate && !sts.CreationTimestamp.IsZero() {
+			renderOpts.MountVoteKey = setsVoteKey(sts.Spec.Template)
 		}
 		desired := resources.BuildStatefulSet(dn, renderOpts)
 		sts.Labels = desired.Labels
@@ -172,7 +183,9 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
 			sts.Spec.Replicas = desired.Spec.Replicas
-			if !keepTemplate {
+			if keepTemplate {
+				withheld = &desired.Spec.Template
+			} else {
 				sts.Spec.Template = desired.Spec.Template
 			}
 			sts.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
@@ -182,7 +195,38 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		}
 		return ctrl.SetControllerReference(dn, sts, r.Scheme)
 	})
-	return err
+	if err != nil || withheld == nil {
+		return false, err
+	}
+	// The live template carries server-side defaults the render lacks, so
+	// compare against the render as the API server would store it.
+	probe := sts.DeepCopy()
+	probe.Spec.Template = *withheld
+	if err := r.Update(ctx, probe, client.DryRunAll); err != nil {
+		// A failed comparison cannot show that nothing is held, so report the
+		// update as held.
+		log.FromContext(ctx).Info(
+			"unable to compare withheld pod template",
+			"error", err.Error(),
+		)
+		return true, nil
+	}
+	return !equality.Semantic.DeepEqual(
+		probe.Spec.Template,
+		sts.Spec.Template,
+	), nil
+}
+
+// setsVoteKey reports whether a pod template sets the vote key variable.
+func setsVoteKey(tmpl corev1.PodTemplateSpec) bool {
+	for _, c := range tmpl.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == resources.VoteKeyEnv {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *DingoNodeReconciler) upsertPDB(

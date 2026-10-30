@@ -61,6 +61,11 @@ const (
 	condPipelineHealthy = "LedgerPipelineHealthy"
 
 	metricsPort = 12798
+
+	// templateHeldMessage is appended to the KeysValid and Degraded messages
+	// while a pod template change is withheld because the keys are refused or
+	// missing.
+	templateHeldMessage = "pod template update held until the keys Secret validates"
 )
 
 // DingoNodeReconciler reconciles a DingoNode object.
@@ -415,8 +420,16 @@ func (r *DingoNodeReconciler) reconcileResources(
 			return fmt.Errorf("apply topology configmap: %w", err)
 		}
 	}
-	if err := r.upsertStatefulSet(ctx, dn, opts, keepTemplate); err != nil {
+	held, err := r.upsertStatefulSet(ctx, dn, opts, keepTemplate)
+	if err != nil {
 		return fmt.Errorf("apply statefulset: %w", err)
+	}
+	if held {
+		for _, t := range []string{condKeysValid, condDegraded} {
+			if c := meta.FindStatusCondition(dn.Status.Conditions, t); c != nil {
+				c.Message += "; " + templateHeldMessage
+			}
+		}
 	}
 	if resources.IsBlockProducer(dn) {
 		if err := r.upsertPDB(ctx, dn); err != nil {
