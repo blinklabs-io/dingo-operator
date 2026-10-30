@@ -113,6 +113,34 @@ func RelayPort(dn *dingov1alpha1.DingoNode) int32 {
 	return portRelay
 }
 
+// TemplateRelayPort returns the node-to-node port a pod template makes the node
+// listen on: the node container's port named "relay", else its CARDANO_PORT,
+// else the default. The second result is false when the template has no node
+// container.
+func TemplateRelayPort(tmpl corev1.PodTemplateSpec) (int32, bool) {
+	for _, c := range tmpl.Spec.Containers {
+		if c.Name != containerName {
+			continue
+		}
+		for _, p := range c.Ports {
+			if p.Name == "relay" && p.ContainerPort > 0 {
+				return p.ContainerPort, true
+			}
+		}
+		for _, e := range c.Env {
+			if e.Name != "CARDANO_PORT" {
+				continue
+			}
+			if n, err := strconv.ParseInt(e.Value, 10, 32); err == nil &&
+				n > 0 {
+				return int32(n), true
+			}
+		}
+		return portRelay, true
+	}
+	return 0, false
+}
+
 // podLabels returns the pod template labels: spec.podLabels under the
 // operator's own labels, which always win.
 func podLabels(dn *dingov1alpha1.DingoNode) map[string]string {

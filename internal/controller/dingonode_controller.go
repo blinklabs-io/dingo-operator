@@ -279,9 +279,31 @@ func (r *DingoNodeReconciler) relayRefPorts(
 			}
 			return nil, fmt.Errorf("get relayRef %q: %w", ref, err)
 		}
-		ports[ref] = resources.RelayPort(peer)
+		ports[ref] = r.servedRelayPort(ctx, peer)
 	}
 	return ports, nil
+}
+
+// servedRelayPort returns the relay port the node's pods listen on. It is the
+// spec port except for a block producer whose pod template is held, where the
+// live template still carries the previous port.
+func (r *DingoNodeReconciler) servedRelayPort(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) int32 {
+	port := resources.RelayPort(dn)
+	if !resources.IsBlockProducer(dn) {
+		return port
+	}
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, sts); err != nil {
+		return port
+	}
+	if live, ok := resources.TemplateRelayPort(sts.Spec.Template); ok {
+		return live
+	}
+	return port
 }
 
 // reconcileResources applies all child objects for the node.
@@ -397,22 +419,35 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 	}
 
+	// Services and the policy follow the port the live pod listens on: while
+	// the template is held, a spec port change would otherwise cut off traffic
+	// the pod cannot yet serve.
+	served := dn
+	if keepTemplate {
+		if port := r.servedRelayPort(ctx, dn); port != resources.RelayPort(dn) {
+			// A shallow copy suffices: the builders only read the spec.
+			shallow := *dn
+			shallow.Spec.RelayService.Port = port
+			served = &shallow
+		}
+	}
+
 	if err := r.upsertServiceAccount(ctx, dn); err != nil {
 		return fmt.Errorf("apply serviceaccount: %w", err)
 	}
-	if err := r.upsertService(ctx, dn, resources.BuildHeadlessService(dn)); err != nil {
+	if err := r.upsertService(ctx, dn, resources.BuildHeadlessService(served)); err != nil {
 		return fmt.Errorf("apply headless service: %w", err)
 	}
 	for _, svc := range []*corev1.Service{
-		resources.BuildRelayService(dn),
-		resources.BuildPrivateService(dn),
-		resources.BuildMetricsService(dn),
+		resources.BuildRelayService(served),
+		resources.BuildPrivateService(served),
+		resources.BuildMetricsService(served),
 	} {
 		if err := r.upsertService(ctx, dn, svc); err != nil {
 			return fmt.Errorf("apply Service %s: %w", svc.Name, err)
 		}
 	}
-	if err := r.upsertService(ctx, dn, resources.BuildClientService(dn)); err != nil {
+	if err := r.upsertService(ctx, dn, resources.BuildClientService(served)); err != nil {
 		return fmt.Errorf("apply service: %w", err)
 	}
 	if hasTopo {
@@ -440,7 +475,9 @@ func (r *DingoNodeReconciler) reconcileResources(
 			return fmt.Errorf("delete poddisruptionbudget: %w", err)
 		}
 	}
-	if err := r.upsertNetworkPolicy(ctx, dn); err != nil {
+	if err := r.upsertNetworkPolicy(
+		ctx, dn, resources.BuildNetworkPolicy(served),
+	); err != nil {
 		return fmt.Errorf("apply networkpolicy: %w", err)
 	}
 
