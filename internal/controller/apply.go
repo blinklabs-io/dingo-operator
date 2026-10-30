@@ -250,6 +250,23 @@ func (r *DingoNodeReconciler) upsertPDB(
 	return err
 }
 
+// deletePDB removes the block producer's PodDisruptionBudget once it is
+// disabled. Only a budget this node controls is deleted.
+func (r *DingoNodeReconciler) deletePDB(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) error {
+	pdb := &policyv1.PodDisruptionBudget{}
+	key := client.ObjectKey{Name: dn.Name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, pdb); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(pdb, dn) {
+		return nil
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, pdb))
+}
+
 func (r *DingoNodeReconciler) upsertNetworkPolicy(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,

@@ -1254,6 +1254,20 @@ spec:
                           counter (status.opcert.onDiskCounter).
                         type: boolean
                     type: object
+                  podDisruptionBudget:
+                    description: |-
+                      PodDisruptionBudgetSpec controls the block producer's PodDisruptionBudget.
+
+                      The budget keeps one pod available. A block producer runs one replica, so
+                      while it exists no voluntary eviction succeeds and `kubectl drain` of the
+                      pod's node does not complete. That is the point: a drain must not stop the
+                      only forger unnoticed. Disabling it lets a drain evict the pod; the operator
+                      then deletes the budget it created.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                    type: object
                   poolId:
                     description: PoolID (bech32 or hex) is optional and cross-checked
                       against the keys.

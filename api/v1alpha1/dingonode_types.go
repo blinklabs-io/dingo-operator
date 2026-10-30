@@ -352,6 +352,21 @@ type BlockProducerSpec struct {
 	// operator can read the authoritative on-chain opcert counter.
 	// +optional
 	NodeToClient NodeToClientSpec `json:"nodeToClient,omitempty"`
+	// +optional
+	PodDisruptionBudget PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+}
+
+// PodDisruptionBudgetSpec controls the block producer's PodDisruptionBudget.
+//
+// The budget keeps one pod available. A block producer runs one replica, so
+// while it exists no voluntary eviction succeeds and `kubectl drain` of the
+// pod's node does not complete. That is the point: a drain must not stop the
+// only forger unnoticed. Disabling it lets a drain evict the pod; the operator
+// then deletes the budget it created.
+type PodDisruptionBudgetSpec struct {
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // PodMonitorSpec configures Prometheus Operator scraping.
