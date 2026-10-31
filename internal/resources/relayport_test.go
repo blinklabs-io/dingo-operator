@@ -184,3 +184,55 @@ func TestValidateRelayPort(t *testing.T) {
 		})
 	}
 }
+
+func TestTemplateRelayPort(t *testing.T) {
+	t.Parallel()
+	node := func(c corev1.Container) corev1.PodTemplateSpec {
+		return corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{c}},
+		}
+	}
+	tests := []struct {
+		name string
+		tmpl corev1.PodTemplateSpec
+		port int32
+		ok   bool
+	}{
+		{
+			name: "named container port",
+			tmpl: node(corev1.Container{
+				Name: containerName,
+				Ports: []corev1.ContainerPort{
+					{Name: "metrics", ContainerPort: 12798},
+					{Name: "relay", ContainerPort: 4001},
+				},
+			}),
+			port: 4001, ok: true,
+		},
+		{
+			name: "CARDANO_PORT without a named port",
+			tmpl: node(corev1.Container{
+				Name: containerName,
+				Env:  []corev1.EnvVar{{Name: "CARDANO_PORT", Value: "4002"}},
+			}),
+			port: 4002, ok: true,
+		},
+		{
+			name: "default when neither is set",
+			tmpl: node(corev1.Container{Name: containerName}),
+			port: portRelay, ok: true,
+		},
+		{
+			name: "no node container",
+			tmpl: node(corev1.Container{Name: "sidecar"}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			port, ok := TemplateRelayPort(tt.tmpl)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.port, port)
+		})
+	}
+}

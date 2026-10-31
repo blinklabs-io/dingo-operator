@@ -270,8 +270,8 @@ func (r *DingoNodeReconciler) deletePDB(
 func (r *DingoNodeReconciler) upsertNetworkPolicy(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	desired *networkingv1.NetworkPolicy,
 ) error {
-	desired := resources.BuildNetworkPolicy(dn)
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
