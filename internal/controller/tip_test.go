@@ -78,7 +78,7 @@ func TestTipNotAdvancingBeyondThreshold(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "TipNotAdvancing", cond.Reason)
 	assert.Contains(t, cond.Message, "1000")
-	assert.Contains(t, cond.Message, "11m0s")
+	assert.Contains(t, cond.Message, "2026-10-30T12:00:00Z")
 	assert.True(t, meta.IsStatusConditionTrue(dn.Status.Conditions, condDegraded))
 	assert.Equal(t, int64(1000), dn.Status.Tip.Slot)
 
@@ -286,4 +286,82 @@ func (f *seqTipFetcher) Fetch(
 	url string,
 ) (*forgestatus.Status, error) {
 	return f.next(url), nil
+}
+
+// Status is written on every reconcile and a DingoNode status change triggers
+// another reconcile, so a pass that observes nothing new must leave status
+// byte-identical, both while following and while stalled.
+func TestTipStatusStableWhenSlotUnchanged(t *testing.T) {
+	t.Parallel()
+	for name, start := range map[string]time.Duration{
+		"following": 0,
+		"stalled":   tipThreshold + time.Minute,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+			dn := relayNodeForStatus("relay", "ns")
+			r, _ := newTipReconciler(tipStatus(1000), clock)
+			r.refreshForgeStatus(context.Background(), dn)
+			clock.now = clock.now.Add(start)
+			r.refreshForgeStatus(context.Background(), dn)
+			before := dn.Status.DeepCopy()
+
+			clock.now = clock.now.Add(2 * time.Minute)
+			r.refreshForgeStatus(context.Background(), dn)
+
+			assert.Equal(t, before, &dn.Status)
+		})
+	}
+}
+
+// Every pass that does not observe the tip forgets the last progress time, so
+// a node is never judged by progress recorded before a gap in observation.
+func TestTipUnobservedPassRestartsTheClock(t *testing.T) {
+	t.Parallel()
+	for name, unobserve := range map[string]func(*DingoNodeReconciler){
+		"no fetcher": func(r *DingoNodeReconciler) { r.ForgeStatus = nil },
+		"gauge missing": func(r *DingoNodeReconciler) {
+			st := tipStatus(1000)
+			st.HasTipSlot = false
+			r.ForgeStatus = &statusFetcher{st: st}
+		},
+		"check disabled": func(r *DingoNodeReconciler) { r.TipStallThreshold = 0 },
+		"slot zero": func(r *DingoNodeReconciler) {
+			r.ForgeStatus = &statusFetcher{st: tipStatus(0)}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+			dn := relayNodeForStatus("relay", "ns")
+			r, _ := newTipReconciler(tipStatus(1000), clock)
+			r.refreshForgeStatus(context.Background(), dn)
+
+			u, _ := newTipReconciler(tipStatus(1000), clock)
+			unobserve(u)
+			clock.now = clock.now.Add(time.Hour)
+			u.refreshForgeStatus(context.Background(), dn)
+			assert.Nil(t, dn.Status.Tip.LastProgressAt)
+
+			clock.now = clock.now.Add(time.Minute)
+			r.refreshForgeStatus(context.Background(), dn)
+			assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
+		})
+	}
+}
+
+// Dingo serves metrics before it loads its tip, so the gauge reads 0 while a
+// restarted node opens its database. Slot 0 is not an observation.
+func TestTipSlotZeroIsNotAStall(t *testing.T) {
+	t.Parallel()
+	clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+	dn := relayNodeForStatus("relay", "ns")
+	r, _ := newTipReconciler(tipStatus(0), clock)
+
+	r.refreshForgeStatus(context.Background(), dn)
+	clock.now = clock.now.Add(time.Hour)
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
 }

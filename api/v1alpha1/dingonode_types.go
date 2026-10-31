@@ -671,14 +671,13 @@ type OpCertStatus struct {
 
 // TipStatus records the node's last observed tip slot and when it last
 // changed. It is persisted so an operator restart does not forget how long the
-// tip has been frozen.
+// tip has been frozen. It is cleared whenever a reconcile cannot observe the
+// tip, and changes only when the slot does, so a steady node causes no status
+// writes.
 type TipStatus struct {
 	// Slot is the tip slot reported by the node on the last observation. With
 	// several replicas it is the lowest slot across them.
 	Slot int64 `json:"slot,omitempty"`
-	// ObservedAt is when Slot was last read from the node.
-	// +optional
-	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
 	// LastProgressAt is when Slot last changed.
 	// +optional
 	LastProgressAt *metav1.Time `json:"lastProgressAt,omitempty"`

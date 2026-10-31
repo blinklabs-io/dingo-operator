@@ -671,6 +671,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		return
 	}
 	if r.ForgeStatus == nil {
+		dn.Status.Tip = dingov1alpha1.TipStatus{}
 		setPipelineUnknown(
 			dn,
 			"MetricsUnavailable",
@@ -720,7 +721,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	if scrapeFailed || len(statuses) != int(desiredReplicas(dn)) {
 		// The node was not watched, so the persisted last-progress time says
 		// nothing about what it does once reachable again.
-		dn.Status.Tip.ObservedAt = nil
+		dn.Status.Tip = dingov1alpha1.TipStatus{}
 		setPipelineUnknown(
 			dn,
 			"MetricsUnavailable",
@@ -832,7 +833,7 @@ func setPipelineUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
 // tipStall describes a tip slot frozen beyond the threshold.
 type tipStall struct {
 	slot      int64
-	frozenFor time.Duration
+	since     time.Time
 	threshold time.Duration
 }
 
@@ -847,31 +848,34 @@ func (r *DingoNodeReconciler) now() time.Time {
 //
 // Only a change of slot counts as progress, in either direction, so a rollback
 // or a restart from an older tip is not mistaken for a freeze. State lives in
-// status, so an operator restart keeps the frozen duration. When the previous
-// observation was invalidated (scrape failure), the clock restarts: a node that
-// was unreachable must not be judged by progress recorded before the outage.
+// status, so an operator restart keeps the frozen duration. Any pass that does
+// not observe the tip clears it, so the clock restarts: a node that was
+// unreachable, or whose gauge was missing, must not be judged by progress
+// recorded before the gap. Slot 0 is not an observation: Dingo serves metrics
+// before it has loaded its tip, and the gauge reads 0 until then.
+//
+// Status is written on every reconcile and a status change triggers another
+// reconcile, so nothing here may change while the slot does not.
 func (r *DingoNodeReconciler) observeTip(
 	dn *dingov1alpha1.DingoNode,
 	st *forgestatus.Status,
 ) *tipStall {
-	if r.TipStallThreshold <= 0 || !st.HasTipSlot {
+	tip := &dn.Status.Tip
+	if r.TipStallThreshold <= 0 || !st.HasTipSlot || st.TipSlot <= 0 {
+		*tip = dingov1alpha1.TipStatus{}
 		return nil
 	}
-	now := metav1.NewTime(r.now())
-	tip := &dn.Status.Tip
-	if tip.ObservedAt == nil || tip.LastProgressAt == nil ||
-		tip.Slot != st.TipSlot {
-		tip.LastProgressAt = &now
+	now := r.now()
+	if tip.LastProgressAt == nil || tip.Slot != st.TipSlot {
+		tip.LastProgressAt = &metav1.Time{Time: now}
 	}
 	tip.Slot = st.TipSlot
-	tip.ObservedAt = &now
-	frozen := now.Sub(tip.LastProgressAt.Time)
-	if frozen <= r.TipStallThreshold {
+	if now.Sub(tip.LastProgressAt.Time) <= r.TipStallThreshold {
 		return nil
 	}
 	return &tipStall{
 		slot:      tip.Slot,
-		frozenFor: frozen.Round(time.Second),
+		since:     tip.LastProgressAt.Time,
 		threshold: r.TipStallThreshold,
 	}
 }
@@ -916,8 +920,8 @@ func setPipelineCondition(
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = reasonTipNotAdvancing
 		cond.Message = fmt.Sprintf(
-			"tip slot %d has not advanced for %s (threshold %s)",
-			stall.slot, stall.frozenFor, stall.threshold,
+			"tip slot %d has not advanced since %s (threshold %s)",
+			stall.slot, stall.since.UTC().Format(time.RFC3339), stall.threshold,
 		)
 	}
 	if cond.Status == metav1.ConditionFalse {

@@ -2219,10 +2219,6 @@ spec:
                     description: LastProgressAt is when Slot last changed.
                     format: date-time
                     type: string
-                  observedAt:
-                    description: ObservedAt is when Slot was last read from the node.
-                    format: date-time
-                    type: string
                   slot:
                     description: |-
                       Slot is the tip slot reported by the node on the last observation. With
