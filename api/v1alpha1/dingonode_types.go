@@ -669,6 +669,21 @@ type OpCertStatus struct {
 	LastRotated *metav1.Time `json:"lastRotated,omitempty"`
 }
 
+// TipStatus records the node's last observed tip slot and when it last
+// changed. It is persisted so an operator restart does not forget how long the
+// tip has been frozen.
+type TipStatus struct {
+	// Slot is the tip slot reported by the node on the last observation. With
+	// several replicas it is the lowest slot across them.
+	Slot int64 `json:"slot,omitempty"`
+	// ObservedAt is when Slot was last read from the node.
+	// +optional
+	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
+	// LastProgressAt is when Slot last changed.
+	// +optional
+	LastProgressAt *metav1.Time `json:"lastProgressAt,omitempty"`
+}
+
 // HAStatus reports the high-availability state of a block producer.
 type HAStatus struct {
 	ActivePod   string   `json:"activePod,omitempty"`
@@ -695,6 +710,9 @@ type DingoNodeStatus struct {
 	OpCert OpCertStatus `json:"opcert,omitempty"`
 	// +optional
 	HA HAStatus `json:"ha,omitempty"`
+	// Tip tracks tip slot progress; see the LedgerPipelineHealthy condition.
+	// +optional
+	Tip TipStatus `json:"tip,omitempty"`
 }
 
 // +kubebuilder:object:root=true

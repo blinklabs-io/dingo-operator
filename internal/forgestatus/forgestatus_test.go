@@ -131,3 +131,16 @@ func TestParsePipelineWedgeGauges(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTipSlot(t *testing.T) {
+	t.Parallel()
+	s, err := Parse(strings.NewReader(
+		"cardano_node_metrics_slotNum_int{network=\"preview\"} 12345\n"))
+	require.NoError(t, err)
+	assert.True(t, s.HasTipSlot)
+	assert.Equal(t, int64(12345), s.TipSlot)
+
+	s, err = Parse(strings.NewReader("other 1\n"))
+	require.NoError(t, err)
+	assert.False(t, s.HasTipSlot)
+}
