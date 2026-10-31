@@ -820,8 +820,13 @@ func setRotationDueUnknown(
 func setPipelineUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
 	// Keep a confirmed unhealthy observation until a successful scrape includes
 	// both gauges. A transient scrape failure or an older node without the
-	// gauges must not erase a known wedge and clear Degraded.
-	if meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy) {
+	// gauges must not erase a known wedge and clear Degraded. A tip stall is
+	// not kept: it is inferred over an observation window, which every caller
+	// here breaks (status.tip is cleared and the clock restarts).
+	if prev := meta.FindStatusCondition(
+		dn.Status.Conditions, condPipelineHealthy,
+	); prev != nil && prev.Status == metav1.ConditionFalse &&
+		prev.Reason != reasonTipNotAdvancing {
 		return
 	}
 	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{

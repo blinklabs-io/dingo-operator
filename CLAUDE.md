@@ -204,8 +204,10 @@ cert-manager).
   write triggers another reconcile, so `status.tip` changes only with the slot
   and the message carries no elapsed time. Any pass that cannot observe the tip
   (scrape failure, missing gauge, slot 0 while Dingo loads its tip) clears
-  `status.tip`, restarting the clock. On a network whose blocks can be more
-  than the threshold apart, raise the threshold or disable the check.
+  `status.tip`, restarting the clock. Unlike Halted and Stuck, a stall is not
+  kept through an unreadable scrape: the condition turns `Unknown`. On a
+  network whose blocks can be more than the threshold apart, raise the
+  threshold or disable the check.
 - The metrics listener must be bound explicitly. Dingo defaults
   `metricsBindAddr` to loopback as of v0.81.0, so the operator sets
   `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and

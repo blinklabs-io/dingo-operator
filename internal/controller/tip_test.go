@@ -365,3 +365,46 @@ func TestTipSlotZeroIsNotAStall(t *testing.T) {
 
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
 }
+
+// A tip stall is inferred over an observation window. Once the window is
+// broken (scrape failure, no fetcher, gauges missing) the clock restarts, so the
+// stall must not outlive it as a False condition. Gauge-confirmed wedges are
+// kept; see TestTipStallDoesNotOutrankHaltedOrStuck.
+func TestTipStallBecomesUnknownWhenUnobserved(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		unobserve func(*DingoNodeReconciler)
+		reason    string
+	}{
+		"scrape failure": {func(r *DingoNodeReconciler) {
+			r.ForgeStatus = fakeForgeStatusFetcher{err: assert.AnError}
+		}, "MetricsUnavailable"},
+		"no fetcher": {func(r *DingoNodeReconciler) {
+			r.ForgeStatus = nil
+		}, "MetricsUnavailable"},
+		"pipeline gauges missing": {func(r *DingoNodeReconciler) {
+			r.ForgeStatus = &statusFetcher{st: &forgestatus.Status{
+				TipSlot: 1000, HasTipSlot: true,
+			}}
+		}, "PipelineMetricsUnavailable"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+			dn := relayNodeForStatus("relay", "ns")
+			r, _ := newTipReconciler(tipStatus(1000), clock)
+			r.refreshForgeStatus(context.Background(), dn)
+			clock.now = clock.now.Add(tipThreshold + time.Minute)
+			r.refreshForgeStatus(context.Background(), dn)
+			require.Equal(t, reasonTipNotAdvancing, pipelineCond(t, dn).Reason)
+
+			tc.unobserve(r)
+			clock.now = clock.now.Add(2 * time.Minute)
+			r.refreshForgeStatus(context.Background(), dn)
+
+			cond := pipelineCond(t, dn)
+			assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+			assert.Equal(t, tc.reason, cond.Reason)
+		})
+	}
+}
