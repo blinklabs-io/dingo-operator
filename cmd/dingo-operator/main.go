@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/controller"
@@ -51,6 +52,7 @@ func main() {
 		probeAddr            string
 		enableLeaderElection bool
 		secureMetrics        bool
+		tipStallThreshold    time.Duration
 	)
 	flag.StringVar(
 		&metricsAddr,
@@ -75,6 +77,13 @@ func main() {
 		"metrics-secure",
 		true,
 		"Serve metrics over HTTPS.",
+	)
+	flag.DurationVar(
+		&tipStallThreshold,
+		"tip-stall-threshold",
+		10*time.Minute,
+		"How long a node's tip slot may stay unchanged before "+
+			"LedgerPipelineHealthy reports TipNotAdvancing. 0 disables.",
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -114,6 +123,8 @@ func main() {
 		ForgeStatus:   forgestatus.NewHTTPFetcher(),
 		OnChain:       onchain.NewNtCFetcher(),
 		PodMonitorCRD: podMonitorInstalled(mgr),
+
+		TipStallThreshold: tipStallThreshold,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(

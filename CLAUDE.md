@@ -195,6 +195,19 @@ cert-manager).
   advancing, and collapsing the two would hide which one failed. An unreadable
   scrape sets the condition `Unknown`, never True — reading a failed fetch as
   "no wedge reported" is how this detection goes blind exactly when it matters.
+- The gauges miss a node whose tip stops moving without the pipeline noticing,
+  so the controller also tracks `cardano_node_metrics_slotNum_int` (the tip
+  block's slot; the lowest across replicas) in `status.tip`. When it stays
+  unchanged beyond `--tip-stall-threshold` (default 10m, 0 disables) the
+  condition turns False with reason `TipNotAdvancing` and `Degraded` is set;
+  Halted and Stuck keep precedence. Status is written every reconcile and each
+  write triggers another reconcile, so `status.tip` changes only with the slot
+  and the message carries no elapsed time. Any pass that cannot observe the tip
+  (scrape failure, missing gauge, slot 0 while Dingo loads its tip) clears
+  `status.tip`, restarting the clock. Unlike Halted and Stuck, a stall is not
+  kept through an unreadable scrape: the condition turns `Unknown`. On a
+  network whose blocks can be more than the threshold apart, raise the
+  threshold or disable the check.
 - The metrics listener must be bound explicitly. Dingo defaults
   `metricsBindAddr` to loopback as of v0.81.0, so the operator sets
   `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and

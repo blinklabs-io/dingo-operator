@@ -235,6 +235,10 @@ requests for scheduling, and leave memory headroom for replay and epoch changes.
 
 Check `Ready`, `StorageReady`, and `LedgerPipelineHealthy` together. A healthy
 process or open API listener does not prove the node has caught up to its peers.
+`LedgerPipelineHealthy` is also False, with reason `TipNotAdvancing`, when the
+node's tip slot has not changed for longer than the operator's
+`--tip-stall-threshold` flag (default `10m`; `0` disables the check). On a
+network whose blocks can be more than that apart, raise or disable it.
 
 ## API and Service exposure
 

@@ -59,6 +59,9 @@ const (
 	// chain. A wedged ledger pipeline keeps the process live and the probes
 	// green, so neither pod state nor Ready can express it.
 	condPipelineHealthy = "LedgerPipelineHealthy"
+	// reasonTipNotAdvancing marks a node whose tip slot has been unchanged for
+	// longer than the stall threshold while its own pipeline gauges are clear.
+	reasonTipNotAdvancing = "TipNotAdvancing"
 
 	metricsPort = 12798
 
@@ -90,6 +93,11 @@ type DingoNodeReconciler struct {
 	// ColdSigner overrides the cold signer Auto rotation issues opcerts with.
 	// Nil builds it from spec.blockProducer.rotation.coldSigner.
 	ColdSigner ColdSignerFactory
+	// TipStallThreshold is how long the node's tip slot may stay unchanged
+	// before LedgerPipelineHealthy turns False. Zero disables the check.
+	TipStallThreshold time.Duration
+	// Now overrides the clock; nil uses time.Now.
+	Now func() time.Time
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex
@@ -708,10 +716,12 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		// There is no running node whose pipeline can be observed. Drop an old
 		// result from before scale-down, then report the current state as unknown.
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condPipelineHealthy)
+		dn.Status.Tip = dingov1alpha1.TipStatus{}
 		setPipelineUnknown(dn, "NoReplicas", "node has no desired replicas")
 		return
 	}
 	if r.ForgeStatus == nil {
+		dn.Status.Tip = dingov1alpha1.TipStatus{}
 		setPipelineUnknown(
 			dn,
 			"MetricsUnavailable",
@@ -759,6 +769,9 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		statuses = append(statuses, st)
 	}
 	if scrapeFailed || len(statuses) != int(desiredReplicas(dn)) {
+		// The node was not watched, so the persisted last-progress time says
+		// nothing about what it does once reachable again.
+		dn.Status.Tip = dingov1alpha1.TipStatus{}
 		setPipelineUnknown(
 			dn,
 			"MetricsUnavailable",
@@ -777,7 +790,12 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		HasPipelineStuckMetric:  true,
 		HasPipelineHaltedMetric: true,
 	}
-	for _, st := range statuses {
+	aggregate.HasTipSlot = true
+	for i, st := range statuses {
+		aggregate.HasTipSlot = aggregate.HasTipSlot && st.HasTipSlot
+		if i == 0 || st.TipSlot < aggregate.TipSlot {
+			aggregate.TipSlot = st.TipSlot
+		}
 		aggregate.PipelineStuck = aggregate.PipelineStuck || st.PipelineStuck
 		aggregate.PipelineHalted = aggregate.PipelineHalted || st.PipelineHalted
 		aggregate.HasPipelineStuckMetric =
@@ -785,7 +803,19 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		aggregate.HasPipelineHaltedMetric =
 			aggregate.HasPipelineHaltedMetric && st.HasPipelineHaltedMetric
 	}
-	setPipelineCondition(dn, aggregate)
+	previous := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
+	wasStalled := previous != nil && previous.Reason == reasonTipNotAdvancing
+	stall := r.observeTip(dn, aggregate)
+	setPipelineCondition(dn, aggregate, stall)
+	if cond := meta.FindStatusCondition(
+		dn.Status.Conditions, condPipelineHealthy,
+	); !wasStalled && r.Recorder != nil && cond != nil &&
+		cond.Reason == reasonTipNotAdvancing {
+		r.Recorder.Eventf(
+			dn, nil, corev1.EventTypeWarning, reasonTipNotAdvancing,
+			"ObserveTip", "%s", cond.Message,
+		)
+	}
 	if !isBP {
 		return
 	}
@@ -840,14 +870,69 @@ func setRotationDueUnknown(
 func setPipelineUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
 	// Keep a confirmed unhealthy observation until a successful scrape includes
 	// both gauges. A transient scrape failure or an older node without the
-	// gauges must not erase a known wedge and clear Degraded.
-	if meta.IsStatusConditionFalse(dn.Status.Conditions, condPipelineHealthy) {
+	// gauges must not erase a known wedge and clear Degraded. A tip stall is
+	// not kept: it is inferred over an observation window, which every caller
+	// here breaks (status.tip is cleared and the clock restarts).
+	if prev := meta.FindStatusCondition(
+		dn.Status.Conditions, condPipelineHealthy,
+	); prev != nil && prev.Status == metav1.ConditionFalse &&
+		prev.Reason != reasonTipNotAdvancing {
 		return
 	}
 	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 		Type: condPipelineHealthy, Status: metav1.ConditionUnknown, Reason: reason,
 		Message: message, ObservedGeneration: dn.Generation,
 	})
+}
+
+// tipStall describes a tip slot frozen beyond the threshold.
+type tipStall struct {
+	slot      int64
+	since     time.Time
+	threshold time.Duration
+}
+
+func (r *DingoNodeReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// observeTip records the tip slot in status and returns the stall, if any.
+//
+// Only a change of slot counts as progress, in either direction, so a rollback
+// or a restart from an older tip is not mistaken for a freeze. State lives in
+// status, so an operator restart keeps the frozen duration. Any pass that does
+// not observe the tip clears it, so the clock restarts: a node that was
+// unreachable, or whose gauge was missing, must not be judged by progress
+// recorded before the gap. Slot 0 is not an observation: Dingo serves metrics
+// before it has loaded its tip, and the gauge reads 0 until then.
+//
+// Status is written on every reconcile and a status change triggers another
+// reconcile, so nothing here may change while the slot does not.
+func (r *DingoNodeReconciler) observeTip(
+	dn *dingov1alpha1.DingoNode,
+	st *forgestatus.Status,
+) *tipStall {
+	tip := &dn.Status.Tip
+	if r.TipStallThreshold <= 0 || !st.HasTipSlot || st.TipSlot <= 0 {
+		*tip = dingov1alpha1.TipStatus{}
+		return nil
+	}
+	now := r.now()
+	if tip.LastProgressAt == nil || tip.Slot != st.TipSlot {
+		tip.LastProgressAt = &metav1.Time{Time: now}
+	}
+	tip.Slot = st.TipSlot
+	if now.Sub(tip.LastProgressAt.Time) <= r.TipStallThreshold {
+		return nil
+	}
+	return &tipStall{
+		slot:      tip.Slot,
+		since:     tip.LastProgressAt.Time,
+		threshold: r.TipStallThreshold,
+	}
 }
 
 // setPipelineCondition reports whether the node is still following the chain.
@@ -857,7 +942,11 @@ func setPipelineUnknown(dn *dingov1alpha1.DingoNode, reason, message string) {
 // adopts the result, so the condition is surfaced rather than folded into
 // Ready: the pod is genuinely ready, and the chain is genuinely not advancing.
 // Halted is terminal and ranks above stuck.
-func setPipelineCondition(dn *dingov1alpha1.DingoNode, st *forgestatus.Status) {
+func setPipelineCondition(
+	dn *dingov1alpha1.DingoNode,
+	st *forgestatus.Status,
+	stall *tipStall,
+) {
 	cond := metav1.Condition{
 		Type: condPipelineHealthy, Status: metav1.ConditionTrue,
 		Reason: "Following", Message: "ledger pipeline is following the chain",
@@ -882,6 +971,13 @@ func setPipelineCondition(dn *dingov1alpha1.DingoNode, st *forgestatus.Status) {
 			"node metrics do not include ledger pipeline health gauges",
 		)
 		return
+	case stall != nil:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = reasonTipNotAdvancing
+		cond.Message = fmt.Sprintf(
+			"tip slot %d has not advanced since %s (threshold %s)",
+			stall.slot, stall.since.UTC().Format(time.RFC3339), stall.threshold,
+		)
 	}
 	if cond.Status == metav1.ConditionFalse {
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{

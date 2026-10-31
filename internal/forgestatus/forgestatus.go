@@ -41,6 +41,7 @@ const (
 	// chain while the process stays live and the probes keep answering, so
 	// neither kubelet probes nor pod state reveal it. Both gauges mean
 	// operator intervention is required; halted is terminal.
+	metricSlotNum        = "cardano_node_metrics_slotNum_int"
 	metricPipelineStuck  = "dingo_ledger_pipeline_stuck"
 	metricPipelineHalted = "dingo_ledger_pipeline_halted"
 )
@@ -66,6 +67,10 @@ type Status struct {
 	// gauges must be observed before the pipeline can be reported as following.
 	HasPipelineStuckMetric  bool
 	HasPipelineHaltedMetric bool
+	// TipSlot is the node's tip slot; HasTipSlot reports whether the gauge was
+	// present.
+	TipSlot    int64
+	HasTipSlot bool
 }
 
 // Fetcher retrieves forge status from a node's metrics endpoint.
@@ -143,6 +148,9 @@ func Parse(r io.Reader) (*Status, error) {
 			s.OpCertExpiryKESPeriod = int64(v)
 		case metricForgedBlocks:
 			s.ForgedBlocks = int64(v)
+		case metricSlotNum:
+			s.TipSlot = int64(v)
+			s.HasTipSlot = true
 		case metricPipelineStuck:
 			s.HasPipelineStuckMetric = true
 			s.PipelineStuck = v != 0
