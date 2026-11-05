@@ -254,3 +254,34 @@ func TestBursaSignerRefusesRedirect(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "307")
 }
+
+func TestBursaRequestProfile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, profile string
+	}{
+		{"set", "otg@preview"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeBursa(t)
+			srv := httptest.NewTLSServer(f)
+			t.Cleanup(srv.Close)
+			s, err := NewBursaSigner(BursaConfig{
+				Endpoint: srv.URL, ColdKeyHash: f.keyHash,
+				CACert: caPEM(srv), Profile: tc.profile,
+			})
+			require.NoError(t, err)
+			_, err = s.SignOpCertFromChain(
+				context.Background(), make([]byte, 32), 4, 900,
+			)
+			require.NoError(t, err)
+			if tc.profile == "" {
+				assert.NotContains(t, f.got, "profile")
+				return
+			}
+			assert.Equal(t, tc.profile, f.got["profile"])
+		})
+	}
+}

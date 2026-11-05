@@ -145,6 +145,9 @@ type BursaConfig struct {
 	Endpoint string
 	// ColdKeyHash (blake2b224 of the cold vkey) selects the key at the signer.
 	ColdKeyHash string
+	// Profile names the signer profile that holds the key. It is sent only
+	// when set, so a signer without profile support is unaffected.
+	Profile string
 	// TLS holds the client mTLS material (cert/key/ca). Loaded from a Secret by
 	// the caller.
 	CACert     []byte
@@ -194,6 +197,7 @@ type bursaOpCertRequest struct {
 	KesVkey      string `json:"kes_vkey"`
 	ChainCounter uint64 `json:"chain_counter"`
 	KesPeriod    uint64 `json:"kes_period"`
+	Profile      string `json:"profile,omitempty"`
 }
 
 type bursaOpCertResponse struct {
@@ -282,6 +286,7 @@ func (b *BursaSigner) SignOpCertFromChain(
 		KesVkey:      hex.EncodeToString(kesVkey),
 		ChainCounter: chainCounter,
 		KesPeriod:    kesPeriod,
+		Profile:      b.cfg.Profile,
 	})
 	if err != nil {
 		return nil, err

@@ -311,6 +311,7 @@ func (r *DingoNodeReconciler) issuerFor(
 		return coldsigner.NewBursaSigner(coldsigner.BursaConfig{
 			Endpoint:    cs.Endpoint,
 			ColdKeyHash: cs.ColdKeyHash,
+			Profile:     cs.Profile,
 			CACert:      s.Data[signerSecretCA],
 			ClientCert:  s.Data[signerSecretCert],
 			ClientKey:   s.Data[signerSecretKey],

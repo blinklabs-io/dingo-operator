@@ -487,7 +487,10 @@ normal transient states.
 `validateSpec` requires, for `Auto`: `poolId`, `nodeToClient.enabled`, and a
 cold signer that can issue. Bursa needs an https `endpoint`, `mtlsSecretRef`
 (a Secret with `tls.crt`, `tls.key` and optionally `ca.crt`) and
-`coldKeyHash` equal to the pool ID; `secret` needs `secretRef` holding
+`coldKeyHash` equal to the pool ID, and optionally `profile` (the Bursa
+signer profile holding the cold key, sent as `profile` on the request; needed
+when the signer holds the key in several profiles, refused for other signer
+types); `secret` needs `secretRef` holding
 `cold.skey` and is refused on mainnet (by name or network magic), since it
 keeps the cold key in the cluster. Auto writes the keys Secret, so the deployment must grant the
 operator `update` on Secrets in the keys namespaces, on top of `get`.

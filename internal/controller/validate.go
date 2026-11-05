@@ -121,6 +121,14 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				st,
 			)
 		}
+		if cs := bp.Rotation.ColdSigner; cs.Profile != "" &&
+			cs.Type != dingov1alpha1.ColdSignerBursa && cs.Type != "" {
+			return fmt.Errorf(
+				"coldSigner.profile is only valid with the bursa signer, "+
+					"not type %q",
+				cs.Type,
+			)
+		}
 		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
 			if err := validateAutoRotation(&dn.Spec, bp); err != nil {
 				return err

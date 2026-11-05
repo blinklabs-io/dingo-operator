@@ -40,6 +40,7 @@ spec:
       #   endpoint: https://bursa-signer.spo-signing.svc:8443
       #   mtlsSecretRef: bursa-client-mtls
       #   coldKeyHash: <blake2b224 of cold vkey>
+      #   profile: otg@preview  # optional; needed if the signer holds the key in several profiles
     ha:
       strategy: SingleActive
       failover: Automatic

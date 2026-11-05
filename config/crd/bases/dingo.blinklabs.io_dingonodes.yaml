@@ -1295,6 +1295,14 @@ spec:
                               (tls.crt, tls.key) and optionally the signer CA (ca.crt). Required when
                               Type=bursa and Mode=Auto.
                             type: string
+                          profile:
+                            description: |-
+                              Profile is the Bursa signer profile (backend profile name, for example
+                              otg@preview) that holds the cold key. Required when the signer holds the
+                              same cold key in several profiles; only for Type=bursa.
+                            maxLength: 32
+                            pattern: ^[A-Za-z0-9@._-]+$
+                            type: string
                           secretRef:
                             description: |-
                               SecretRef names a Secret holding the cold key as a cardano-cli text
