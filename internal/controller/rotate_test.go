@@ -629,3 +629,68 @@ func TestReconcileInvalidSpecWithoutBlockProducerClearsKES(t *testing.T) {
 	assert.Equal(t, metav1.ConditionUnknown, due.Status)
 	assert.Equal(t, "InvalidSpec", due.Reason)
 }
+
+// Ledger pipeline health and tip-stall tracking must keep updating under an
+// invalid spec too, and their result must reach the persisted status.
+func TestReconcileInvalidSpecKeepsObservingPipeline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		st     *forgestatus.Status
+		scrape int
+		reason string
+	}{
+		{"wedged pipeline", &forgestatus.Status{
+			HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+			PipelineStuck: true, TipSlot: 1000, HasTipSlot: true,
+		}, 1, "LedgerPipelineStuck"},
+		{"stalled tip", tipStatus(1000), 2, reasonTipNotAdvancing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRotateFixture(t)
+			f.dn.Spec.Network = ""
+			require.Error(t, validateSpec(f.dn))
+
+			secret := f.secret(t)
+			secret.ResourceVersion = ""
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(secret, f.dn).WithStatusSubresource(f.dn).Build()
+			clock := &tipClock{
+				now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC),
+			}
+			f.r.Client, f.r.APIReader, f.r.Scheme = c, c, scheme
+			f.r.ForgeStatus = &statusFetcher{st: tc.st}
+			f.r.TipStallThreshold = tipThreshold
+			f.r.Now = clock.Now
+
+			for range tc.scrape {
+				_, err := f.r.Reconcile(
+					context.Background(),
+					ctrl.Request{
+						NamespacedName: client.ObjectKeyFromObject(f.dn),
+					},
+				)
+				require.NoError(t, err)
+				clock.now = clock.now.Add(tipThreshold + time.Minute)
+			}
+
+			got := &dingov1alpha1.DingoNode{}
+			require.NoError(t, c.Get(
+				context.Background(), client.ObjectKeyFromObject(f.dn), got,
+			))
+			cond := meta.FindStatusCondition(
+				got.Status.Conditions, condPipelineHealthy,
+			)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, tc.reason, cond.Reason)
+			assert.Equal(t, int64(1000), got.Status.Tip.Slot)
+			require.NotNil(t, got.Status.Tip.LastProgressAt)
+			assert.Zero(t, f.issuer.calls, "no issuance under a rejected spec")
+		})
+	}
+}
