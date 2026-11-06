@@ -202,8 +202,7 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					PoolID: strings.Repeat("ab", 28),
-					Keys:   dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
 					Rotation: dingov1alpha1.RotationSpec{
 						Mode: dingov1alpha1.RotationModeAuto,
 						ColdSigner: dingov1alpha1.ColdSignerSpec{
