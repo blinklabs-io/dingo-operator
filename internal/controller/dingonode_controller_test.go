@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,6 +232,7 @@ func TestReconcileBlockProducer(t *testing.T) {
 			Role:    dingov1alpha1.RoleBlockProducer,
 			Network: "preview",
 			BlockProducer: &dingov1alpha1.BlockProducerSpec{
+				PoolID:            strings.Repeat("ab", 28),
 				SlotsPerKESPeriod: 129600,
 				MaxKESEvolutions:  62,
 				Keys:              dingov1alpha1.KeysSpec{SecretRef: "pool-keys"},
@@ -755,7 +757,9 @@ func TestBlockProducerFirstReconcileRejectsBadKeys(t *testing.T) {
 		},
 	}))
 
-	dn := blockProducerNode("bp", "first-ns", "pool-keys", "")
+	dn := blockProducerNode(
+		"bp", "first-ns", "pool-keys", strings.Repeat("ab", 28),
+	)
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "first-ns")
 
