@@ -205,24 +205,22 @@ func (r *DingoNodeReconciler) Reconcile(
 
 	if err := validateSpec(dn); err != nil {
 		logger.Info("invalid DingoNode spec", "error", err.Error())
-		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
-			Type:               condDegraded,
-			Status:             metav1.ConditionTrue,
-			Reason:             "InvalidSpec",
-			Message:            err.Error(),
-			ObservedGeneration: dn.Generation,
-		})
-		// An invalid spec is not Ready; clear any stale Ready=True so the node
-		// does not report Ready and Degraded simultaneously.
-		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
-			Type:               condReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidSpec",
-			Message:            err.Error(),
-			ObservedGeneration: dn.Generation,
-		})
-		dn.Status.Phase = "Degraded"
-		return ctrl.Result{}, r.updateStatus(ctx, dn)
+		return ctrl.Result{}, r.markNotReady(ctx, dn, "InvalidSpec", err)
+	}
+
+	// validateSpec sees one object; two block producers staging the same pool
+	// keys would both forge, so this needs the other DingoNodes.
+	if resources.IsBlockProducer(dn) {
+		var all dingov1alpha1.DingoNodeList
+		if err := r.List(ctx, &all); err != nil {
+			return ctrl.Result{}, fmt.Errorf("list DingoNodes: %w", err)
+		}
+		if err := forgerConflict(dn, all.Items); err != nil {
+			logger.Info("duplicate block producer", "error", err.Error())
+			return ctrl.Result{}, r.markNotReady(
+				ctx, dn, reasonDuplicateForger, err,
+			)
+		}
 	}
 
 	// Before reconcileResources, because reconcileResources is what validates a
@@ -265,6 +263,32 @@ func (r *DingoNodeReconciler) Reconcile(
 		return ctrl.Result{}, storageErr
 	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+}
+
+// markNotReady records a spec the operator refuses to run: Degraded, and not
+// Ready, so a stale Ready=True is cleared rather than shown beside Degraded.
+func (r *DingoNodeReconciler) markNotReady(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	reason string,
+	cause error,
+) error {
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condDegraded,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            cause.Error(),
+		ObservedGeneration: dn.Generation,
+	})
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            cause.Error(),
+		ObservedGeneration: dn.Generation,
+	})
+	dn.Status.Phase = "Degraded"
+	return r.updateStatus(ctx, dn)
 }
 
 // relayRefPorts resolves the relay port of every in-cluster node listed in
