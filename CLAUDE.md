@@ -452,7 +452,11 @@ Only one block producer may forge per pool. When two DingoNodes share a pool ID
 by creation time, then namespace/name, keeps running. The newer is set
 `Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
 StatefulSet is scaled to zero if it exists, and it is re-checked every
-requeue interval, so it resumes once the older node is deleted.
+requeue interval. Copies of one key bundle under different Secret names count
+as the same keys: the pool is also read from the cold key in the opcert. The
+newer node resumes only after the older DingoNode is gone and its StatefulSet
+and pods are gone too, since deleting a DingoNode does not stop its pod at
+once. The operator needs `list` on pods to check this.
 
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:

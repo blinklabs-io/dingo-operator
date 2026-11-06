@@ -168,6 +168,7 @@ type onChainAttempt struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
@@ -215,7 +216,7 @@ func (r *DingoNodeReconciler) Reconcile(
 		if err := r.List(ctx, &all); err != nil {
 			return ctrl.Result{}, fmt.Errorf("list DingoNodes: %w", err)
 		}
-		if err := forgerConflict(dn, all.Items); err != nil {
+		if err := r.forgerHeld(ctx, dn, all.Items); err != nil {
 			logger.Info("duplicate block producer", "error", err.Error())
 			// A node already running would keep forging beside the holder.
 			if herr := r.haltForger(ctx, dn); herr != nil {
@@ -303,20 +304,19 @@ func (r *DingoNodeReconciler) haltForger(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) error {
-	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
-	if err := r.Get(ctx, key, sts); err != nil {
-		if apierrors.IsNotFound(err) {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, key, sts); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
 			return nil
 		}
-		return fmt.Errorf("read statefulset %q: %w", dn.Name, err)
-	}
-	if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
-		return nil
-	}
-	zero := int32(0)
-	sts.Spec.Replicas = &zero
-	if err := r.Update(ctx, sts); err != nil {
+		sts.Spec.Replicas = new(int32)
+		return r.Update(ctx, sts)
+	})
+	if err != nil {
 		return fmt.Errorf("scale statefulset %q to zero: %w", dn.Name, err)
 	}
 	return nil

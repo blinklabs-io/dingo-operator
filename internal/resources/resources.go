@@ -935,3 +935,14 @@ func affinity(dn *dingov1alpha1.DingoNode) *corev1.Affinity {
 		},
 	}
 }
+
+// KeysSecretName returns the Secret a pod spec mounts its block-producer keys
+// from, if it mounts one.
+func KeysSecretName(spec corev1.PodSpec) (string, bool) {
+	for _, v := range spec.Volumes {
+		if v.Name == keysSourceName && v.Secret != nil {
+			return v.Secret.SecretName, true
+		}
+	}
+	return "", false
+}

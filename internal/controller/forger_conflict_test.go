@@ -16,13 +16,18 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"testing"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -263,4 +268,209 @@ func TestNormalizedPoolIDBech32EqualsHex(t *testing.T) {
 	bech := pool.Bech32("pool")
 	require.NotEqual(t, conflictPoolID, bech)
 	assert.Equal(t, normalizedPoolID(conflictPoolID), normalizedPoolID(bech))
+}
+
+func replicasOf(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+) int32 {
+	t.Helper()
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(n), &sts,
+	))
+	require.NotNil(t, sts.Spec.Replicas)
+	return *sts.Spec.Replicas
+}
+
+func forging(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+) bool {
+	t.Helper()
+	var sts appsv1.StatefulSet
+	err := c.Get(context.Background(), client.ObjectKeyFromObject(n), &sts)
+	if apierrors.IsNotFound(err) {
+		return false
+	}
+	require.NoError(t, err)
+	return sts.Spec.Replicas == nil || *sts.Spec.Replicas > 0
+}
+
+func refusedAsDuplicate(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+) bool {
+	t.Helper()
+	var got dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(n), &got,
+	))
+	d := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	return d != nil && d.Reason == reasonDuplicateForger
+}
+
+func keysSecret(name, ns string, d map[string][]byte) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Data:       d,
+	}
+}
+
+func poolKeys(t *testing.T) (string, map[string][]byte) {
+	t.Helper()
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	data, err := keys.SecretData(3, 5)
+	require.NoError(t, err)
+	return hex.EncodeToString(keys.PoolID), data
+}
+
+// holderPod is the pod a block-producer StatefulSet leaves behind: it carries
+// the node's labels and mounts its keys Secret.
+func holderPod(dn *dingov1alpha1.DingoNode) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dn.Name + "-0",
+			Namespace: dn.Namespace,
+			Labels:    resources.Labels(dn),
+		},
+		Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+			Name: "block-producer-keys-source",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: dn.Spec.BlockProducer.Keys.SecretRef,
+				},
+			},
+		}}},
+	}
+}
+
+// The refused node resumes only once the holder's workload is down. Deleting
+// the holder DingoNode does not stop its pod: the StatefulSet and pod outlive
+// it through garbage collection and the termination grace period.
+func TestReconcileRefusedForgerWaitsForHolderWorkload(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	poolA, dataA := poolKeys(t)
+	poolB, dataB := poolKeys(t)
+
+	setup := func(t *testing.T) (
+		client.Client, *DingoNodeReconciler,
+		*dingov1alpha1.DingoNode, *dingov1alpha1.DingoNode,
+	) {
+		holder := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+		holder.Finalizers = []string{metav1.FinalizerDeleteDependents}
+		loser := forgerNode("bp-2", "ns", poolA, "keys-b", 0)
+		c := conflictClient(t, holder, loser,
+			keysSecret("keys-a", "ns", dataA),
+			keysSecret("keys-b", "ns", dataA),
+		)
+		r := reconcilerFor(c)
+		// Reconcile the holder first so its StatefulSet exists at replicas 1,
+		// then make the loser's pool match so it is refused.
+		reconcileNode(t, r, holder)
+		require.Equal(t, int32(1), replicasOf(t, c, holder))
+		return c, r, holder, loser
+	}
+
+	t.Run("foreground deletion keeps the holder StatefulSet at one", func(t *testing.T) {
+		t.Parallel()
+		c, r, holder, loser := setup(t)
+		require.NoError(t, c.Delete(ctx, holder))
+		var deleting dingov1alpha1.DingoNode
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &deleting))
+		require.False(t, deleting.DeletionTimestamp.IsZero())
+
+		reconcileNode(t, r, loser)
+		assert.True(t, refusedAsDuplicate(t, c, loser),
+			"holder StatefulSet still at replicas=1")
+		assert.False(t, forging(t, c, loser))
+
+		// Holder workload goes to zero: the loser may resume.
+		var sts appsv1.StatefulSet
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &sts))
+		sts.Spec.Replicas = new(int32)
+		require.NoError(t, c.Update(ctx, &sts))
+		reconcileNode(t, r, loser)
+		assert.False(t, refusedAsDuplicate(t, c, loser))
+		assert.True(t, forging(t, c, loser))
+	})
+
+	t.Run("plain deletion keeps the holder StatefulSet then pod", func(t *testing.T) {
+		t.Parallel()
+		c, r, holder, loser := setup(t)
+		pod := holderPod(holder)
+		require.NoError(t, c.Create(ctx, pod))
+		var live dingov1alpha1.DingoNode
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &live))
+		live.Finalizers = nil
+		require.NoError(t, c.Update(ctx, &live))
+		require.NoError(t, c.Delete(ctx, &live))
+
+		// StatefulSet still at replicas=1, DingoNode gone.
+		reconcileNode(t, r, loser)
+		assert.True(t, refusedAsDuplicate(t, c, loser), "StatefulSet alive")
+
+		// Garbage collection removes the StatefulSet; the pod is still
+		// terminating.
+		var sts appsv1.StatefulSet
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &sts))
+		require.NoError(t, c.Delete(ctx, &sts))
+		reconcileNode(t, r, loser)
+		assert.True(t, refusedAsDuplicate(t, c, loser), "pod alive")
+		assert.False(t, forging(t, c, loser))
+
+		require.NoError(t, c.Delete(ctx, pod))
+		reconcileNode(t, r, loser)
+		assert.False(t, refusedAsDuplicate(t, c, loser))
+		assert.True(t, forging(t, c, loser))
+	})
+
+	t.Run("an unrelated pool's workload does not block", func(t *testing.T) {
+		t.Parallel()
+		other := forgerNode("bp-9", "ns", poolB, "keys-z", time.Hour)
+		loser := forgerNode("bp-2", "ns", poolA, "keys-b", 0)
+		c := conflictClient(t, loser, holderPod(other),
+			keysSecret("keys-z", "ns", dataB),
+			keysSecret("keys-b", "ns", dataA),
+		)
+		reconcileNode(t, reconcilerFor(c), loser)
+		assert.False(t, refusedAsDuplicate(t, c, loser))
+	})
+}
+
+// Two DingoNodes naming copies of one key bundle in different Secrets still
+// share a pool, whether or not poolId is set: the cold key in the delivered
+// opcert says so.
+func TestReconcileRefusesCopiedKeysInDifferentSecrets(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, data := poolKeys(t)
+	_, otherData := poolKeys(t)
+	tests := []struct {
+		name     string
+		loserNS  string
+		loserKey map[string][]byte
+		conflict bool
+	}{
+		{"copy in another namespace", "ns-b", data, true},
+		{"copy in the same namespace", "ns-a", data, true},
+		{"different pool's keys", "ns-b", otherData, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			holder := forgerNode("bp-1", "ns-a", "", "keys-a", time.Hour)
+			loser := forgerNode("bp-2", tt.loserNS, "", "keys-b", 0)
+			c := conflictClient(t, holder, loser,
+				keysSecret("keys-a", "ns-a", data),
+				keysSecret("keys-b", tt.loserNS, tt.loserKey),
+			)
+			reconcileNode(t, reconcilerFor(c), loser)
+			assert.Equal(t, tt.conflict, refusedAsDuplicate(t, c, loser))
+			if tt.conflict {
+				var sts appsv1.StatefulSet
+				err := c.Get(ctx, client.ObjectKeyFromObject(loser), &sts)
+				assert.True(t, apierrors.IsNotFound(err))
+			}
+		})
+	}
 }

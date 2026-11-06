@@ -29,6 +29,12 @@ rules:
   - watch
 - apiGroups:
   - ""
+  resources:
+  - pods
+  verbs:
+  - list
+- apiGroups:
+  - ""
   - events.k8s.io
   resources:
   - events
