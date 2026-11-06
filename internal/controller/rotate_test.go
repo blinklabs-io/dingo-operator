@@ -24,6 +24,8 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/coldsigner"
+	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
+	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -463,4 +466,231 @@ func TestAutoRotateReissuesUnforgedCounter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), state.Counter)
 	assert.Equal(t, int64(160), state.KESPeriod)
+}
+
+// An invalid spec is reported, but must not blind the operator to a running
+// node: KES status and RotationDue keep updating, and the node is requeued so
+// they keep updating once nothing else triggers a reconcile. Nothing is issued
+// under a spec validateSpec rejected, since that would bypass the checks
+// validateAutoRotation applies.
+func TestReconcileInvalidSpecKeepsObservingKES(t *testing.T) {
+	t.Parallel()
+	f := newRotateFixture(t)
+	// Not caught by a CRD rule; only validateSpec rejects it.
+	f.dn.Spec.Network = ""
+	f.dn.Status.KES = dingov1alpha1.KESStatus{}
+	meta.RemoveStatusCondition(&f.dn.Status.Conditions, condRotationDue)
+	require.Error(t, validateSpec(f.dn))
+
+	secret := f.secret(t)
+	secret.ResourceVersion = ""
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(secret, f.dn).WithStatusSubresource(f.dn).Build()
+	f.r.Client, f.r.APIReader, f.r.Scheme = c, c, scheme
+	f.r.ForgeStatus = &statusFetcher{st: &forgestatus.Status{
+		HasKESData:            true,
+		CurrentKESPeriod:      160,
+		OpCertStartKESPeriod:  100,
+		OpCertExpiryKESPeriod: 162,
+		RemainingKESPeriods:   2,
+	}}
+
+	res, err := f.r.Reconcile(
+		context.Background(),
+		ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.dn)},
+	)
+	require.NoError(t, err)
+	assert.Positive(t, res.RequeueAfter, "node must be requeued")
+
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(f.dn), got,
+	))
+	assert.Equal(t, int64(160), got.Status.KES.CurrentPeriod)
+	assert.True(t, meta.IsStatusConditionTrue(
+		got.Status.Conditions, condRotationDue,
+	))
+	assert.Zero(t, f.issuer.calls, "no issuance under a rejected spec")
+
+	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	require.NotNil(t, degraded)
+	assert.Equal(t, "InvalidSpec", degraded.Reason)
+	ready := meta.FindStatusCondition(got.Status.Conditions, condReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, "InvalidSpec", ready.Reason)
+	assert.Equal(t, "Degraded", got.Status.Phase)
+}
+
+// A rejected spec must neither issue nor dial node-to-client for the on-chain
+// counter. The stub answers with a usable counter, so a stale observation that
+// a reconcile refreshed would let Auto rotation issue.
+func TestReconcileInvalidSpecNeverIssues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		counter time.Duration
+		mutate  func(*dingov1alpha1.DingoNode)
+	}{
+		{"mainnet secret signer", time.Minute, func(dn *dingov1alpha1.DingoNode) {
+			dn.Spec.Network = "mainnet"
+			dn.Spec.BlockProducer.Rotation.ColdSigner.Type =
+				dingov1alpha1.ColdSignerSecret
+		}},
+		// Rejected for a field Auto rotation does not read, on a known
+		// network, so a refreshed counter alone would let it issue.
+		{"stale counter", 20 * time.Minute, func(dn *dingov1alpha1.DingoNode) {
+			dn.Spec.RelayService.NodePort = 30001
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRotateFixture(t)
+			tc.mutate(f.dn)
+			observedOnChain(f.dn, 3, tc.counter)
+			require.Error(t, validateSpec(f.dn))
+
+			secret := f.secret(t)
+			secret.ResourceVersion = ""
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(secret, f.dn).WithStatusSubresource(f.dn).Build()
+			f.r.Client, f.r.APIReader, f.r.Scheme = c, c, scheme
+			f.r.ForgeStatus = &statusFetcher{st: &forgestatus.Status{
+				HasKESData:            true,
+				CurrentKESPeriod:      160,
+				OpCertStartKESPeriod:  100,
+				OpCertExpiryKESPeriod: 162,
+				RemainingKESPeriods:   2,
+			}}
+			stub := &stubOnChain{
+				counter: onchain.Counter{Value: 3, Found: true},
+			}
+			f.r.OnChain = stub
+			_, err := f.r.Reconcile(
+				context.Background(),
+				ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.dn)},
+			)
+			require.NoError(t, err)
+			assert.Zero(t, f.issuer.calls, "no issuance under a rejected spec")
+			assert.Zero(t, stub.calls, "no on-chain dial under a rejected spec")
+		})
+	}
+}
+
+// A block producer rejected for a missing spec.blockProducer cannot be
+// observed for KES, so earlier KES status and RotationDue must not be left as
+// if they were current.
+func TestReconcileInvalidSpecWithoutBlockProducerClearsKES(t *testing.T) {
+	t.Parallel()
+	f := newRotateFixture(t)
+	f.dn.Spec.BlockProducer = nil
+	f.dn.Status.KES = dingov1alpha1.KESStatus{
+		CurrentPeriod: 150, RemainingPeriods: 12,
+	}
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse,
+		Reason: "KESHealthy", Message: "12 KES periods remaining",
+	})
+	require.Error(t, validateSpec(f.dn))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(f.dn).WithStatusSubresource(f.dn).Build()
+	f.r.Client, f.r.APIReader, f.r.Scheme = c, c, scheme
+	f.r.ForgeStatus = &statusFetcher{st: &forgestatus.Status{
+		HasKESData:            true,
+		CurrentKESPeriod:      160,
+		OpCertStartKESPeriod:  100,
+		OpCertExpiryKESPeriod: 162,
+		RemainingKESPeriods:   2,
+	}}
+
+	_, err := f.r.Reconcile(
+		context.Background(),
+		ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.dn)},
+	)
+	require.NoError(t, err)
+
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(f.dn), got,
+	))
+	assert.Equal(t, dingov1alpha1.KESStatus{}, got.Status.KES)
+	due := meta.FindStatusCondition(got.Status.Conditions, condRotationDue)
+	require.NotNil(t, due)
+	assert.Equal(t, metav1.ConditionUnknown, due.Status)
+	assert.Equal(t, "InvalidSpec", due.Reason)
+}
+
+// Ledger pipeline health and tip-stall tracking must keep updating under an
+// invalid spec too, and their result must reach the persisted status.
+func TestReconcileInvalidSpecKeepsObservingPipeline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		st     *forgestatus.Status
+		scrape int
+		reason string
+	}{
+		{"wedged pipeline", &forgestatus.Status{
+			HasPipelineStuckMetric: true, HasPipelineHaltedMetric: true,
+			PipelineStuck: true, TipSlot: 1000, HasTipSlot: true,
+		}, 1, "LedgerPipelineStuck"},
+		{"stalled tip", tipStatus(1000), 2, reasonTipNotAdvancing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRotateFixture(t)
+			f.dn.Spec.Network = ""
+			require.Error(t, validateSpec(f.dn))
+
+			secret := f.secret(t)
+			secret.ResourceVersion = ""
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(secret, f.dn).WithStatusSubresource(f.dn).Build()
+			clock := &tipClock{
+				now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC),
+			}
+			f.r.Client, f.r.APIReader, f.r.Scheme = c, c, scheme
+			f.r.ForgeStatus = &statusFetcher{st: tc.st}
+			f.r.TipStallThreshold = tipThreshold
+			f.r.Now = clock.Now
+
+			for range tc.scrape {
+				_, err := f.r.Reconcile(
+					context.Background(),
+					ctrl.Request{
+						NamespacedName: client.ObjectKeyFromObject(f.dn),
+					},
+				)
+				require.NoError(t, err)
+				clock.now = clock.now.Add(tipThreshold + time.Minute)
+			}
+
+			got := &dingov1alpha1.DingoNode{}
+			require.NoError(t, c.Get(
+				context.Background(), client.ObjectKeyFromObject(f.dn), got,
+			))
+			cond := meta.FindStatusCondition(
+				got.Status.Conditions, condPipelineHealthy,
+			)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, tc.reason, cond.Reason)
+			assert.Equal(t, int64(1000), got.Status.Tip.Slot)
+			require.NotNil(t, got.Status.Tip.LastProgressAt)
+			assert.Zero(t, f.issuer.calls, "no issuance under a rejected spec")
+		})
+	}
 }

@@ -105,6 +105,7 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
+					PoolID: strings.Repeat("ab", 28),
 					Keys: dingov1alpha1.KeysSpec{
 						SourceType: dingov1alpha1.KeySourceExternalSecret,
 						SecretRef:  "keys",
@@ -173,7 +174,8 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					PoolID: strings.Repeat("ab", 28),
+					Keys:   dingov1alpha1.KeysSpec{SecretRef: "keys"},
 					Rotation: dingov1alpha1.RotationSpec{
 						Mode: dingov1alpha1.RotationModeMonitorOnly,
 					},
@@ -185,7 +187,8 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					PoolID: strings.Repeat("ab", 28),
+					Keys:   dingov1alpha1.KeysSpec{SecretRef: "keys"},
 					Rotation: dingov1alpha1.RotationSpec{
 						Mode: dingov1alpha1.RotationModeAssisted,
 					},
@@ -218,7 +221,8 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					PoolID: strings.Repeat("ab", 28),
+					Keys:   dingov1alpha1.KeysSpec{SecretRef: "keys"},
 					HA: dingov1alpha1.HASpec{
 						Strategy: dingov1alpha1.HAActiveStandby,
 					},
@@ -292,7 +296,8 @@ func TestValidateSpecRejectsConflictingVoteKeyEnv(t *testing.T) {
 				Role:    dingov1alpha1.RoleBlockProducer,
 				Network: "preview",
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
-					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					PoolID: strings.Repeat("ab", 28),
+					Keys:   dingov1alpha1.KeysSpec{SecretRef: "keys"},
 				},
 				Environment: env,
 			},
@@ -523,4 +528,41 @@ func TestValidateSpecAutoRotationSecretSignerMainnet(t *testing.T) {
 	err = validateSpec(dn)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mainnet")
+}
+
+// Without a poolId the opcert is not bound to a pool and the on-chain counter
+// floor is never read, so every block producer must set it, whatever its
+// rotation mode.
+func TestValidateSpecBlockProducerRequiresPoolID(t *testing.T) {
+	t.Parallel()
+
+	node := func(
+		mode dingov1alpha1.RotationMode,
+		poolID string,
+	) *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleBlockProducer,
+			Network: "preview",
+			BlockProducer: &dingov1alpha1.BlockProducerSpec{
+				PoolID:   poolID,
+				Keys:     dingov1alpha1.KeysSpec{SecretRef: "keys"},
+				Rotation: dingov1alpha1.RotationSpec{Mode: mode},
+			},
+		}}
+	}
+	for _, mode := range []dingov1alpha1.RotationMode{
+		dingov1alpha1.RotationModeMonitorOnly,
+		dingov1alpha1.RotationModeAssisted,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			err := validateSpec(node(mode, ""))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "spec.blockProducer.poolId")
+			require.NoError(
+				t,
+				validateSpec(node(mode, strings.Repeat("ab", 28))),
+			)
+		})
+	}
 }

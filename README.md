@@ -143,7 +143,8 @@ kubectl get dn -n cardano
 ```
 
 For a block producer, first create a Secret with your pool credentials in
-cardano-cli text-envelope form, then apply the sample:
+cardano-cli text-envelope form, set `spec.blockProducer.poolId` in the sample,
+then apply it:
 
 ```sh
 kubectl create secret generic producer-pool-keys -n cardano \
@@ -167,6 +168,7 @@ spec:
     externalRelays:
       - { address: relay.example.com, port: 3001, valency: 1, trustable: true }
   blockProducer:
+    poolId: <pool id, bech32 or hex>
     keys: { secretRef: producer-pool-keys }
     rotation: { mode: MonitorOnly, renewBeforePeriods: 8 }
     ha: { strategy: SingleActive, failover: Automatic }
