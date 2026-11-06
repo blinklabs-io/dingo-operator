@@ -205,6 +205,23 @@ func (r *DingoNodeReconciler) Reconcile(
 
 	if err := validateSpec(dn); err != nil {
 		logger.Info("invalid DingoNode spec", "error", err.Error())
+		// Resources are left as they are, but the running node is still
+		// watched: its KES window keeps closing whatever the spec says. Observe
+		// before setting the InvalidSpec conditions so they win over any
+		// Degraded the observation raises. No autoRotate: it would run without
+		// the validation that rejected this spec (for one, the mainnet refusal
+		// of the in-cluster cold key).
+		r.refreshForgeStatus(ctx, dn)
+		if resources.IsBlockProducer(dn) && dn.Spec.BlockProducer == nil {
+			// refreshForgeStatus reads KES only through spec.blockProducer, so
+			// without it the earlier KES status would read as current.
+			dn.Status.KES = dingov1alpha1.KESStatus{}
+			setRotationDueUnknown(
+				dn,
+				"InvalidSpec",
+				"spec.blockProducer is missing; KES status is not observed",
+			)
+		}
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type:               condDegraded,
 			Status:             metav1.ConditionTrue,
@@ -222,7 +239,11 @@ func (r *DingoNodeReconciler) Reconcile(
 			ObservedGeneration: dn.Generation,
 		})
 		dn.Status.Phase = "Degraded"
-		return ctrl.Result{}, r.updateStatus(ctx, dn)
+		// Requeue: nothing else reconciles the node until it or an owned
+		// resource changes, which would stop the observation above.
+		return ctrl.Result{
+			RequeueAfter: requeueInterval,
+		}, r.updateStatus(ctx, dn)
 	}
 
 	// Before reconcileResources, because reconcileResources is what validates a
