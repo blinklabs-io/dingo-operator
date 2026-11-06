@@ -27,6 +27,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	"github.com/blinklabs-io/dingo-operator/internal/topology"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -139,6 +140,20 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		}
 		if err := resources.ValidateKeyEnv(dn); err != nil {
 			return err
+		}
+		// With no rendered topology the operator creates no topology ConfigMap
+		// and Dingo dials its built-in public bootstrap peers.
+		if _, hasTopo, err := topology.Render(
+			dn, dn.Namespace, nil,
+		); err != nil {
+			return err
+		} else if !hasTopo {
+			return errors.New(
+				"role blockProducer requires spec.topology (relayRefs with " +
+					"autoPeerRelays, externalRelays, bootstrapPeers, " +
+					"publicRoots or useLedgerAfterSlot); without it the " +
+					"node dials public bootstrap peers",
+			)
 		}
 	}
 	if relay := dn.Spec.RelayService; relay.Type == "" ||

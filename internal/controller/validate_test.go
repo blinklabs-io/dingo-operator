@@ -26,6 +26,12 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+// validTopology satisfies the block producer topology requirement so fixtures
+// can exercise other rules.
+var validTopology = dingov1alpha1.TopologySpec{
+	RelayRefs: []string{"relay"},
+}
+
 func TestValidateSpec(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -172,6 +178,7 @@ func TestValidateSpec(t *testing.T) {
 			name: "valid block producer monitor only",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
+				Topology: validTopology,
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
 					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
 					Rotation: dingov1alpha1.RotationSpec{
@@ -184,6 +191,7 @@ func TestValidateSpec(t *testing.T) {
 			name: "valid block producer assisted rotation",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleBlockProducer, Network: "mainnet",
+				Topology: validTopology,
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
 					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
 					Rotation: dingov1alpha1.RotationSpec{
@@ -289,8 +297,9 @@ func TestValidateSpecRejectsConflictingVoteKeyEnv(t *testing.T) {
 		return &dingov1alpha1.DingoNode{
 			ObjectMeta: metav1.ObjectMeta{Name: "bp"},
 			Spec: dingov1alpha1.DingoNodeSpec{
-				Role:    dingov1alpha1.RoleBlockProducer,
-				Network: "preview",
+				Role:     dingov1alpha1.RoleBlockProducer,
+				Network:  "preview",
+				Topology: validTopology,
 				BlockProducer: &dingov1alpha1.BlockProducerSpec{
 					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
 				},
@@ -389,6 +398,7 @@ func TestValidateSpecAutoRotation(t *testing.T) {
 		return &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
 			Role:          dingov1alpha1.RoleBlockProducer,
 			Network:       "preview",
+			Topology:      validTopology,
 			BlockProducer: bp,
 		}}
 	}
@@ -523,4 +533,69 @@ func TestValidateSpecAutoRotationSecretSignerMainnet(t *testing.T) {
 	err = validateSpec(dn)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mainnet")
+}
+
+func TestValidateSpecBlockProducerRequiresTopology(t *testing.T) {
+	t.Parallel()
+
+	bp := func(topo dingov1alpha1.TopologySpec) *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: "ns"},
+			Spec: dingov1alpha1.DingoNodeSpec{
+				Role:     dingov1alpha1.RoleBlockProducer,
+				Network:  "mainnet",
+				Topology: topo,
+				BlockProducer: &dingov1alpha1.BlockProducerSpec{
+					Keys: dingov1alpha1.KeysSpec{SecretRef: "keys"},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		topo    dingov1alpha1.TopologySpec
+		wantErr bool
+	}{
+		{name: "no topology", wantErr: true},
+		{
+			// autoPeerRelays=false drops relayRefs, so nothing is rendered.
+			name: "relayRefs with autoPeerRelays disabled",
+			topo: dingov1alpha1.TopologySpec{
+				AutoPeerRelays: new(false),
+				RelayRefs:      []string{"relay"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "relayRefs",
+			topo: dingov1alpha1.TopologySpec{RelayRefs: []string{"relay"}},
+		},
+		{
+			name: "externalRelays",
+			topo: dingov1alpha1.TopologySpec{
+				ExternalRelays: []dingov1alpha1.ExternalRelay{
+					{Address: "relay.example.com", Port: 3001},
+				},
+			},
+		},
+		{
+			name: "useLedgerAfterSlot",
+			topo: dingov1alpha1.TopologySpec{
+				UseLedgerAfterSlot: new(int64(-1)),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSpec(bp(tt.topo))
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "topology")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
