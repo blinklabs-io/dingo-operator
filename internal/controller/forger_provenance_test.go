@@ -141,38 +141,85 @@ func TestReconcileForgedOrphanDoesNotHaltForger(t *testing.T) {
 	}
 }
 
-// The same workload with a controller chain that resolves to a live DingoNode
-// halts a running forger: its pod staged the pool, whatever its DingoNode now
-// names.
-func TestReconcileVerifiedOrphanHaltsForger(t *testing.T) {
+// A pod can name any StatefulSet in its namespace as its controller, so even a
+// pod whose controller chain resolves does not halt a running forger: here
+// the StatefulSet is a live relay's own.
+func TestReconcilePodOfOtherStatefulSetDoesNotHalt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, data := poolKeys(t)
-	otherPool, otherData := poolKeys(t)
 	victim := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
 	victim.UID = "victim-uid"
-	moved := forgerNode("evil", "ns-evil", otherPool, "keys-evil", 0)
-	moved.UID = "moved-uid"
+	relay := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "evil", Namespace: "ns-evil", UID: "relay-uid",
+		},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role: dingov1alpha1.RoleRelay, Network: "preview",
+		},
+	}
 	c := conflictClient(t, victim, keysSecret("keys-a", "ns-a", data))
 	r := reconcilerFor(c)
 	reconcileNode(t, r, victim)
 	require.Equal(t, int32(1), replicasOf(t, c, victim))
 
 	pod, sts := forgedWorkload(pool)
-	sts.Spec.Template.Annotations = map[string]string{
-		resources.KeysPoolAnnotation: otherPool,
-	}
+	sts.Labels = nil
+	sts.Spec.Template = corev1.PodTemplateSpec{}
 	setController(sts, dingov1alpha1.GroupVersion.String(),
-		"DingoNode", moved.Name, moved.UID)
+		"DingoNode", relay.Name, relay.UID)
 	setController(pod, "apps/v1", "StatefulSet", sts.Name, sts.UID)
-	for _, obj := range []client.Object{
-		moved, keysSecret("keys-evil", "ns-evil", otherData), sts, pod,
-	} {
+	for _, obj := range []client.Object{relay, sts, pod} {
 		require.NoError(t, c.Create(ctx, obj))
 	}
 	reconcileNode(t, r, victim)
-	assert.Equal(t, int32(0), replicasOf(t, c, victim))
+	assert.Equal(t, int32(1), replicasOf(t, c, victim))
 	assert.True(t, refusedAsDuplicate(t, c, victim))
+}
+
+// A StatefulSet holds a running forger's pool, and halts it, only when it is
+// the one a live DingoNode of the same name and UID controls: the operator
+// names each node's StatefulSet after it.
+func TestReconcileStatefulSetHaltsOnlyUnderItsNode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name    string
+		stsName string
+		wanted  int32
+	}{
+		{"StatefulSet named after its DingoNode", "evil", 0},
+		{"StatefulSet under another name", "x", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pool, data := poolKeys(t)
+			otherPool, otherData := poolKeys(t)
+			victim := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
+			victim.UID = "victim-uid"
+			moved := forgerNode("evil", "ns-evil", otherPool, "keys-evil", 0)
+			moved.UID = "moved-uid"
+			c := conflictClient(t, victim, keysSecret("keys-a", "ns-a", data))
+			r := reconcilerFor(c)
+			reconcileNode(t, r, victim)
+			require.Equal(t, int32(1), replicasOf(t, c, victim))
+
+			// The template still records the pool it staged, as a template
+			// held on a refused keys bundle does after poolId moved.
+			_, sts := forgedWorkload(pool)
+			sts.Name = tt.stsName
+			setController(sts, dingov1alpha1.GroupVersion.String(),
+				"DingoNode", moved.Name, moved.UID)
+			for _, obj := range []client.Object{
+				moved, keysSecret("keys-evil", "ns-evil", otherData), sts,
+			} {
+				require.NoError(t, c.Create(ctx, obj))
+			}
+			reconcileNode(t, r, victim)
+			assert.Equal(t, tt.wanted, replicasOf(t, c, victim))
+			assert.True(t, refusedAsDuplicate(t, c, victim))
+		})
+	}
 }
 
 // A newer DingoNode naming an older forger's pool holds the older one only
@@ -190,6 +237,9 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 		{"pod with the name label", false, true, 1},
 		{"StatefulSet with the name", false, false, 1},
 		{"StatefulSet the newer node controls", true, false, 0},
+		// The StatefulSet is at zero; only its pod, which could name any
+		// StatefulSet as its controller, still runs.
+		{"pod of the StatefulSet the newer node controls", true, true, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,23 +255,30 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 			require.Equal(t, int32(1), replicasOf(t, c, victim))
 
 			objs := []client.Object{newer}
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: newer.Name, Namespace: newer.Namespace,
+					UID: "sts-uid",
+				},
+				Spec: appsv1.StatefulSetSpec{Replicas: new(int32(1))},
+			}
+			if tt.owned {
+				setController(sts, dingov1alpha1.GroupVersion.String(),
+					"DingoNode", newer.Name, newer.UID)
+			}
 			if tt.labelPod {
-				objs = append(objs, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 					Name: "bp-x-0", Namespace: "ns-evil", UID: "pod-uid",
 					Labels: resources.Labels(newer),
-				}})
-			} else {
-				sts := &appsv1.StatefulSet{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: newer.Name, Namespace: newer.Namespace,
-						UID: "sts-uid",
-					},
-					Spec: appsv1.StatefulSetSpec{Replicas: new(int32(1))},
-				}
+				}}
 				if tt.owned {
-					setController(sts, dingov1alpha1.GroupVersion.String(),
-						"DingoNode", newer.Name, newer.UID)
+					sts.Spec.Replicas = new(int32)
+					setController(pod, "apps/v1", "StatefulSet",
+						sts.Name, sts.UID)
+					objs = append(objs, sts)
 				}
+				objs = append(objs, pod)
+			} else {
 				objs = append(objs, sts)
 			}
 			for _, obj := range objs {

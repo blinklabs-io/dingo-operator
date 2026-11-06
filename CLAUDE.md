@@ -451,11 +451,11 @@ Only one block producer may forge per pool. When two DingoNodes share a pool ID
 (any namespace, hex or bech32) or a keys Secret (same namespace), the older one
 by creation time, then namespace/name, keeps the keys. The newer is set
 `Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
-StatefulSet is scaled to zero if it exists, and it is re-checked every
-requeue interval. Copies of one key bundle under different Secret names count
-as the same keys: the pool is also read from the cold key in the opcert. The
-newer node resumes only after the older DingoNode is gone and its StatefulSet
-is scaled to zero or removed with all its pods finished, since deleting a
+StatefulSet is scaled to zero if it exists, and it is re-checked every requeue
+interval. Copies of one key bundle under different Secret names count as the
+same keys: the pool is also read from the cold key in the opcert. The newer
+node resumes only after the older DingoNode is gone and its StatefulSet is
+scaled to zero or removed with all its pods finished, since deleting a
 DingoNode does not stop its pod at once. Likewise the older node is held until
 a newer one already running with the same keys has stopped, and an older node
 whose spec fails validation holds the pool only while its workload runs. Any
@@ -463,26 +463,27 @@ other block-producer workload still running the same keys, whatever DingoNode
 now carries its name, also holds them. A pod holds the pool it staged until it
 stops, even after its node's poolId and keys Secret move to another pool: the
 pod template records it in `dingo.blinklabs.io/keys-pool` when it is first
-rendered or its keys change. A template rendered before that annotation
-existed gains it only at its next keys change, normally the next KES rotation,
-so adding it does not restart running producers; until then every pod it starts
-is judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a
-verified pod whose checksum equals another producer's keys staged the same
-bundle. A different bundle for the same pool on such a pod is not detected.
-Only a verified workload can scale a running producer to zero: a StatefulSet
-controlled by a DingoNode with the same UID, or a pod controlled by such a
-StatefulSet. Labels, annotations, and a keys volume can be set by anyone who
-may create a pod, so a workload with only those, or whose owner is gone, keeps a
-producer that is not running from starting and a running one from rolling, but
-does not halt it. Owner references are set by whoever creates the object, so
-the chain shows only that its creator could write StatefulSets in a namespace
-holding that DingoNode; DingoNode authors are trusted, and an older DingoNode
-naming a pool holds it on its spec alone. These checks read StatefulSets and
-pods from the API server, so the operator needs `list` on pods. A failed lookup is
-not a refusal: the reconcile returns the error and leaves the workload as it
-is. The exception is another block producer's keys Secret the operator may not
-read with its current permissions: only that node's pool ID and Secret name
-count, and if its workload is running the reconcile fails closed.
+rendered or its keys change. A template rendered before that annotation existed
+gains it only at its next keys change, normally the next KES rotation, so
+adding it does not restart running producers; until then every pod it starts is
+judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a pod
+controlled by a StatefulSet that a live DingoNode controls, whose checksum
+equals another producer's keys staged the same bundle. A different bundle for
+the same pool on such a pod is not detected. Only a StatefulSet that wants a
+replica and is controlled by the live DingoNode of the same namespace, name,
+and UID can scale a running producer to zero. Owner references are set by
+whoever creates the object, so this shows only that the StatefulSet's creator
+could write StatefulSets in that DingoNode's namespace. Every other workload
+refuses without halting: it keeps a producer that is not running from starting
+and a running one from rolling, which includes KES and opcert rotation, until
+it stops or is removed. That covers pods, which anyone who may create a pod can
+label, annotate, and point at any StatefulSet in their namespace, and workloads
+whose DingoNode is gone. These checks read StatefulSets and pods from the API
+server, so the operator needs `list` on pods. A failed lookup is not a refusal:
+the reconcile returns the error and leaves the workload as it is. The exception
+is another block producer's keys Secret the operator may not read with its
+current permissions: only that node's pool ID and Secret name count, and if its
+workload is running the reconcile fails closed.
 
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:
