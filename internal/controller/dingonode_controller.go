@@ -205,6 +205,23 @@ func (r *DingoNodeReconciler) Reconcile(
 
 	if err := validateSpec(dn); err != nil {
 		logger.Info("invalid DingoNode spec", "error", err.Error())
+		// Resources are left as they are, but the running node is still
+		// watched: its KES window keeps closing whatever the spec says. Observe
+		// before setting the InvalidSpec conditions so they win over any
+		// Degraded the observation raises. No autoRotate: it would run without
+		// the validation that rejected this spec (for one, the mainnet refusal
+		// of the in-cluster cold key).
+		r.refreshForgeStatus(ctx, dn)
+		if resources.IsBlockProducer(dn) && dn.Spec.BlockProducer == nil {
+			// refreshForgeStatus reads KES only through spec.blockProducer, so
+			// without it the earlier KES status would read as current.
+			dn.Status.KES = dingov1alpha1.KESStatus{}
+			setRotationDueUnknown(
+				dn,
+				"InvalidSpec",
+				"spec.blockProducer is missing; KES status is not observed",
+			)
+		}
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type:               condDegraded,
 			Status:             metav1.ConditionTrue,
@@ -222,7 +239,11 @@ func (r *DingoNodeReconciler) Reconcile(
 			ObservedGeneration: dn.Generation,
 		})
 		dn.Status.Phase = "Degraded"
-		return ctrl.Result{}, r.updateStatus(ctx, dn)
+		// Requeue: nothing else reconciles the node until it or an owned
+		// resource changes, which would stop the observation above.
+		return ctrl.Result{
+			RequeueAfter: requeueInterval,
+		}, r.updateStatus(ctx, dn)
 	}
 
 	// Before reconcileResources, because reconcileResources is what validates a
@@ -1035,15 +1056,12 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 
 	// Resolve the pool first: it identifies what any stored observation is *of*,
 	// and the counter map is keyed by it.
-	var wantPool string
-	if bp.PoolID != "" {
-		parsed, err := parsePoolID(bp.PoolID)
-		if err != nil {
-			r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
-			return
-		}
-		wantPool = parsed.String()
+	parsed, err := parsePoolID(bp.PoolID)
+	if err != nil {
+		r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
+		return
 	}
+	wantPool := parsed.String()
 	// Drop an observation that belongs to a different pool the moment poolId
 	// changes, rather than letting the freshness window keep enforcing it for up
 	// to onChainCounterMaxAge. Provenance is the whole justification for that
@@ -1058,12 +1076,6 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 		dn.Status.OpCert.OnChainCounterAt = nil
 		dn.Status.OpCert.OnChainCounterPoolID = ""
 		r.forgetOnChainAttempt(key)
-	}
-	if wantPool == "" {
-		r.setOnChainUnavailable(dn, "PoolIDUnset",
-			"spec.blockProducer.poolId is required to look up the on-chain "+
-				"opcert counter (it is keyed by the pool's cold-key hash)")
-		return
 	}
 
 	// Within the interval, reuse what the last attempt learned instead of
@@ -1100,11 +1112,6 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 		fmt.Sprintf("%s.%s.svc.cluster.local", dn.Name, dn.Namespace),
 		strconv.Itoa(resources.PortNodeToClient),
 	)
-	poolID, err := parsePoolID(bp.PoolID)
-	if err != nil {
-		r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
-		return
-	}
 
 	// Record the attempt before making it, so a dial that fails — or a reconcile
 	// that errors out after it — is rate-limited exactly like a success.
@@ -1112,7 +1119,7 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 	counter, err := r.OnChain.Fetch(ctx, onchain.Query{
 		Address:      addr,
 		NetworkMagic: magic,
-		PoolID:       poolID,
+		PoolID:       parsed,
 	})
 	switch {
 	case err != nil:

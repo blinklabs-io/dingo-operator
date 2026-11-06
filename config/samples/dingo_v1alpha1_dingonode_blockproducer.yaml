@@ -19,6 +19,9 @@ spec:
     relayRefs:
       - relay
   blockProducer:
+    # Required: the pool ID (bech32 or hex cold-key hash). The opcert is checked
+    # against it and it keys the on-chain opcert counter lookup.
+    poolId: <pool id, bech32 or hex>
     # A Secret holding cardano-cli text-envelope files: vrf.skey, kes.skey,
     # opcert.cert (or node.cert, as in the dingo Helm chart). An init container
     # stages them at /keys with mode 0600.
@@ -32,7 +35,7 @@ spec:
     rotation:
       # MonitorOnly: surface KES/opcert state and RotationDue; do not mutate keys.
       # Switch to Auto with a cold signer to fully automate opcert issuance.
-      # Auto also needs poolId, nodeToClient.enabled, and Secret update access.
+      # Auto also needs nodeToClient.enabled and Secret update access.
       mode: MonitorOnly
       renewBeforePeriods: 8
       # coldSigner:
