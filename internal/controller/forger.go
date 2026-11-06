@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
@@ -52,10 +53,8 @@ type forgerIdentity struct {
 // different forgers.
 func (a forgerIdentity) sharedWith(b forgerIdentity) string {
 	for _, p := range a.pools {
-		for _, q := range b.pools {
-			if p == q {
-				return "pool " + p
-			}
+		if slices.Contains(b.pools, p) {
+			return "pool " + p
 		}
 	}
 	if a.secret != "" && a.namespace == b.namespace && a.secret == b.secret {
