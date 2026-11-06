@@ -455,13 +455,17 @@ StatefulSet is scaled to zero if it exists, and it is re-checked every
 requeue interval. Copies of one key bundle under different Secret names count
 as the same keys: the pool is also read from the cold key in the opcert. The
 newer node resumes only after the older DingoNode is gone and its StatefulSet
-and pods are gone too, since deleting a DingoNode does not stop its pod at
-once. Likewise the older node is held until a newer one already running with
-the same keys has stopped. The operator needs `list` on pods to check this. A
-failed lookup is not a refusal: the reconcile returns the error and leaves the
-workload as it is. The exception is another block producer's keys Secret the
-operator may not read: that node cannot have been started by the operator, so
-only its pool ID and Secret name count, unless its workload is running.
+is scaled to zero or removed with all its pods finished, since deleting a
+DingoNode does not stop its pod at once. Likewise the older node is held until
+a newer one already running with the same keys has stopped, and an older node
+whose spec fails validation holds the pool only while its workload runs. Any
+other block-producer workload still running the same keys, whatever DingoNode
+now carries its name, also holds them. These checks read StatefulSets and pods
+from the API server, so the operator needs `list` on pods. A failed lookup is
+not a refusal: the reconcile returns the error and leaves the workload as it
+is. The exception is another block producer's keys Secret the operator may not
+read with its current permissions: only that node's pool ID and Secret name
+count, and if its workload is running the reconcile fails closed.
 
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:
