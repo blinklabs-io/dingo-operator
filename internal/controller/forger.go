@@ -151,7 +151,20 @@ func (r *DingoNodeReconciler) forgerHeld(
 		}
 		theirs, err := r.nodeIdentity(ctx, o)
 		if err != nil {
-			return err
+			// The operator refuses to start a node whose keys Secret it may
+			// not read, so a denied read hides a running copy only when RBAC
+			// was narrowed after start. Failing on every denial would stall
+			// all block producers on one unreadable namespace.
+			if !apierrors.IsForbidden(err) {
+				return err
+			}
+			up, uerr := r.workloadUp(ctx, o)
+			if uerr != nil {
+				return uerr
+			}
+			if up {
+				return err
+			}
 		}
 		what := mine.sharedWith(theirs)
 		if what == "" {

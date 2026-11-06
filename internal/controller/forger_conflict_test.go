@@ -706,3 +706,76 @@ func TestReconcileRecreatedHolderPodStillBlocks(t *testing.T) {
 	assert.False(t, refusedAsDuplicate(t, c, loser))
 	assert.True(t, forging(t, c, loser))
 }
+
+// A block producer whose keys Secret the operator may not read cannot have
+// been started by it, so the denied read must not stall every other block
+// producer's reconcile. Its poolId still counts, and a workload it already
+// runs still fails closed.
+func TestReconcileForbiddenOtherKeysSecret(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	poolB, dataB := poolKeys(t)
+	_, dataX := poolKeys(t)
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Resource: "secrets"}, "keys-x", nil,
+	)
+	tests := []struct {
+		name      string
+		poolID    string
+		running   bool
+		wantErr   bool
+		wantHeld  bool
+		wantForge bool
+	}{
+		{"no workload is not a holder", "", false, false, false, true},
+		{"its poolId still holds", poolB, false, false, true, false},
+		{"a running workload fails closed", "", true, true, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			other := forgerNode("bp-1", "ns-x", tt.poolID, "keys-x", time.Hour)
+			node := forgerNode("bp-2", "ns-b", "", "keys-b", 0)
+			objs := []client.Object{
+				other, node,
+				keysSecret("keys-x", "ns-x", dataX),
+				keysSecret("keys-b", "ns-b", dataB),
+			}
+			if tt.running {
+				objs = append(objs, holderPod(other))
+			}
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				WithStatusSubresource(&dingov1alpha1.DingoNode{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(
+						ctx context.Context, cl client.WithWatch,
+						key client.ObjectKey, obj client.Object,
+						opts ...client.GetOption,
+					) error {
+						if _, ok := obj.(*corev1.Secret); ok &&
+							key.Namespace == "ns-x" {
+							return forbidden
+						}
+						return cl.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			r := reconcilerFor(c)
+			_, err := r.Reconcile(ctx, ctrl.Request{
+				NamespacedName: client.ObjectKeyFromObject(node),
+			})
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantHeld, refusedAsDuplicate(t, c, node))
+			assert.Equal(t, tt.wantForge, forging(t, c, node))
+		})
+	}
+}

@@ -110,7 +110,9 @@ and pods are gone too, since deleting a DingoNode does not stop its pod at
 once. Likewise the older node is held until a newer one already running with
 the same keys has stopped. The operator needs `list` on pods to check this. A
 failed lookup is not a refusal: the reconcile returns the error and leaves the
-workload as it is.
+workload as it is. The exception is another block producer's keys Secret the
+operator may not read: that node cannot have been started by the operator, so
+only its pool ID and Secret name count, unless its workload is running.
 
 ## Installation
 
