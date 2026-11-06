@@ -615,3 +615,39 @@ func TestReconcileHolderWaitsForOutrankedWorkload(t *testing.T) {
 	reconcileNode(t, r, newer)
 	assert.False(t, forging(t, c, newer))
 }
+
+// A holder recreated under its old name is newer than the refused node, but
+// the old incarnation's pod carries the same name label and still forges.
+func TestReconcileRecreatedHolderPodStillBlocks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, data := poolKeys(t)
+	holder := forgerNode("bp-1", "ns", "", "keys-a", time.Hour)
+	loser := forgerNode("bp-2", "ns", "", "keys-b", 30*time.Minute)
+	c := conflictClient(t, holder, loser,
+		keysSecret("keys-a", "ns", data),
+		keysSecret("keys-b", "ns", data),
+	)
+	r := reconcilerFor(c)
+	reconcileNode(t, r, holder)
+	pod := holderPod(holder)
+	require.NoError(t, c.Create(ctx, pod))
+	reconcileNode(t, r, loser)
+	require.True(t, refusedAsDuplicate(t, c, loser))
+
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &sts))
+	require.NoError(t, c.Delete(ctx, &sts))
+	require.NoError(t, c.Delete(ctx, holder))
+	recreated := forgerNode("bp-1", "ns", "", "keys-a", 0)
+	require.NoError(t, c.Create(ctx, recreated))
+
+	reconcileNode(t, r, loser)
+	assert.True(t, refusedAsDuplicate(t, c, loser), "old pod alive")
+	assert.False(t, forging(t, c, loser))
+
+	require.NoError(t, c.Delete(ctx, pod))
+	reconcileNode(t, r, loser)
+	assert.False(t, refusedAsDuplicate(t, c, loser))
+	assert.True(t, forging(t, c, loser))
+}
