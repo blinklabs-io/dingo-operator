@@ -447,6 +447,13 @@ proven end to end against a real forging node in `test/e2e/rotation_test.go`
 (`make e2e`) — which is what establishes that the roll actually resumes forging
 on the new key, something envtest cannot show.
 
+Only one block producer may forge per pool. When two DingoNodes share a pool ID
+(any namespace, hex or bech32) or a keys Secret (same namespace), the older one
+by creation time, then namespace/name, keeps running. The newer is set
+`Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
+StatefulSet is scaled to zero if it exists, and it is re-checked every
+requeue interval, so it resumes once the older node is deleted.
+
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:
 

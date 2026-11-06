@@ -98,6 +98,13 @@ operators.
   tag in container references. Keep `spec.image.tag` set to the pinned image's
   version because the operator uses it to select the UID and health probes.
 
+Only one block producer may forge per pool. When two DingoNodes share a pool ID
+(any namespace, hex or bech32) or a keys Secret (same namespace), the older one
+by creation time, then namespace/name, keeps running. The newer is set
+`Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
+StatefulSet is scaled to zero if it exists, and it is re-checked every
+requeue interval, so it resumes once the older node is deleted.
+
 ## Installation
 
 Install the operator via its Helm chart (published to GHCR as an OCI artifact):
