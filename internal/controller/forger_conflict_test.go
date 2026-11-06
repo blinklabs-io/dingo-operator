@@ -879,3 +879,91 @@ func TestReconcileInvalidOlderForgerHoldsOnlyWhileRunning(t *testing.T) {
 	assert.False(t, refusedAsDuplicate(t, c, loser))
 	assert.True(t, forging(t, c, loser))
 }
+
+// stagedPod is the pod a node's StatefulSet starts: it carries the template's
+// labels, annotations, and spec as rendered at the time it was created.
+func stagedPod(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+) *corev1.Pod {
+	t.Helper()
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(n), &sts,
+	))
+	tmpl := sts.Spec.Template
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        n.Name + "-0",
+			Namespace:   n.Namespace,
+			Labels:      tmpl.Labels,
+			Annotations: tmpl.Annotations,
+		},
+		Spec: tmpl.Spec,
+	}
+}
+
+// A producer moved from pool A to pool B keeps A's keys in its old pod until
+// that pod stops: the init container copied them, so neither the spec nor the
+// keys Secret, both now naming B, shows that A has stopped.
+func TestReconcileRepointedForgerOldPodHoldsPool(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// rename moves the keys to a new Secret and deletes the old one;
+		// otherwise the old Secret's contents are replaced.
+		rename bool
+	}{
+		{"keys Secret contents replaced", false},
+		{"keys Secret replaced by another", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			poolA, dataA := poolKeys(t)
+			poolB, dataB := poolKeys(t)
+			moved := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+			loser := forgerNode("bp-2", "ns", poolA, "keys-c", 0)
+			secretA := keysSecret("keys-a", "ns", dataA)
+			c := conflictClient(t, moved, loser, secretA,
+				keysSecret("keys-c", "ns", dataA),
+			)
+			r := reconcilerFor(c)
+			reconcileNode(t, r, moved)
+			require.True(t, forging(t, c, moved))
+			pod := stagedPod(t, c, moved)
+			require.NoError(t, c.Create(ctx, pod))
+
+			require.NoError(t, c.Get(
+				ctx, client.ObjectKeyFromObject(moved), moved,
+			))
+			moved.Spec.BlockProducer.PoolID = poolB
+			if tt.rename {
+				require.NoError(t, c.Create(ctx,
+					keysSecret("keys-b", "ns", dataB),
+				))
+				require.NoError(t, c.Delete(ctx, secretA))
+				moved.Spec.BlockProducer.Keys.SecretRef = "keys-b"
+			} else {
+				require.NoError(t, c.Get(
+					ctx, client.ObjectKeyFromObject(secretA), secretA,
+				))
+				secretA.Data = dataB
+				require.NoError(t, c.Update(ctx, secretA))
+			}
+			require.NoError(t, c.Update(ctx, moved))
+			reconcileNode(t, r, moved)
+			require.True(t, forging(t, c, moved))
+
+			reconcileNode(t, r, loser)
+			assert.True(t, refusedAsDuplicate(t, c, loser),
+				"the old pod still stages pool A")
+			assert.False(t, forging(t, c, loser))
+
+			require.NoError(t, c.Delete(ctx, pod))
+			reconcileNode(t, r, loser)
+			assert.False(t, refusedAsDuplicate(t, c, loser))
+			assert.True(t, forging(t, c, loser))
+		})
+	}
+}

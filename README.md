@@ -111,8 +111,14 @@ DingoNode does not stop its pod at once. Likewise the older node is held until
 a newer one already running with the same keys has stopped, and an older node
 whose spec fails validation holds the pool only while its workload runs. Any
 other block-producer workload still running the same keys, whatever DingoNode
-now carries its name, also holds them. These checks read StatefulSets and pods
-from the API server, so the operator needs `list` on pods. A failed lookup is
+now carries its name, also holds them. A pod holds the pool it staged until it
+stops, even after its node's poolId and keys Secret move to another pool: the
+pod template records it in `dingo.blinklabs.io/keys-pool` when it is first
+rendered or its keys change. A template rendered before that annotation
+existed gains it only at its next keys change, normally the next KES rotation,
+so adding it does not restart running producers; until then every pod it starts
+is judged by its keys Secret alone. These checks read StatefulSets and pods from the API server, so the
+operator needs `list` on pods. A failed lookup is
 not a refusal: the reconcile returns the error and leaves the workload as it
 is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name

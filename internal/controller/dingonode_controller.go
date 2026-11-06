@@ -467,6 +467,12 @@ func (r *DingoNodeReconciler) reconcileResources(
 				r.rejectKeys(ctx, dn, verr)
 			} else {
 				opts.KeysChecksum = keysChecksum(secret)
+				// validateKeysSecret bound the opcert to poolId, so either
+				// names the pool these keys forge for.
+				opts.KeysPool = opCertPoolID(secret.Data)
+				if opts.KeysPool == "" {
+					opts.KeysPool = normalizedPoolID(bp.PoolID)
+				}
 				voteData, _, _ := voteKeyFile(secret.Data)
 				opts.MountVoteKey = voteData != nil
 				dn.Status.OpCert.OnDiskCounter = state.Counter

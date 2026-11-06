@@ -42,7 +42,8 @@ func heldf(format string, a ...any) error {
 }
 
 // forgerIdentity is what makes two block producers the same forger: a pool
-// (from poolId or from the cold key in the delivered opcert) or a keys Secret.
+// (from poolId, from the cold key in the delivered opcert, or recorded on the
+// pod that staged the keys) or a keys Secret.
 type forgerIdentity struct {
 	pools     []string
 	namespace string
@@ -271,7 +272,7 @@ func (r *DingoNodeReconciler) orphanForger(
 		}
 		if err := r.orphanHolds(
 			ctx, mine, self, "StatefulSet", s.Namespace, s.Name, s.Name,
-			s.Spec.Template.Spec,
+			s.Spec.Template.Annotations, s.Spec.Template.Spec,
 		); err != nil {
 			return err
 		}
@@ -288,7 +289,7 @@ func (r *DingoNodeReconciler) orphanForger(
 		}
 		if err := r.orphanHolds(
 			ctx, mine, self, "pod", p.Namespace, p.Name,
-			p.Labels[resources.NodeLabel], p.Spec,
+			p.Labels[resources.NodeLabel], p.Annotations, p.Spec,
 		); err != nil {
 			return err
 		}
@@ -296,11 +297,18 @@ func (r *DingoNodeReconciler) orphanForger(
 	return nil
 }
 
+// orphanHolds returns an error when a workload other than self's holds keys
+// mine shares. A pod keeps the keys its init container copied until it stops,
+// whatever its Secret now holds, so the pool recorded on it when it was created
+// counts as well as the Secret's current one. A template rendered before that
+// record existed gains it only at its next keys change; until then its pods are
+// judged by their Secret alone.
 func (r *DingoNodeReconciler) orphanHolds(
 	ctx context.Context,
 	mine forgerIdentity,
 	self types.NamespacedName,
 	kind, namespace, name, owner string,
+	annotations map[string]string,
 	spec corev1.PodSpec,
 ) error {
 	if self == (types.NamespacedName{Namespace: namespace, Name: owner}) {
@@ -311,6 +319,11 @@ func (r *DingoNodeReconciler) orphanHolds(
 		return nil
 	}
 	theirs := forgerIdentity{namespace: namespace, secret: secret}
+	if p := normalizedPoolID(
+		annotations[resources.KeysPoolAnnotation],
+	); p != "" {
+		theirs.pools = append(theirs.pools, p)
+	}
 	p, err := r.keysPoolID(ctx, namespace, secret)
 	if err != nil {
 		return err
