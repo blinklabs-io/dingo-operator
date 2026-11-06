@@ -169,11 +169,12 @@ func TestValidateKeysSecret(t *testing.T) {
 			}),
 		},
 		{
-			name: "valid without a pool id",
+			name: "rejected without a pool id",
 			data: goodData,
 			dn: node(func(dn *dingov1alpha1.DingoNode) {
 				dn.Spec.BlockProducer.PoolID = ""
 			}),
+			wantErr: "spec.blockProducer.poolId",
 		},
 		{
 			name: "valid with a vote key",
@@ -688,6 +689,7 @@ func TestValidateKeysSecretSkipsPeriodChecksWithoutStatus(t *testing.T) {
 		Spec: dingov1alpha1.DingoNodeSpec{
 			Role: dingov1alpha1.RoleBlockProducer,
 			BlockProducer: &dingov1alpha1.BlockProducerSpec{
+				PoolID:            hex.EncodeToString(keys.PoolID),
 				SlotsPerKESPeriod: 120,
 				MaxKESEvolutions:  62,
 				Keys:              dingov1alpha1.KeysSpec{SecretRef: "keys"},

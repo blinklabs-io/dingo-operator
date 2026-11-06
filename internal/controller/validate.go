@@ -110,6 +110,13 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				"role blockProducer requires spec.blockProducer.keys.secretRef",
 			)
 		}
+		// The pool ID binds the delivered opcert to its pool and keys the
+		// on-chain counter lookup; both refuse an empty one.
+		if bp.PoolID == "" {
+			return errors.New(
+				"role blockProducer requires spec.blockProducer.poolId",
+			)
+		}
 		// Only the native Secret backend is implemented. Reject the reserved
 		// ExternalSecret/CSI values rather than accepting them and silently
 		// mounting a plain Secret (or failing the pod when the referent is
@@ -207,11 +214,6 @@ func validateAutoRotation(
 	spec *dingov1alpha1.DingoNodeSpec,
 	bp *dingov1alpha1.BlockProducerSpec,
 ) error {
-	if bp.PoolID == "" {
-		return errors.New(
-			"rotation mode Auto requires spec.blockProducer.poolId",
-		)
-	}
 	pool, err := parsePoolID(bp.PoolID)
 	if err != nil {
 		return err

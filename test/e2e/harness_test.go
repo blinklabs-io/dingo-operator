@@ -1062,7 +1062,7 @@ const (
 //
 // Only reasonOnChainObserved means the operator got an answer. Every other
 // reason the controller can set — QueryFailed, NodeNotReady, PoolNotOnChain,
-// PoolIDUnset, InvalidPoolID, UnknownNetworkMagic, Disabled — is a flavour of
+// InvalidPoolID, UnknownNetworkMagic, Disabled — is a flavour of
 // "no counter", so asserting the condition's *reason* rather than its mere
 // presence is what keeps TestOnChainOpCertCounterObserved from passing while
 // the node-to-client protocol is broken.
