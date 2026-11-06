@@ -45,6 +45,10 @@ const conflictPoolID = "" +
 	"00112233445566778899aabbccddeeff" +
 	"00112233445566778899aabb"
 
+const otherPoolID = "" +
+	"ff112233445566778899aabbccddeeff" +
+	"00112233445566778899aabb"
+
 func forgerNode(
 	name, ns, poolID, secret string,
 	age time.Duration,
@@ -107,15 +111,23 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 			conflict: true,
 		},
 		{
-			name:     "same keys secret in one namespace without pool id",
-			first:    forgerNode("bp-1", "ns-a", "", "keys", time.Hour),
-			second:   forgerNode("bp-2", "ns-a", "", "keys", 0),
+			name: "same keys secret in one namespace",
+			first: forgerNode(
+				"bp-1", "ns-a", conflictPoolID, "keys", time.Hour,
+			),
+			second: forgerNode(
+				"bp-2", "ns-a", otherPoolID, "keys", 0,
+			),
 			conflict: true,
 		},
 		{
-			name:     "same secret name in another namespace is a different secret",
-			first:    forgerNode("bp-1", "ns-a", "", "keys", time.Hour),
-			second:   forgerNode("bp-2", "ns-b", "", "keys", 0),
+			name: "same secret name in another namespace is a different secret",
+			first: forgerNode(
+				"bp-1", "ns-a", conflictPoolID, "keys", time.Hour,
+			),
+			second: forgerNode(
+				"bp-2", "ns-b", otherPoolID, "keys", 0,
+			),
 			conflict: false,
 		},
 		{
@@ -130,7 +142,7 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 			second: forgerNode(
 				"bp-2",
 				"ns-a",
-				"ff112233445566778899aabbccddeeff00112233445566778899aabb",
+				otherPoolID,
 				"keys-b",
 				0,
 			),
@@ -293,8 +305,8 @@ func TestReconcileScalesRunningDuplicateForgerDown(t *testing.T) {
 
 func TestReconcileRefusedForgerRequeues(t *testing.T) {
 	t.Parallel()
-	holder := forgerNode("bp-1", "ns", "", "keys", time.Hour)
-	loser := forgerNode("bp-2", "ns", "", "keys", 0)
+	holder := forgerNode("bp-1", "ns", conflictPoolID, "keys", time.Hour)
+	loser := forgerNode("bp-2", "ns", otherPoolID, "keys", 0)
 	r := reconcilerFor(conflictClient(t, holder, loser))
 	res := reconcileNode(t, r, loser)
 	assert.Equal(t, requeueInterval, res.RequeueAfter)
@@ -500,23 +512,26 @@ func TestReconcileRefusedForgerWaitsForHolderWorkload(t *testing.T) {
 func TestReconcileRefusesCopiedKeysInDifferentSecrets(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, data := poolKeys(t)
-	_, otherData := poolKeys(t)
+	pool, data := poolKeys(t)
+	otherPool, otherData := poolKeys(t)
 	tests := []struct {
-		name     string
-		loserNS  string
-		loserKey map[string][]byte
-		conflict bool
+		name      string
+		loserNS   string
+		loserPool string
+		loserKey  map[string][]byte
+		conflict  bool
 	}{
-		{"copy in another namespace", "ns-b", data, true},
-		{"copy in the same namespace", "ns-a", data, true},
-		{"different pool's keys", "ns-b", otherData, false},
+		{"copy in another namespace", "ns-b", pool, data, true},
+		{"copy in the same namespace", "ns-a", pool, data, true},
+		{"different pool's keys", "ns-b", otherPool, otherData, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			holder := forgerNode("bp-1", "ns-a", "", "keys-a", time.Hour)
-			loser := forgerNode("bp-2", tt.loserNS, "", "keys-b", 0)
+			holder := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
+			loser := forgerNode(
+				"bp-2", tt.loserNS, tt.loserPool, "keys-b", 0,
+			)
 			c := conflictClient(t, holder, loser,
 				keysSecret("keys-a", "ns-a", data),
 				keysSecret("keys-b", tt.loserNS, tt.loserKey),
@@ -537,7 +552,7 @@ func TestReconcileRefusesCopiedKeysInDifferentSecrets(t *testing.T) {
 func TestReconcileLookupFailureDoesNotHaltForger(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, data := poolKeys(t)
+	pool, data := poolKeys(t)
 	unavailable := apierrors.NewServiceUnavailable("apiserver unavailable")
 	forbidden := apierrors.NewForbidden(
 		schema.GroupResource{Resource: "pods"}, "", nil,
@@ -565,8 +580,12 @@ func TestReconcileLookupFailureDoesNotHaltForger(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			holder := forgerNode("bp-1", "ns-a", "", "keys-a", time.Hour)
-			node := forgerNode("bp-2", "ns-b", "", "keys-b", 0)
+			// The holder's poolId differs, so only its Secret, a copy of
+			// node's keys, shows the shared pool.
+			holder := forgerNode(
+				"bp-1", "ns-a", conflictPoolID, "keys-a", time.Hour,
+			)
+			node := forgerNode("bp-2", "ns-b", pool, "keys-b", 0)
 			failing := false
 			scheme := runtime.NewScheme()
 			require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -630,10 +649,10 @@ func TestReconcileLookupFailureDoesNotHaltForger(t *testing.T) {
 func TestReconcileHolderWaitsForOutrankedWorkload(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, dataA := poolKeys(t)
-	_, dataB := poolKeys(t)
-	older := forgerNode("bp-1", "ns-a", "", "keys-a", time.Hour)
-	newer := forgerNode("bp-2", "ns-b", "", "keys-b", 0)
+	poolA, dataA := poolKeys(t)
+	poolB, dataB := poolKeys(t)
+	older := forgerNode("bp-1", "ns-a", poolA, "keys-a", time.Hour)
+	newer := forgerNode("bp-2", "ns-b", poolB, "keys-b", 0)
 	secretA := keysSecret("keys-a", "ns-a", dataA)
 	c := conflictClient(t, older, newer, secretA,
 		keysSecret("keys-b", "ns-b", dataB),
@@ -676,9 +695,9 @@ func TestReconcileHolderWaitsForOutrankedWorkload(t *testing.T) {
 func TestReconcileRecreatedHolderPodStillBlocks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, data := poolKeys(t)
-	holder := forgerNode("bp-1", "ns", "", "keys-a", time.Hour)
-	loser := forgerNode("bp-2", "ns", "", "keys-b", 30*time.Minute)
+	pool, data := poolKeys(t)
+	holder := forgerNode("bp-1", "ns", pool, "keys-a", time.Hour)
+	loser := forgerNode("bp-2", "ns", pool, "keys-b", 30*time.Minute)
 	c := conflictClient(t, holder, loser,
 		keysSecret("keys-a", "ns", data),
 		keysSecret("keys-b", "ns", data),
@@ -694,7 +713,7 @@ func TestReconcileRecreatedHolderPodStillBlocks(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &sts))
 	require.NoError(t, c.Delete(ctx, &sts))
 	require.NoError(t, c.Delete(ctx, holder))
-	recreated := forgerNode("bp-1", "ns", "", "keys-a", 0)
+	recreated := forgerNode("bp-1", "ns", pool, "keys-a", 0)
 	require.NoError(t, c.Create(ctx, recreated))
 
 	reconcileNode(t, r, loser)
@@ -715,7 +734,7 @@ func TestReconcileForbiddenOtherKeysSecret(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	poolB, dataB := poolKeys(t)
-	_, dataX := poolKeys(t)
+	poolX, dataX := poolKeys(t)
 	forbidden := apierrors.NewForbidden(
 		schema.GroupResource{Resource: "secrets"}, "keys-x", nil,
 	)
@@ -727,15 +746,15 @@ func TestReconcileForbiddenOtherKeysSecret(t *testing.T) {
 		wantHeld  bool
 		wantForge bool
 	}{
-		{"no workload is not a holder", "", false, false, false, true},
+		{"no workload is not a holder", poolX, false, false, false, true},
 		{"its poolId still holds", poolB, false, false, true, false},
-		{"a running workload fails closed", "", true, true, false, false},
+		{"a running workload fails closed", poolX, true, true, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			other := forgerNode("bp-1", "ns-x", tt.poolID, "keys-x", time.Hour)
-			node := forgerNode("bp-2", "ns-b", "", "keys-b", 0)
+			node := forgerNode("bp-2", "ns-b", poolB, "keys-b", 0)
 			objs := []client.Object{
 				other, node,
 				keysSecret("keys-x", "ns-x", dataX),
@@ -786,9 +805,9 @@ func TestReconcileForbiddenOtherKeysSecret(t *testing.T) {
 func TestReconcileFenceReadsStatefulSetsUncached(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, data := poolKeys(t)
-	holder := forgerNode("bp-1", "ns", "", "keys-a", time.Hour)
-	loser := forgerNode("bp-2", "ns", "", "keys-b", 0)
+	pool, data := poolKeys(t)
+	holder := forgerNode("bp-1", "ns", pool, "keys-a", time.Hour)
+	loser := forgerNode("bp-2", "ns", pool, "keys-b", 0)
 	api := conflictClient(t, holder, loser,
 		keysSecret("keys-a", "ns", data),
 		keysSecret("keys-b", "ns", data),
@@ -814,9 +833,9 @@ func TestReconcileFenceReadsStatefulSetsUncached(t *testing.T) {
 func TestReconcileReusedNameDoesNotHideOldForger(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, data := poolKeys(t)
-	holder := forgerNode("bp-1", "ns", "", "keys-a", time.Hour)
-	loser := forgerNode("bp-2", "ns", "", "keys-b", 0)
+	pool, data := poolKeys(t)
+	holder := forgerNode("bp-1", "ns", pool, "keys-a", time.Hour)
+	loser := forgerNode("bp-2", "ns", pool, "keys-b", 0)
 	c := conflictClient(t, holder, loser,
 		keysSecret("keys-a", "ns", data),
 		keysSecret("keys-b", "ns", data),
