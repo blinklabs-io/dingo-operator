@@ -77,17 +77,32 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 		conflict bool
 	}{
 		{
-			name:     "same pool in another namespace",
-			first:    forgerNode("bp", "ns-a", conflictPoolID, "keys-a", time.Hour),
+			name: "same pool in another namespace",
+			first: forgerNode(
+				"bp",
+				"ns-a",
+				conflictPoolID,
+				"keys-a",
+				time.Hour,
+			),
 			second:   forgerNode("bp", "ns-b", conflictPoolID, "keys-b", 0),
 			conflict: true,
 		},
 		{
-			name:  "same pool in different hex case",
-			first: forgerNode("bp-1", "ns-a", conflictPoolID, "keys-a", time.Hour),
+			name: "same pool in different hex case",
+			first: forgerNode(
+				"bp-1",
+				"ns-a",
+				conflictPoolID,
+				"keys-a",
+				time.Hour,
+			),
 			second: forgerNode(
-				"bp-2", "ns-a", "00112233445566778899AABBCCDDEEFF00112233445566778899AABB",
-				"keys-b", 0,
+				"bp-2",
+				"ns-a",
+				"00112233445566778899AABBCCDDEEFF00112233445566778899AABB",
+				"keys-b",
+				0,
 			),
 			conflict: true,
 		},
@@ -104,11 +119,20 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 			conflict: false,
 		},
 		{
-			name:  "different pools",
-			first: forgerNode("bp-1", "ns-a", conflictPoolID, "keys-a", time.Hour),
+			name: "different pools",
+			first: forgerNode(
+				"bp-1",
+				"ns-a",
+				conflictPoolID,
+				"keys-a",
+				time.Hour,
+			),
 			second: forgerNode(
-				"bp-2", "ns-a", "ff112233445566778899aabbccddeeff00112233445566778899aabb",
-				"keys-b", 0,
+				"bp-2",
+				"ns-a",
+				"ff112233445566778899aabbccddeeff00112233445566778899aabb",
+				"keys-b",
+				0,
 			),
 			conflict: false,
 		},
@@ -136,14 +160,24 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 			})
 			require.NoError(t, err)
 			var got dingov1alpha1.DingoNode
-			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(tt.second), &got))
-			degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+			require.NoError(
+				t,
+				c.Get(ctx, client.ObjectKeyFromObject(tt.second), &got),
+			)
+			degraded := meta.FindStatusCondition(
+				got.Status.Conditions,
+				condDegraded,
+			)
 			var sts appsv1.StatefulSet
 			stsErr := c.Get(ctx, client.ObjectKeyFromObject(tt.second), &sts)
 			if tt.conflict {
 				require.NotNil(t, degraded, "newer forger must be Degraded")
 				assert.Equal(t, "DuplicateForger", degraded.Reason)
-				assert.True(t, apierrors.IsNotFound(stsErr), "no StatefulSet for the loser")
+				assert.True(
+					t,
+					apierrors.IsNotFound(stsErr),
+					"no StatefulSet for the loser",
+				)
 			} else if degraded != nil {
 				assert.NotEqual(t, "DuplicateForger", degraded.Reason)
 			}
@@ -155,7 +189,10 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 				},
 			})
 			require.NoError(t, err)
-			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(tt.first), &got))
+			require.NoError(
+				t,
+				c.Get(ctx, client.ObjectKeyFromObject(tt.first), &got),
+			)
 			d := meta.FindStatusCondition(
 				got.Status.Conditions, condDegraded,
 			)
@@ -373,58 +410,76 @@ func TestReconcileRefusedForgerWaitsForHolderWorkload(t *testing.T) {
 		return c, r, holder, loser
 	}
 
-	t.Run("foreground deletion keeps the holder StatefulSet at one", func(t *testing.T) {
-		t.Parallel()
-		c, r, holder, loser := setup(t)
-		require.NoError(t, c.Delete(ctx, holder))
-		var deleting dingov1alpha1.DingoNode
-		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &deleting))
-		require.False(t, deleting.DeletionTimestamp.IsZero())
+	t.Run(
+		"foreground deletion keeps the holder StatefulSet at one",
+		func(t *testing.T) {
+			t.Parallel()
+			c, r, holder, loser := setup(t)
+			require.NoError(t, c.Delete(ctx, holder))
+			var deleting dingov1alpha1.DingoNode
+			require.NoError(
+				t,
+				c.Get(ctx, client.ObjectKeyFromObject(holder), &deleting),
+			)
+			require.False(t, deleting.DeletionTimestamp.IsZero())
 
-		reconcileNode(t, r, loser)
-		assert.True(t, refusedAsDuplicate(t, c, loser),
-			"holder StatefulSet still at replicas=1")
-		assert.False(t, forging(t, c, loser))
+			reconcileNode(t, r, loser)
+			assert.True(t, refusedAsDuplicate(t, c, loser),
+				"holder StatefulSet still at replicas=1")
+			assert.False(t, forging(t, c, loser))
 
-		// Holder workload goes to zero: the loser may resume.
-		var sts appsv1.StatefulSet
-		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &sts))
-		sts.Spec.Replicas = new(int32)
-		require.NoError(t, c.Update(ctx, &sts))
-		reconcileNode(t, r, loser)
-		assert.False(t, refusedAsDuplicate(t, c, loser))
-		assert.True(t, forging(t, c, loser))
-	})
+			// Holder workload goes to zero: the loser may resume.
+			var sts appsv1.StatefulSet
+			require.NoError(
+				t,
+				c.Get(ctx, client.ObjectKeyFromObject(holder), &sts),
+			)
+			sts.Spec.Replicas = new(int32)
+			require.NoError(t, c.Update(ctx, &sts))
+			reconcileNode(t, r, loser)
+			assert.False(t, refusedAsDuplicate(t, c, loser))
+			assert.True(t, forging(t, c, loser))
+		},
+	)
 
-	t.Run("plain deletion keeps the holder StatefulSet then pod", func(t *testing.T) {
-		t.Parallel()
-		c, r, holder, loser := setup(t)
-		pod := holderPod(holder)
-		require.NoError(t, c.Create(ctx, pod))
-		var live dingov1alpha1.DingoNode
-		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &live))
-		live.Finalizers = nil
-		require.NoError(t, c.Update(ctx, &live))
-		require.NoError(t, c.Delete(ctx, &live))
+	t.Run(
+		"plain deletion keeps the holder StatefulSet then pod",
+		func(t *testing.T) {
+			t.Parallel()
+			c, r, holder, loser := setup(t)
+			pod := holderPod(holder)
+			require.NoError(t, c.Create(ctx, pod))
+			var live dingov1alpha1.DingoNode
+			require.NoError(
+				t,
+				c.Get(ctx, client.ObjectKeyFromObject(holder), &live),
+			)
+			live.Finalizers = nil
+			require.NoError(t, c.Update(ctx, &live))
+			require.NoError(t, c.Delete(ctx, &live))
 
-		// StatefulSet still at replicas=1, DingoNode gone.
-		reconcileNode(t, r, loser)
-		assert.True(t, refusedAsDuplicate(t, c, loser), "StatefulSet alive")
+			// StatefulSet still at replicas=1, DingoNode gone.
+			reconcileNode(t, r, loser)
+			assert.True(t, refusedAsDuplicate(t, c, loser), "StatefulSet alive")
 
-		// Garbage collection removes the StatefulSet; the pod is still
-		// terminating.
-		var sts appsv1.StatefulSet
-		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(holder), &sts))
-		require.NoError(t, c.Delete(ctx, &sts))
-		reconcileNode(t, r, loser)
-		assert.True(t, refusedAsDuplicate(t, c, loser), "pod alive")
-		assert.False(t, forging(t, c, loser))
+			// Garbage collection removes the StatefulSet; the pod is still
+			// terminating.
+			var sts appsv1.StatefulSet
+			require.NoError(
+				t,
+				c.Get(ctx, client.ObjectKeyFromObject(holder), &sts),
+			)
+			require.NoError(t, c.Delete(ctx, &sts))
+			reconcileNode(t, r, loser)
+			assert.True(t, refusedAsDuplicate(t, c, loser), "pod alive")
+			assert.False(t, forging(t, c, loser))
 
-		require.NoError(t, c.Delete(ctx, pod))
-		reconcileNode(t, r, loser)
-		assert.False(t, refusedAsDuplicate(t, c, loser))
-		assert.True(t, forging(t, c, loser))
-	})
+			require.NoError(t, c.Delete(ctx, pod))
+			reconcileNode(t, r, loser)
+			assert.False(t, refusedAsDuplicate(t, c, loser))
+			assert.True(t, forging(t, c, loser))
+		},
+	)
 
 	t.Run("an unrelated pool's workload does not block", func(t *testing.T) {
 		t.Parallel()
