@@ -42,7 +42,7 @@ The operator Helm chart lives in the separate `helm-charts` repo under
 make manifests generate   # regenerate CRDs, RBAC, deepcopy after api/ changes
 make build                # CGO_ENABLED=0 build -> ./dingo-operator
 make test                 # go test -race ./... (envtest for controller tests)
-make test-envtest         # controller envtest suite only (CI's envtest job)
+make test-envtest         # controller tests, including envtest (CI's envtest job)
 make lint                 # golangci-lint run + nilaway + modernize
 make run                  # run against the current kubecontext
 make e2e                  # k3d + single-BP devnet end-to-end suite (~25 min)

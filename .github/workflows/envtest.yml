@@ -30,5 +30,6 @@ jobs:
         # KUBEBUILDER_ASSETS. The controller suite self-skips when that is
         # unset, so fail the job if any test was skipped for that reason.
         run: |
+          set -o pipefail
           make test-envtest | tee envtest.log
           ! grep -q 'KUBEBUILDER_ASSETS not set' envtest.log

@@ -75,7 +75,7 @@ test: manifests generate envtest ## Run tests (with envtest control plane)
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -v -race -coverprofile=cover.out ./...
 
-test-envtest: envtest ## Run only the controller envtest suite (what CI's envtest job runs)
+test-envtest: manifests generate envtest ## Run the controller tests with envtest (what CI's envtest job runs)
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -v -race ./internal/controller/...
 
