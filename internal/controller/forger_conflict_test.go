@@ -567,3 +567,51 @@ func TestReconcileLookupFailureDoesNotHaltForger(t *testing.T) {
 		})
 	}
 }
+
+// The older node takes the keys only once a newer node already running with
+// them is down: the newer node is refused and halts, but its pod outlives the
+// scale-down. Here the older node's Secret becomes a copy of the newer one's
+// keys with no spec change.
+func TestReconcileHolderWaitsForOutrankedWorkload(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, dataA := poolKeys(t)
+	_, dataB := poolKeys(t)
+	older := forgerNode("bp-1", "ns-a", "", "keys-a", time.Hour)
+	newer := forgerNode("bp-2", "ns-b", "", "keys-b", 0)
+	secretA := keysSecret("keys-a", "ns-a", dataA)
+	c := conflictClient(t, older, newer, secretA,
+		keysSecret("keys-b", "ns-b", dataB),
+	)
+	r := reconcilerFor(c)
+	reconcileNode(t, r, newer)
+	reconcileNode(t, r, older)
+	require.True(t, forging(t, c, newer))
+	require.True(t, forging(t, c, older))
+	pod := holderPod(newer)
+	require.NoError(t, c.Create(ctx, pod))
+
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(secretA), secretA))
+	secretA.Data = dataB
+	require.NoError(t, c.Update(ctx, secretA))
+
+	reconcileNode(t, r, older)
+	assert.True(t, refusedAsDuplicate(t, c, older),
+		"newer StatefulSet still at replicas=1")
+	assert.False(t, forging(t, c, older))
+
+	reconcileNode(t, r, newer)
+	assert.True(t, refusedAsDuplicate(t, c, newer))
+	assert.False(t, forging(t, c, newer))
+
+	reconcileNode(t, r, older)
+	assert.True(t, refusedAsDuplicate(t, c, older), "newer pod alive")
+	assert.False(t, forging(t, c, older))
+
+	require.NoError(t, c.Delete(ctx, pod))
+	reconcileNode(t, r, older)
+	assert.False(t, refusedAsDuplicate(t, c, older))
+	assert.True(t, forging(t, c, older))
+	reconcileNode(t, r, newer)
+	assert.False(t, forging(t, c, newer))
+}
