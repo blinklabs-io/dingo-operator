@@ -1269,8 +1269,10 @@ spec:
                         type: boolean
                     type: object
                   poolId:
-                    description: PoolID (bech32 or hex) is optional and cross-checked
-                      against the keys.
+                    description: |-
+                      PoolID (bech32 or hex) must be set for a block producer; the controller
+                      rejects the resource otherwise. It is cross-checked against the keys and
+                      keys the on-chain opcert counter lookup.
                     type: string
                   rotation:
                     description: RotationSpec configures KES/OpCert rotation behaviour.

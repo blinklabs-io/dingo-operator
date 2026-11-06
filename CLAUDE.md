@@ -279,8 +279,8 @@ the pod onto it":
   well-formed text envelopes of the right kind; the opcert envelope parses and
   its cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the
   signing cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so
-  another pool's self-consistent certificate cannot pass — this leg is skipped
-  when `poolId` is empty, which the CRD permits; the delivered `kes.skey` is
+  another pool's self-consistent certificate cannot pass (`validateSpec`
+  rejects a block producer without `poolId`); the delivered `kes.skey` is
   exactly 608 bytes and its derived public key equals the certificate's KES
   vkey, so a new opcert shipped without its matching KES key is refused rather
   than CrashLooping the pod on Dingo's own "KES verification key mismatch";
@@ -408,7 +408,7 @@ the pod onto it":
     which is what makes five minutes the accepted trade.
   - Observability. The `OnChainCounterAvailable` condition reports
     `Observed` / `QueryFailed` / `NodeNotReady` / `PoolNotOnChain` /
-    `PoolIDUnset` / `InvalidPoolID` / `UnknownNetworkMagic` / `Disabled`, so the
+    `InvalidPoolID` / `UnknownNetworkMagic` / `Disabled`, so the
     check cannot be silently inert; `QueryFailed` names the NetworkPolicy label a
     client needs. A failed read whose node has no Service yet reports
     `NodeNotReady` instead — every healthy new block producer passes through that
@@ -484,9 +484,9 @@ timeout would block every reconcile while `RotationDue` holds. A refusal sets
 forging, and several refusals (counter not yet read, KES not yet scraped) are
 normal transient states.
 
-`validateSpec` requires, for `Auto`: `poolId`, `nodeToClient.enabled`, and a
-cold signer that can issue. Bursa needs an https `endpoint`, `mtlsSecretRef`
-(a Secret with `tls.crt`, `tls.key` and optionally `ca.crt`) and
+`validateSpec` requires `poolId` for every block producer and, for `Auto`,
+that it parses, `nodeToClient.enabled`, and a cold signer that can issue.
+Bursa needs an https `endpoint`, `mtlsSecretRef` (a Secret with `tls.crt`, `tls.key` and optionally `ca.crt`) and
 `coldKeyHash` equal to the pool ID; `secret` needs `secretRef` holding
 `cold.skey` and is refused on mainnet (by name or network magic), since it
 keeps the cold key in the cluster. Auto writes the keys Secret, so the deployment must grant the

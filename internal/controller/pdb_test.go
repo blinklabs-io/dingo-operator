@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -34,7 +35,9 @@ func TestBlockProducerPDBDisabled(t *testing.T) {
 	c, ctx := startEnv(t)
 	createNamespace(t, ctx, c, "pdb-ns")
 
-	dn := blockProducerNode("bp", "pdb-ns", "pool-keys", "")
+	dn := blockProducerNode(
+		"bp", "pdb-ns", "pool-keys", strings.Repeat("ab", 28),
+	)
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "pdb-ns")
 	key := types.NamespacedName{Name: "bp", Namespace: "pdb-ns"}

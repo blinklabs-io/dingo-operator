@@ -180,10 +180,8 @@ func validateKeysSecret(
 
 	// Bind the certificate to this pool: a self-consistent opcert signed by
 	// some other cold key would otherwise pass every check above.
-	if bp.PoolID != "" {
-		if err := checkPoolID(bp.PoolID, coldVkey); err != nil {
-			return nil, err
-		}
+	if err := checkPoolID(bp.PoolID, coldVkey); err != nil {
+		return nil, err
 	}
 
 	// Bind the certificate to the delivered KES key. Everything above passes
@@ -369,7 +367,7 @@ func observedOnChainCounter(
 		return 0, false
 	}
 	bp := dn.Spec.BlockProducer
-	if oc.OnChainCounterPoolID == "" || bp == nil || bp.PoolID == "" {
+	if oc.OnChainCounterPoolID == "" || bp == nil {
 		return 0, false
 	}
 	want, err := parsePoolID(bp.PoolID)

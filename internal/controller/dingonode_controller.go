@@ -1035,15 +1035,12 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 
 	// Resolve the pool first: it identifies what any stored observation is *of*,
 	// and the counter map is keyed by it.
-	var wantPool string
-	if bp.PoolID != "" {
-		parsed, err := parsePoolID(bp.PoolID)
-		if err != nil {
-			r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
-			return
-		}
-		wantPool = parsed.String()
+	parsed, err := parsePoolID(bp.PoolID)
+	if err != nil {
+		r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
+		return
 	}
+	wantPool := parsed.String()
 	// Drop an observation that belongs to a different pool the moment poolId
 	// changes, rather than letting the freshness window keep enforcing it for up
 	// to onChainCounterMaxAge. Provenance is the whole justification for that
@@ -1058,12 +1055,6 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 		dn.Status.OpCert.OnChainCounterAt = nil
 		dn.Status.OpCert.OnChainCounterPoolID = ""
 		r.forgetOnChainAttempt(key)
-	}
-	if wantPool == "" {
-		r.setOnChainUnavailable(dn, "PoolIDUnset",
-			"spec.blockProducer.poolId is required to look up the on-chain "+
-				"opcert counter (it is keyed by the pool's cold-key hash)")
-		return
 	}
 
 	// Within the interval, reuse what the last attempt learned instead of
@@ -1100,11 +1091,6 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 		fmt.Sprintf("%s.%s.svc.cluster.local", dn.Name, dn.Namespace),
 		strconv.Itoa(resources.PortNodeToClient),
 	)
-	poolID, err := parsePoolID(bp.PoolID)
-	if err != nil {
-		r.setOnChainUnavailable(dn, "InvalidPoolID", err.Error())
-		return
-	}
 
 	// Record the attempt before making it, so a dial that fails — or a reconcile
 	// that errors out after it — is rate-limited exactly like a success.
@@ -1112,7 +1098,7 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 	counter, err := r.OnChain.Fetch(ctx, onchain.Query{
 		Address:      addr,
 		NetworkMagic: magic,
-		PoolID:       poolID,
+		PoolID:       parsed,
 	})
 	switch {
 	case err != nil:
