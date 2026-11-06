@@ -197,7 +197,10 @@ func forgerConflict(
 			!resources.IsBlockProducer(o) ||
 			o.Spec.BlockProducer == nil ||
 			!o.DeletionTimestamp.IsZero() ||
-			!forgerOutranks(o, dn) {
+			!forgerOutranks(o, dn) ||
+			// An invalid spec is not reconciled; forgerHeld holds the pool
+			// for it only while its workload runs.
+			validateSpec(o) != nil {
 			continue
 		}
 		if pool != "" &&

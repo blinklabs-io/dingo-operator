@@ -779,3 +779,84 @@ func TestReconcileForbiddenOtherKeysSecret(t *testing.T) {
 		})
 	}
 }
+
+// The fence reads the holder's StatefulSet from the API server, not the
+// informer cache: a cache that has not seen the StatefulSet yet must not admit
+// a second forger while the holder still wants a replica.
+func TestReconcileFenceReadsStatefulSetsUncached(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, data := poolKeys(t)
+	holder := forgerNode("bp-1", "ns", "", "keys-a", time.Hour)
+	loser := forgerNode("bp-2", "ns", "", "keys-b", 0)
+	api := conflictClient(t, holder, loser,
+		keysSecret("keys-a", "ns", data),
+		keysSecret("keys-b", "ns", data),
+	)
+	reconcileNode(t, reconcilerFor(api), holder)
+	require.True(t, forging(t, api, holder))
+	require.NoError(t, api.Delete(ctx, holder))
+
+	cache := conflictClient(t, loser,
+		keysSecret("keys-a", "ns", data),
+		keysSecret("keys-b", "ns", data),
+	)
+	r := &DingoNodeReconciler{
+		Client: cache, Scheme: cache.Scheme(), APIReader: api,
+	}
+	reconcileNode(t, r, loser)
+	assert.True(t, refusedAsDuplicate(t, cache, loser))
+	assert.False(t, forging(t, cache, loser))
+}
+
+// A relay recreated under a gone block producer's name does not own that
+// producer's pod: the pod still runs the shared keys and must hold them.
+func TestReconcileReusedNameDoesNotHideOldForger(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, data := poolKeys(t)
+	holder := forgerNode("bp-1", "ns", "", "keys-a", time.Hour)
+	loser := forgerNode("bp-2", "ns", "", "keys-b", 0)
+	c := conflictClient(t, holder, loser,
+		keysSecret("keys-a", "ns", data),
+		keysSecret("keys-b", "ns", data),
+	)
+	r := reconcilerFor(c)
+	pod := holderPod(holder)
+	require.NoError(t, c.Create(ctx, pod))
+	require.NoError(t, c.Delete(ctx, holder))
+	relay := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "bp-1", Namespace: "ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role: dingov1alpha1.RoleRelay, Network: "preview",
+		},
+	}
+	require.NoError(t, c.Create(ctx, relay))
+
+	reconcileNode(t, r, loser)
+	assert.True(t, refusedAsDuplicate(t, c, loser), "old pod still runs")
+	assert.False(t, forging(t, c, loser))
+}
+
+// An older block producer whose spec fails validation keeps whatever workload
+// it has, so it holds the pool only while that workload runs.
+func TestReconcileInvalidOlderForgerHoldsOnlyWhileRunning(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	holder := forgerNode("bp-1", "ns", conflictPoolID, "keys-a", time.Hour)
+	holder.Spec.Network = ""
+	require.Error(t, validateSpec(holder))
+	loser := forgerNode("bp-2", "ns", conflictPoolID, "keys-b", 0)
+	c := conflictClient(t, holder, loser)
+	r := reconcilerFor(c)
+
+	pod := holderPod(holder)
+	require.NoError(t, c.Create(ctx, pod))
+	reconcileNode(t, r, loser)
+	assert.True(t, refusedAsDuplicate(t, c, loser), "its pod still runs")
+
+	require.NoError(t, c.Delete(ctx, pod))
+	reconcileNode(t, r, loser)
+	assert.False(t, refusedAsDuplicate(t, c, loser))
+	assert.True(t, forging(t, c, loser))
+}

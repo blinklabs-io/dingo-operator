@@ -138,23 +138,22 @@ func (r *DingoNodeReconciler) forgerHeld(
 	if err != nil {
 		return err
 	}
-	live := make(map[types.NamespacedName]bool, len(all))
 	for i := range all {
 		o := &all[i]
 		if !o.DeletionTimestamp.IsZero() {
 			continue
 		}
-		live[client.ObjectKeyFromObject(o)] = true
 		if client.ObjectKeyFromObject(o) == client.ObjectKeyFromObject(dn) ||
 			!resources.IsBlockProducer(o) {
 			continue
 		}
 		theirs, err := r.nodeIdentity(ctx, o)
 		if err != nil {
-			// The operator refuses to start a node whose keys Secret it may
-			// not read, so a denied read hides a running copy only when RBAC
-			// was narrowed after start. Failing on every denial would stall
-			// all block producers on one unreadable namespace.
+			// A denied read is a limit of the operator's current permissions,
+			// not proof the node never ran: fail closed while its workload
+			// runs, and otherwise compare only its poolId and Secret name.
+			// Failing on every denial would stall all block producers on one
+			// unreadable namespace.
 			if !apierrors.IsForbidden(err) {
 				return err
 			}
@@ -170,15 +169,18 @@ func (r *DingoNodeReconciler) forgerHeld(
 		if what == "" {
 			continue
 		}
-		if forgerOutranks(o, dn) {
+		// An older node whose spec fails validation is not reconciled, so it
+		// keeps the pool only while the workload it already has runs.
+		if forgerOutranks(o, dn) && validateSpec(o) == nil {
 			return heldf(
 				"block producer %s/%s already forges with the same %s; only "+
 					"one DingoNode may stage a pool's keys",
 				o.Namespace, o.Name, what,
 			)
 		}
-		// o is refused and halts itself, so this cannot wait forever; until
-		// its pod is gone it still forges.
+		// o is refused and halts itself, or is invalid and keeps only the
+		// workload it has, so this cannot wait forever; until its pod is gone
+		// it still forges.
 		up, err := r.workloadUp(ctx, o)
 		if err != nil {
 			return err
@@ -191,7 +193,7 @@ func (r *DingoNodeReconciler) forgerHeld(
 			)
 		}
 	}
-	return r.orphanForger(ctx, mine, live)
+	return r.orphanForger(ctx, dn, mine)
 }
 
 // workloadUp reports whether o's StatefulSet wants a replica or any of its
@@ -201,7 +203,7 @@ func (r *DingoNodeReconciler) workloadUp(
 	o *dingov1alpha1.DingoNode,
 ) (bool, error) {
 	sts := &appsv1.StatefulSet{}
-	err := r.Get(ctx, client.ObjectKeyFromObject(o), sts)
+	err := r.uncachedReader().Get(ctx, client.ObjectKeyFromObject(o), sts)
 	switch {
 	case err == nil:
 		if sts.Spec.Replicas == nil || *sts.Spec.Replicas > 0 {
@@ -212,7 +214,7 @@ func (r *DingoNodeReconciler) workloadUp(
 			o.Namespace, o.Name, err)
 	}
 	var pods corev1.PodList
-	if err := r.podReader().List(ctx, &pods,
+	if err := r.uncachedReader().List(ctx, &pods,
 		client.InNamespace(o.Namespace),
 		client.MatchingLabels{resources.NodeLabel: o.Name},
 	); err != nil {
@@ -227,8 +229,10 @@ func (r *DingoNodeReconciler) workloadUp(
 	return false, nil
 }
 
-// podReader lists pods uncached so no cluster-wide Pod informer is held.
-func (r *DingoNodeReconciler) podReader() client.Reader {
+// uncachedReader reads workloads for the fence from the API server: no
+// cluster-wide Pod informer is held, and a StatefulSet the cache has not seen
+// yet must not read as stopped.
+func (r *DingoNodeReconciler) uncachedReader() client.Reader {
 	if r.APIReader != nil {
 		return r.APIReader
 	}
@@ -240,20 +244,24 @@ func podRunning(p *corev1.Pod) bool {
 		p.Status.Phase != corev1.PodFailed
 }
 
-// orphanForger returns an error when a block-producer workload whose DingoNode
-// is gone or deleting is still present with keys dn shares. A StatefulSet at
-// zero replicas with no pods is down.
+// orphanForger returns an error when any block-producer workload other than
+// dn's own still runs keys dn shares, whatever DingoNode now carries its name:
+// a name reused by a relay or another pool does not own the old pod. A
+// StatefulSet at zero replicas with no pods is down. Live block producers that
+// share dn's keys were already decided by forgerHeld, so this finds only
+// workloads they no longer account for.
 func (r *DingoNodeReconciler) orphanForger(
 	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
 	mine forgerIdentity,
-	live map[types.NamespacedName]bool,
 ) error {
+	self := client.ObjectKeyFromObject(dn)
 	selector := client.MatchingLabels{
 		"app.kubernetes.io/managed-by": resources.ManagedByName,
 		"app.kubernetes.io/component":  resources.ComponentBlockProducer,
 	}
 	var sets appsv1.StatefulSetList
-	if err := r.List(ctx, &sets, selector); err != nil {
+	if err := r.uncachedReader().List(ctx, &sets, selector); err != nil {
 		return fmt.Errorf("list block producer StatefulSets: %w", err)
 	}
 	for i := range sets.Items {
@@ -262,7 +270,7 @@ func (r *DingoNodeReconciler) orphanForger(
 			continue
 		}
 		if err := r.orphanHolds(
-			ctx, mine, live, "StatefulSet", s.Namespace, s.Name, s.Name,
+			ctx, mine, self, "StatefulSet", s.Namespace, s.Name, s.Name,
 			s.Spec.Template.Spec,
 		); err != nil {
 			return err
@@ -270,7 +278,7 @@ func (r *DingoNodeReconciler) orphanForger(
 	}
 
 	var pods corev1.PodList
-	if err := r.podReader().List(ctx, &pods, selector); err != nil {
+	if err := r.uncachedReader().List(ctx, &pods, selector); err != nil {
 		return fmt.Errorf("list block producer pods: %w", err)
 	}
 	for i := range pods.Items {
@@ -279,7 +287,7 @@ func (r *DingoNodeReconciler) orphanForger(
 			continue
 		}
 		if err := r.orphanHolds(
-			ctx, mine, live, "pod", p.Namespace, p.Name,
+			ctx, mine, self, "pod", p.Namespace, p.Name,
 			p.Labels[resources.NodeLabel], p.Spec,
 		); err != nil {
 			return err
@@ -291,11 +299,11 @@ func (r *DingoNodeReconciler) orphanForger(
 func (r *DingoNodeReconciler) orphanHolds(
 	ctx context.Context,
 	mine forgerIdentity,
-	live map[types.NamespacedName]bool,
+	self types.NamespacedName,
 	kind, namespace, name, owner string,
 	spec corev1.PodSpec,
 ) error {
-	if live[types.NamespacedName{Namespace: namespace, Name: owner}] {
+	if self == (types.NamespacedName{Namespace: namespace, Name: owner}) {
 		return nil
 	}
 	secret, ok := resources.KeysSecretName(spec)
@@ -312,8 +320,8 @@ func (r *DingoNodeReconciler) orphanHolds(
 	}
 	if what := mine.sharedWith(theirs); what != "" {
 		return heldf(
-			"%s %s/%s of a block producer that is gone or deleting still "+
-				"holds the same %s; waiting for it to stop",
+			"%s %s/%s of another block producer still holds the same %s; "+
+				"waiting for it to stop",
 			kind, namespace, name, what,
 		)
 	}
