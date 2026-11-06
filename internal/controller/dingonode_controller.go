@@ -17,6 +17,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -217,6 +218,11 @@ func (r *DingoNodeReconciler) Reconcile(
 			return ctrl.Result{}, fmt.Errorf("list DingoNodes: %w", err)
 		}
 		if err := r.forgerHeld(ctx, dn, all.Items); err != nil {
+			if _, held := errors.AsType[*forgerHeldError](err); !held {
+				return ctrl.Result{}, fmt.Errorf(
+					"check block producer keys holder: %w", err,
+				)
+			}
 			logger.Info("duplicate block producer", "error", err.Error())
 			// A node already running would keep forging beside the holder.
 			if herr := r.haltForger(ctx, dn); herr != nil {

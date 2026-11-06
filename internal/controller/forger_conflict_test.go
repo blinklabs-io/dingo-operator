@@ -32,11 +32,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const conflictPoolID = "" +
@@ -471,6 +473,97 @@ func TestReconcileRefusesCopiedKeysInDifferentSecrets(t *testing.T) {
 				err := c.Get(ctx, client.ObjectKeyFromObject(loser), &sts)
 				assert.True(t, apierrors.IsNotFound(err))
 			}
+		})
+	}
+}
+
+// A failed lookup is not a duplicate: the forger keeps its replicas and the
+// reconcile returns the error, rather than halting a node nobody duplicates.
+func TestReconcileLookupFailureDoesNotHaltForger(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, data := poolKeys(t)
+	unavailable := apierrors.NewServiceUnavailable("apiserver unavailable")
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Resource: "pods"}, "", nil,
+	)
+	tests := []struct {
+		name string
+		fail func(obj any, name string) bool
+		err  error
+		// holder adds an older node staging a copy of the keys.
+		holder bool
+	}{
+		{"pod list forbidden", func(obj any, _ string) bool {
+			_, ok := obj.(*corev1.PodList)
+			return ok
+		}, forbidden, false},
+		{"StatefulSet list unavailable", func(obj any, _ string) bool {
+			_, ok := obj.(*appsv1.StatefulSetList)
+			return ok
+		}, unavailable, false},
+		{"holder keys Secret unavailable", func(obj any, name string) bool {
+			_, ok := obj.(*corev1.Secret)
+			return ok && name == "keys-a"
+		}, unavailable, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			holder := forgerNode("bp-1", "ns-a", "", "keys-a", time.Hour)
+			node := forgerNode("bp-2", "ns-b", "", "keys-b", 0)
+			failing := false
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(
+					node,
+					keysSecret("keys-a", "ns-a", data),
+					keysSecret("keys-b", "ns-b", data),
+				).
+				WithStatusSubresource(&dingov1alpha1.DingoNode{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(
+						ctx context.Context, cl client.WithWatch,
+						key client.ObjectKey, obj client.Object,
+						opts ...client.GetOption,
+					) error {
+						if failing && tt.fail(obj, key.Name) {
+							return tt.err
+						}
+						return cl.Get(ctx, key, obj, opts...)
+					},
+					List: func(
+						ctx context.Context, cl client.WithWatch,
+						list client.ObjectList, opts ...client.ListOption,
+					) error {
+						if failing && tt.fail(list, "") {
+							return tt.err
+						}
+						return cl.List(ctx, list, opts...)
+					},
+				}).
+				Build()
+			r := reconcilerFor(c)
+			reconcileNode(t, r, node)
+			require.Equal(t, int32(1), replicasOf(t, c, node))
+
+			// Only an unread Secret can hide a holder; a list failure
+			// must not invent one.
+			if tt.holder {
+				require.NoError(t, c.Create(ctx, holder))
+			}
+			failing = true
+			_, err := r.Reconcile(ctx, ctrl.Request{
+				NamespacedName: client.ObjectKeyFromObject(node),
+			})
+			failing = false
+			assert.Equal(t, int32(1), replicasOf(t, c, node),
+				"a failed lookup must not halt the forger")
+			assert.False(t, refusedAsDuplicate(t, c, node))
+			assert.Error(t, err, "a failed lookup must not admit")
 		})
 	}
 }

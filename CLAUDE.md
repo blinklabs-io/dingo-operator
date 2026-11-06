@@ -456,7 +456,8 @@ requeue interval. Copies of one key bundle under different Secret names count
 as the same keys: the pool is also read from the cold key in the opcert. The
 newer node resumes only after the older DingoNode is gone and its StatefulSet
 and pods are gone too, since deleting a DingoNode does not stop its pod at
-once. The operator needs `list` on pods to check this.
+once. The operator needs `list` on pods to check this. A failed lookup is not
+a refusal: the reconcile returns the error and leaves the workload as it is.
 
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:

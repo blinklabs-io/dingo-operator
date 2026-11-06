@@ -202,7 +202,7 @@ func forgerConflict(
 		}
 		if pool != "" &&
 			pool == normalizedPoolID(o.Spec.BlockProducer.PoolID) {
-			return fmt.Errorf(
+			return heldf(
 				"block producer %s/%s already forges for pool %s; only one "+
 					"DingoNode may stage a pool's keys",
 				o.Namespace, o.Name, pool,
@@ -211,7 +211,7 @@ func forgerConflict(
 		if o.Namespace == dn.Namespace &&
 			o.Spec.BlockProducer.Keys.SecretRef ==
 				dn.Spec.BlockProducer.Keys.SecretRef {
-			return fmt.Errorf(
+			return heldf(
 				"block producer %s/%s already stages keys Secret %q; only "+
 					"one DingoNode may use a keys Secret",
 				o.Namespace, o.Name, dn.Spec.BlockProducer.Keys.SecretRef,
