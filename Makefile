@@ -32,7 +32,7 @@ ENVTEST_K8S_VERSION ?= 1.31.0
 # `make e2e` cannot accidentally run against an existing cluster/context.
 E2E_KUBECONFIG ?= $(ROOT_DIR)/.e2e/kubeconfig
 
-.PHONY: all build help mod-tidy clean format golines lint test manifests generate \
+.PHONY: all build help mod-tidy clean format golines lint test test-envtest manifests generate \
 	install-crds uninstall-crds run image tools e2e
 
 all: format build ## Format and build (default)
@@ -74,6 +74,10 @@ lint: ## Run linters (golangci-lint + nilaway + modernize)
 test: manifests generate envtest ## Run tests (with envtest control plane)
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -v -race -coverprofile=cover.out ./...
+
+test-envtest: manifests generate envtest ## Run the controller tests with envtest (what CI's envtest job runs)
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test -v -race ./internal/controller/...
 
 manifests: controller-gen ## Generate CRDs and RBAC
 	$(CONTROLLER_GEN) crd:generateEmbeddedObjectMeta=true rbac:roleName=dingo-operator-manager-role \
