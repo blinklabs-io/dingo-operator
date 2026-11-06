@@ -568,7 +568,9 @@ func TestReconcileInvalidSpecNeverIssues(t *testing.T) {
 				OpCertExpiryKESPeriod: 162,
 				RemainingKESPeriods:   2,
 			}}
-			stub := &stubOnChain{counter: onchain.Counter{Value: 3, Found: true}}
+			stub := &stubOnChain{
+				counter: onchain.Counter{Value: 3, Found: true},
+			}
 			f.r.OnChain = stub
 			_, err := f.r.Reconcile(
 				context.Background(),
