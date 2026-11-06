@@ -47,7 +47,8 @@ commands, toolchain) see [CLAUDE.md](CLAUDE.md).
 - Table-driven tests with `testify` (`assert`/`require`). Name subtests with
   `t.Run`.
 - Controller tests use `envtest`; gate them so `go test ./...` passes without
-  `KUBEBUILDER_ASSETS`.
+  `KUBEBUILDER_ASSETS`. CI's `envtest` workflow runs `make test-envtest` and
+  fails if any controller test skipped for that reason.
 - New behavior needs coverage. Prefer testing the pure builders directly; use
   envtest only for reconcile/integration behavior.
 

@@ -42,6 +42,7 @@ The operator Helm chart lives in the separate `helm-charts` repo under
 make manifests generate   # regenerate CRDs, RBAC, deepcopy after api/ changes
 make build                # CGO_ENABLED=0 build -> ./dingo-operator
 make test                 # go test -race ./... (envtest for controller tests)
+make test-envtest         # controller envtest suite only (CI's envtest job)
 make lint                 # golangci-lint run + nilaway + modernize
 make run                  # run against the current kubecontext
 make e2e                  # k3d + single-BP devnet end-to-end suite (~25 min)
@@ -106,7 +107,8 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   immutable-field handling) rather than the deprecated `client.Apply` patch
   type. `nilaway` and `modernize` run separately.
 - Tests: table-driven with `testify`; controller tests use `envtest`
-  (self-skip when `KUBEBUILDER_ASSETS` is unset).
+  (self-skip when `KUBEBUILDER_ASSETS` is unset; CI's `envtest` workflow
+  fails on that skip).
 - Commits: Conventional Commits, GPG-signed (required for all Blink repos
   except `skunkworks`). Only commit when the user asks.
 - securityContext defaults: managed Dingo pods always run non-root with
