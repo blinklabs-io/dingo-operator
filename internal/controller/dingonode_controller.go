@@ -324,7 +324,7 @@ func (r *DingoNodeReconciler) markNotReady(
 	return r.updateStatus(ctx, dn)
 }
 
-// haltForger scales an existing StatefulSet to zero so a refused block
+// haltForger scales the StatefulSet dn controls to zero so a refused block
 // producer stops forging. An absent StatefulSet is already halted. The next
 // reconcile that is not refused restores the replica count.
 func (r *DingoNodeReconciler) haltForger(
@@ -336,6 +336,12 @@ func (r *DingoNodeReconciler) haltForger(
 		sts := &appsv1.StatefulSet{}
 		if err := r.Get(ctx, key, sts); err != nil {
 			return client.IgnoreNotFound(err)
+		}
+		// Only a StatefulSet this DingoNode controls is its workload. Another
+		// one that merely has the name is left alone, so a DingoNode cannot be
+		// used to stop a workload its author could not update.
+		if !metav1.IsControlledBy(sts, dn) {
+			return nil
 		}
 		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
 			return nil

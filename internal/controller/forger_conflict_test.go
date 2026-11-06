@@ -967,3 +967,44 @@ func TestReconcileRepointedForgerOldPodHoldsPool(t *testing.T) {
 		})
 	}
 }
+
+// A refused block producer halts only a StatefulSet it controls: one that
+// merely shares its name is left running.
+func TestHaltForgerOnlyScalesOwnStatefulSet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name   string
+		owned  bool
+		wanted int32
+	}{
+		{"unrelated StatefulSet with the same name", false, 1},
+		{"StatefulSet this DingoNode controls", true, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dn := forgerNode("bp-1", "ns", "", "keys", time.Hour)
+			dn.UID = types.UID("dn-uid")
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: dn.Name, Namespace: dn.Namespace},
+				Spec:       appsv1.StatefulSetSpec{Replicas: new(int32(1))},
+			}
+			if tt.owned {
+				ctrlRef := true
+				sts.OwnerReferences = []metav1.OwnerReference{{
+					APIVersion: dingov1alpha1.GroupVersion.String(),
+					Kind:       "DingoNode",
+					Name:       dn.Name,
+					UID:        dn.UID,
+					Controller: &ctrlRef,
+				}}
+			}
+			c := conflictClient(t, dn, sts)
+			require.NoError(t, reconcilerFor(c).haltForger(ctx, dn))
+			got := &appsv1.StatefulSet{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(sts), got))
+			require.NotNil(t, got.Spec.Replicas)
+			assert.Equal(t, tt.wanted, *got.Spec.Replicas)
+		})
+	}
+}
