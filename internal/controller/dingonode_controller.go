@@ -239,15 +239,20 @@ func (r *DingoNodeReconciler) Reconcile(
 			return ctrl.Result{}, fmt.Errorf("list DingoNodes: %w", err)
 		}
 		if err := r.forgerHeld(ctx, dn, all.Items); err != nil {
-			if _, held := errors.AsType[*forgerHeldError](err); !held {
+			held, ok := errors.AsType[*forgerHeldError](err)
+			if !ok {
 				return ctrl.Result{}, fmt.Errorf(
 					"check block producer keys holder: %w", err,
 				)
 			}
 			logger.Info("duplicate block producer", "error", err.Error())
 			// A node already running would keep forging beside the holder.
-			if herr := r.haltForger(ctx, dn); herr != nil {
-				return ctrl.Result{}, herr
+			// Evidence that does not verify only keeps the node from
+			// starting or rolling: anyone who may create a pod can forge it.
+			if held.halt {
+				if herr := r.haltForger(ctx, dn); herr != nil {
+					return ctrl.Result{}, herr
+				}
 			}
 			// Nothing watches the holder, so poll for it going away.
 			return ctrl.Result{RequeueAfter: requeueInterval}, r.markNotReady(

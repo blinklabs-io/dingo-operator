@@ -117,8 +117,19 @@ pod template records it in `dingo.blinklabs.io/keys-pool` when it is first
 rendered or its keys change. A template rendered before that annotation
 existed gains it only at its next keys change, normally the next KES rotation,
 so adding it does not restart running producers; until then every pod it starts
-is judged by its keys Secret alone. These checks read StatefulSets and pods from the API server, so the
-operator needs `list` on pods. A failed lookup is
+is judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a
+verified pod whose checksum equals another producer's keys staged the same
+bundle. A different bundle for the same pool on such a pod is not detected.
+Only a verified workload can scale a running producer to zero: a StatefulSet
+controlled by a DingoNode with the same UID, or a pod controlled by such a
+StatefulSet. Labels, annotations, and a keys volume can be set by anyone who
+may create a pod, so a workload with only those, or whose owner is gone, keeps a
+producer that is not running from starting and a running one from rolling, but
+does not halt it. Owner references are set by whoever creates the object, so
+the chain shows only that its creator could write StatefulSets in a namespace
+holding that DingoNode; DingoNode authors are trusted, and an older DingoNode
+naming a pool holds it on its spec alone. These checks read StatefulSets and
+pods from the API server, so the operator needs `list` on pods. A failed lookup is
 not a refusal: the reconcile returns the error and leaves the workload as it
 is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name

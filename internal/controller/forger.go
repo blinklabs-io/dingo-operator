@@ -26,28 +26,54 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // forgerHeldError refuses a block producer its keys. Any other error from
 // forgerHeld is a failed lookup, which must neither halt a running forger nor
-// admit a new one.
-type forgerHeldError struct{ msg string }
+// admit a new one. halt is false when the only evidence is a workload whose
+// controller chain does not verify: that may keep a producer from starting or
+// rolling, but must not scale a running one to zero.
+type forgerHeldError struct {
+	msg  string
+	halt bool
+}
 
 func (e *forgerHeldError) Error() string { return e.msg }
 
 func heldf(format string, a ...any) error {
+	return &forgerHeldError{msg: fmt.Sprintf(format, a...), halt: true}
+}
+
+// unverifiedHeldf refuses without halting; see forgerHeldError.
+func unverifiedHeldf(format string, a ...any) error {
 	return &forgerHeldError{msg: fmt.Sprintf(format, a...)}
 }
 
+// workloadState is what a workload proves about the keys it runs.
+type workloadState int
+
+const (
+	workloadDown workloadState = iota
+	// workloadUnverified runs, but nothing ties it to a DingoNode: any
+	// namespace's pod creator can set its labels and annotations.
+	workloadUnverified
+	// workloadVerified runs under a controller chain that resolves by UID to
+	// live objects: a StatefulSet controlled by a DingoNode.
+	workloadVerified
+)
+
 // forgerIdentity is what makes two block producers the same forger: a pool
 // (from poolId, from the cold key in the delivered opcert, or recorded on the
-// pod that staged the keys) or a keys Secret.
+// pod that staged the keys) or a keys Secret. checksum is the keys Secret's
+// keys checksum, compared against what a pod recorded when it staged its keys.
 type forgerIdentity struct {
 	pools     []string
 	namespace string
 	secret    string
+	checksum  string
 }
 
 // sharedWith describes what a and b share, or returns "" when they are
@@ -64,27 +90,28 @@ func (a forgerIdentity) sharedWith(b forgerIdentity) string {
 	return ""
 }
 
-// keysPoolID returns the pool the keys Secret's opcert belongs to: a copy of
-// the same bundle under another Secret name still hashes to the same cold key,
-// which poolId (optional) does not reveal. An absent Secret or one without a
-// parseable opcert yields "". A failed read is an error, since treating it as
-// "no pool" would admit a copy of the keys.
+// keysPoolID returns the pool the keys Secret's opcert belongs to, and the
+// Secret's keys checksum: a copy of the same bundle under another Secret name
+// still hashes to the same cold key, which poolId (optional) does not reveal.
+// An absent Secret yields "" for both, and one without a parseable opcert ""
+// for the pool. A failed read is an error, since treating it as "no pool"
+// would admit a copy of the keys.
 func (r *DingoNodeReconciler) keysPoolID(
 	ctx context.Context,
 	namespace, secretName string,
-) (string, error) {
+) (pool, sum string, err error) {
 	if r.APIReader == nil || secretName == "" {
-		return "", nil
+		return "", "", nil
 	}
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Name: secretName, Namespace: namespace}
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", nil
+			return "", "", nil
 		}
-		return "", fmt.Errorf("read keys Secret %s: %w", key, err)
+		return "", "", fmt.Errorf("read keys Secret %s: %w", key, err)
 	}
-	return opCertPoolID(secret.Data), nil
+	return opCertPoolID(secret.Data), keysChecksum(secret), nil
 }
 
 // opCertPoolID returns the pool of the opcert in a keys Secret's data, or ""
@@ -112,13 +139,14 @@ func (r *DingoNodeReconciler) nodeIdentity(
 			id.pools = append(id.pools, p)
 		}
 	}
-	p, err := r.keysPoolID(ctx, id.namespace, id.secret)
+	p, sum, err := r.keysPoolID(ctx, id.namespace, id.secret)
 	if err != nil {
 		return id, err
 	}
 	if p != "" {
 		id.pools = append(id.pools, p)
 	}
+	id.checksum = sum
 	return id, nil
 }
 
@@ -162,7 +190,7 @@ func (r *DingoNodeReconciler) forgerHeld(
 			if uerr != nil {
 				return uerr
 			}
-			if up {
+			if up != workloadDown {
 				return err
 			}
 		}
@@ -186,32 +214,47 @@ func (r *DingoNodeReconciler) forgerHeld(
 		if err != nil {
 			return err
 		}
-		if up {
-			return heldf(
-				"block producer %s/%s still runs with the same %s; waiting "+
-					"for it to stop",
-				o.Namespace, o.Name, what,
-			)
+		held := heldf
+		switch up {
+		case workloadDown:
+			continue
+		case workloadUnverified:
+			held = unverifiedHeldf
+		case workloadVerified:
 		}
+		return held(
+			"block producer %s/%s still runs with the same %s; waiting "+
+				"for it to stop",
+			o.Namespace, o.Name, what,
+		)
 	}
-	return r.orphanForger(ctx, dn, mine)
+	return r.orphanForger(ctx, dn, mine, all)
 }
 
 // workloadUp reports whether o's StatefulSet wants a replica or any of its
-// pods has not finished.
+// pods has not finished, and whether that workload verifies as o's: a
+// StatefulSet o controls, or a pod that StatefulSet controls. A StatefulSet
+// that only has o's name, or a pod that only carries its name label, is
+// unverified.
 func (r *DingoNodeReconciler) workloadUp(
 	ctx context.Context,
 	o *dingov1alpha1.DingoNode,
-) (bool, error) {
+) (workloadState, error) {
+	state := workloadDown
 	sts := &appsv1.StatefulSet{}
 	err := r.uncachedReader().Get(ctx, client.ObjectKeyFromObject(o), sts)
+	owned := false
 	switch {
 	case err == nil:
+		owned = metav1.IsControlledBy(sts, o)
 		if sts.Spec.Replicas == nil || *sts.Spec.Replicas > 0 {
-			return true, nil
+			if owned {
+				return workloadVerified, nil
+			}
+			state = workloadUnverified
 		}
 	case !apierrors.IsNotFound(err):
-		return false, fmt.Errorf("read statefulset %s/%s: %w",
+		return workloadDown, fmt.Errorf("read statefulset %s/%s: %w",
 			o.Namespace, o.Name, err)
 	}
 	var pods corev1.PodList
@@ -219,15 +262,59 @@ func (r *DingoNodeReconciler) workloadUp(
 		client.InNamespace(o.Namespace),
 		client.MatchingLabels{resources.NodeLabel: o.Name},
 	); err != nil {
-		return false, fmt.Errorf("list pods of %s/%s: %w",
+		return workloadDown, fmt.Errorf("list pods of %s/%s: %w",
 			o.Namespace, o.Name, err)
 	}
 	for i := range pods.Items {
-		if podRunning(&pods.Items[i]) {
-			return true, nil
+		p := &pods.Items[i]
+		if !podRunning(p) {
+			continue
+		}
+		if owned && metav1.IsControlledBy(p, sts) {
+			return workloadVerified, nil
+		}
+		state = workloadUnverified
+	}
+	return state, nil
+}
+
+// statefulSetVerified reports whether s is controlled by a DingoNode in all
+// with the same UID. A DingoNode being deleted still counts: foreground
+// deletion keeps it until its StatefulSet is gone.
+func statefulSetVerified(
+	s *appsv1.StatefulSet,
+	all []dingov1alpha1.DingoNode,
+) bool {
+	for i := range all {
+		if all[i].Namespace == s.Namespace &&
+			metav1.IsControlledBy(s, &all[i]) {
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// podVerified reports whether p is controlled by a live StatefulSet with the
+// same UID that statefulSetVerified accepts.
+func (r *DingoNodeReconciler) podVerified(
+	ctx context.Context,
+	p *corev1.Pod,
+	all []dingov1alpha1.DingoNode,
+) (bool, error) {
+	ref := metav1.GetControllerOf(p)
+	if ref == nil || ref.Kind != "StatefulSet" ||
+		ref.APIVersion != appsv1.SchemeGroupVersion.String() {
+		return false, nil
+	}
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: p.Namespace, Name: ref.Name}
+	if err := r.uncachedReader().Get(ctx, key, sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read statefulset %s: %w", key, err)
+	}
+	return sts.UID == ref.UID && statefulSetVerified(sts, all), nil
 }
 
 // uncachedReader reads workloads for the fence from the API server: no
@@ -250,11 +337,13 @@ func podRunning(p *corev1.Pod) bool {
 // a name reused by a relay or another pool does not own the old pod. A
 // StatefulSet at zero replicas with no pods is down. Live block producers that
 // share dn's keys were already decided by forgerHeld, so this finds only
-// workloads they no longer account for.
+// workloads they no longer account for. A workload whose controller chain
+// does not verify against all refuses without halting.
 func (r *DingoNodeReconciler) orphanForger(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 	mine forgerIdentity,
+	all []dingov1alpha1.DingoNode,
 ) error {
 	self := client.ObjectKeyFromObject(dn)
 	selector := client.MatchingLabels{
@@ -270,9 +359,12 @@ func (r *DingoNodeReconciler) orphanForger(
 		if s.Spec.Replicas != nil && *s.Spec.Replicas == 0 {
 			continue
 		}
+		verify := func() (bool, error) {
+			return statefulSetVerified(s, all), nil
+		}
 		if err := r.orphanHolds(
 			ctx, mine, self, "StatefulSet", s.Namespace, s.Name, s.Name,
-			s.Spec.Template.Annotations, s.Spec.Template.Spec,
+			s.Spec.Template.Annotations, "", s.Spec.Template.Spec, verify,
 		); err != nil {
 			return err
 		}
@@ -287,9 +379,11 @@ func (r *DingoNodeReconciler) orphanForger(
 		if !podRunning(p) {
 			continue
 		}
+		verify := func() (bool, error) { return r.podVerified(ctx, p, all) }
 		if err := r.orphanHolds(
 			ctx, mine, self, "pod", p.Namespace, p.Name,
-			p.Labels[resources.NodeLabel], p.Annotations, p.Spec,
+			p.Labels[resources.NodeLabel], p.Annotations,
+			p.Annotations[resources.KeysChecksumAnnotation], p.Spec, verify,
 		); err != nil {
 			return err
 		}
@@ -302,14 +396,19 @@ func (r *DingoNodeReconciler) orphanForger(
 // whatever its Secret now holds, so the pool recorded on it when it was created
 // counts as well as the Secret's current one. A template rendered before that
 // record existed gains it only at its next keys change; until then its pods are
-// judged by their Secret alone.
+// judged by their Secret, and by stagedSum, the keys checksum the pod recorded:
+// equal to mine's, it staged the same bundle. stagedSum counts only on a
+// verified workload, since any pod can copy a checksum. verify is called only
+// for a workload that shares mine's keys.
 func (r *DingoNodeReconciler) orphanHolds(
 	ctx context.Context,
 	mine forgerIdentity,
 	self types.NamespacedName,
 	kind, namespace, name, owner string,
 	annotations map[string]string,
+	stagedSum string,
 	spec corev1.PodSpec,
+	verify func() (bool, error),
 ) error {
 	if self == (types.NamespacedName{Namespace: namespace, Name: owner}) {
 		return nil
@@ -324,19 +423,35 @@ func (r *DingoNodeReconciler) orphanHolds(
 	); p != "" {
 		theirs.pools = append(theirs.pools, p)
 	}
-	p, err := r.keysPoolID(ctx, namespace, secret)
+	p, _, err := r.keysPoolID(ctx, namespace, secret)
 	if err != nil {
 		return err
 	}
 	if p != "" {
 		theirs.pools = append(theirs.pools, p)
 	}
-	if what := mine.sharedWith(theirs); what != "" {
-		return heldf(
-			"%s %s/%s of another block producer still holds the same %s; "+
-				"waiting for it to stop",
-			kind, namespace, name, what,
-		)
+	what := mine.sharedWith(theirs)
+	sumOnly := false
+	if what == "" && stagedSum != "" && stagedSum == mine.checksum {
+		what, sumOnly = "keys bundle", true
 	}
-	return nil
+	if what == "" {
+		return nil
+	}
+	verified, err := verify()
+	if err != nil {
+		return err
+	}
+	held := heldf
+	if !verified {
+		if sumOnly {
+			return nil
+		}
+		held = unverifiedHeldf
+	}
+	return held(
+		"%s %s/%s of another block producer still holds the same %s; "+
+			"waiting for it to stop",
+		kind, namespace, name, what,
+	)
 }
