@@ -582,3 +582,50 @@ func TestReconcileInvalidSpecNeverIssues(t *testing.T) {
 		})
 	}
 }
+
+// A block producer rejected for a missing spec.blockProducer cannot be
+// observed for KES, so earlier KES status and RotationDue must not be left as
+// if they were current.
+func TestReconcileInvalidSpecWithoutBlockProducerClearsKES(t *testing.T) {
+	t.Parallel()
+	f := newRotateFixture(t)
+	f.dn.Spec.BlockProducer = nil
+	f.dn.Status.KES = dingov1alpha1.KESStatus{
+		CurrentPeriod: 150, RemainingPeriods: 12,
+	}
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse,
+		Reason: "KESHealthy", Message: "12 KES periods remaining",
+	})
+	require.Error(t, validateSpec(f.dn))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(f.dn).WithStatusSubresource(f.dn).Build()
+	f.r.Client, f.r.APIReader, f.r.Scheme = c, c, scheme
+	f.r.ForgeStatus = &statusFetcher{st: &forgestatus.Status{
+		HasKESData:            true,
+		CurrentKESPeriod:      160,
+		OpCertStartKESPeriod:  100,
+		OpCertExpiryKESPeriod: 162,
+		RemainingKESPeriods:   2,
+	}}
+
+	_, err := f.r.Reconcile(
+		context.Background(),
+		ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.dn)},
+	)
+	require.NoError(t, err)
+
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(f.dn), got,
+	))
+	assert.Equal(t, dingov1alpha1.KESStatus{}, got.Status.KES)
+	due := meta.FindStatusCondition(got.Status.Conditions, condRotationDue)
+	require.NotNil(t, due)
+	assert.Equal(t, metav1.ConditionUnknown, due.Status)
+	assert.Equal(t, "InvalidSpec", due.Reason)
+}

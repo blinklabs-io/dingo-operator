@@ -212,6 +212,16 @@ func (r *DingoNodeReconciler) Reconcile(
 		// the validation that rejected this spec (for one, the mainnet refusal
 		// of the in-cluster cold key).
 		r.refreshForgeStatus(ctx, dn)
+		if resources.IsBlockProducer(dn) && dn.Spec.BlockProducer == nil {
+			// refreshForgeStatus reads KES only through spec.blockProducer, so
+			// without it the earlier KES status would read as current.
+			dn.Status.KES = dingov1alpha1.KESStatus{}
+			setRotationDueUnknown(
+				dn,
+				"InvalidSpec",
+				"spec.blockProducer is missing; KES status is not observed",
+			)
+		}
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type:               condDegraded,
 			Status:             metav1.ConditionTrue,
