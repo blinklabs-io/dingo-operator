@@ -34,7 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-const conflictPoolID = "00112233445566778899aabbccddeeff00112233445566778899aabb"
+const conflictPoolID = "" +
+	"00112233445566778899aabbccddeeff" +
+	"00112233445566778899aabb"
 
 func forgerNode(
 	name, ns, poolID, secret string,
@@ -147,7 +149,10 @@ func TestReconcileRejectsSecondForgerForPool(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(tt.first), &got))
-			if d := meta.FindStatusCondition(got.Status.Conditions, condDegraded); d != nil {
+			d := meta.FindStatusCondition(
+				got.Status.Conditions, condDegraded,
+			)
+			if d != nil {
 				assert.NotEqual(t, "DuplicateForger", d.Reason)
 			}
 		})
@@ -171,4 +176,91 @@ func TestForgerConflict(t *testing.T) {
 	gone := forgerNode("0", "ns", conflictPoolID, "k1", time.Hour)
 	gone.DeletionTimestamp = &metav1.Time{Time: time.Unix(1_700_000_000, 0)}
 	assert.NoError(t, forgerConflict(b, []dingov1alpha1.DingoNode{*gone}))
+}
+
+func conflictClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objs...).
+		WithStatusSubresource(&dingov1alpha1.DingoNode{}).
+		Build()
+}
+
+func reconcileNode(
+	t *testing.T, r *DingoNodeReconciler, n *dingov1alpha1.DingoNode,
+) ctrl.Result {
+	t.Helper()
+	res, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(n),
+	})
+	require.NoError(t, err)
+	return res
+}
+
+// A node that already forges must stop when it turns out to share keys with an
+// older one, and resume when the older node goes away.
+func TestReconcileScalesRunningDuplicateForgerDown(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	holder := forgerNode("bp-1", "ns", conflictPoolID, "keys-a", time.Hour)
+	loser := forgerNode(
+		"bp-2", "ns",
+		"ff112233445566778899aabbccddeeff00112233445566778899aabb",
+		"keys-b", 0,
+	)
+	c := conflictClient(t, holder, loser)
+	r := reconcilerFor(c)
+
+	reconcileNode(t, r, loser)
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(loser), &sts))
+	require.NotNil(t, sts.Spec.Replicas)
+	require.Equal(t, int32(1), *sts.Spec.Replicas)
+
+	var live dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(loser), &live))
+	live.Spec.BlockProducer.PoolID = conflictPoolID
+	require.NoError(t, c.Update(ctx, &live))
+
+	res := reconcileNode(t, r, &live)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(loser), &sts))
+	require.NotNil(t, sts.Spec.Replicas)
+	assert.Equal(t, int32(0), *sts.Spec.Replicas,
+		"a running duplicate forger must be scaled to zero")
+	assert.Equal(t, requeueInterval, res.RequeueAfter,
+		"a refused node must be re-evaluated, nothing watches its holder")
+
+	// The holder goes away: the next reconcile restores the forger.
+	require.NoError(t, c.Delete(ctx, holder))
+	reconcileNode(t, r, &live)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(loser), &sts))
+	require.NotNil(t, sts.Spec.Replicas)
+	assert.Equal(t, int32(1), *sts.Spec.Replicas)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(loser), &live))
+	d := meta.FindStatusCondition(live.Status.Conditions, condDegraded)
+	if d != nil {
+		assert.NotEqual(t, "DuplicateForger", d.Reason)
+	}
+}
+
+func TestReconcileRefusedForgerRequeues(t *testing.T) {
+	t.Parallel()
+	holder := forgerNode("bp-1", "ns", "", "keys", time.Hour)
+	loser := forgerNode("bp-2", "ns", "", "keys", 0)
+	r := reconcilerFor(conflictClient(t, holder, loser))
+	res := reconcileNode(t, r, loser)
+	assert.Equal(t, requeueInterval, res.RequeueAfter)
+}
+
+func TestNormalizedPoolIDBech32EqualsHex(t *testing.T) {
+	t.Parallel()
+	pool, err := parsePoolID(conflictPoolID)
+	require.NoError(t, err)
+	bech := pool.Bech32("pool")
+	require.NotEqual(t, conflictPoolID, bech)
+	assert.Equal(t, normalizedPoolID(conflictPoolID), normalizedPoolID(bech))
 }

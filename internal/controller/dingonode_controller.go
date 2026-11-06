@@ -217,7 +217,12 @@ func (r *DingoNodeReconciler) Reconcile(
 		}
 		if err := forgerConflict(dn, all.Items); err != nil {
 			logger.Info("duplicate block producer", "error", err.Error())
-			return ctrl.Result{}, r.markNotReady(
+			// A node already running would keep forging beside the holder.
+			if herr := r.haltForger(ctx, dn); herr != nil {
+				return ctrl.Result{}, herr
+			}
+			// Nothing watches the holder, so poll for it going away.
+			return ctrl.Result{RequeueAfter: requeueInterval}, r.markNotReady(
 				ctx, dn, reasonDuplicateForger, err,
 			)
 		}
@@ -289,6 +294,32 @@ func (r *DingoNodeReconciler) markNotReady(
 	})
 	dn.Status.Phase = "Degraded"
 	return r.updateStatus(ctx, dn)
+}
+
+// haltForger scales an existing StatefulSet to zero so a refused block
+// producer stops forging. An absent StatefulSet is already halted. The next
+// reconcile that is not refused restores the replica count.
+func (r *DingoNodeReconciler) haltForger(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) error {
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("read statefulset %q: %w", dn.Name, err)
+	}
+	if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
+		return nil
+	}
+	zero := int32(0)
+	sts.Spec.Replicas = &zero
+	if err := r.Update(ctx, sts); err != nil {
+		return fmt.Errorf("scale statefulset %q to zero: %w", dn.Name, err)
+	}
+	return nil
 }
 
 // relayRefPorts resolves the relay port of every in-cluster node listed in
