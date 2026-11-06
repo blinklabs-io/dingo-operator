@@ -325,9 +325,10 @@ type NodeToClientSpec struct {
 // BlockProducerSpec holds block-producer-only configuration. Required when
 // spec.role is blockProducer.
 type BlockProducerSpec struct {
-	// PoolID (bech32 or hex) must be set for a block producer; the controller
-	// rejects the resource otherwise. It is cross-checked against the keys and
-	// keys the on-chain opcert counter lookup.
+	// PoolID (bech32 or hex) must be set for a block producer; without it the
+	// controller marks the node Degraded and does not reconcile it. It is
+	// cross-checked against the keys and selects the pool for the on-chain
+	// opcert counter lookup.
 	// +optional
 	PoolID string `json:"poolId,omitempty"`
 	// +kubebuilder:default=129600
