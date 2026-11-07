@@ -322,7 +322,9 @@ func (r *DingoNodeReconciler) orphanForger(
 		if s.Spec.Replicas != nil && *s.Spec.Replicas == 0 {
 			continue
 		}
-		if err := r.orphanHolds(
+		// A pod a template starts stages the Secret as it is then, so only
+		// a pod can have staged a pool its Secret no longer shows.
+		if _, err := r.orphanHolds(
 			ctx, mine, self, "StatefulSet", s.Namespace, s.Name, s.Name,
 			s.Spec.Template.Annotations, "", s.Spec.Template.Spec,
 		); err != nil {
@@ -334,20 +336,82 @@ func (r *DingoNodeReconciler) orphanForger(
 	if err := r.uncachedReader().List(ctx, &pods, selector); err != nil {
 		return fmt.Errorf("list block producer pods: %w", err)
 	}
+	var unknown *corev1.Pod
 	for i := range pods.Items {
 		p := &pods.Items[i]
 		if !podRunning(p) {
 			continue
 		}
-		if err := r.orphanHolds(
+		u, err := r.orphanHolds(
 			ctx, mine, self, "pod", p.Namespace, p.Name,
 			p.Labels[resources.NodeLabel], p.Annotations,
 			p.Annotations[resources.KeysChecksumAnnotation], p.Spec,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
+		if u && unknown == nil {
+			unknown = p
+		}
 	}
-	return nil
+	if unknown == nil {
+		return nil
+	}
+	rolls, err := r.rollsPastUnknownPool(ctx, dn, mine)
+	if err != nil || rolls {
+		return err
+	}
+	return unverifiedHeldf(
+		"pod %s/%s of another block producer staged keys its keys Secret no "+
+			"longer holds, for a pool recorded nowhere; waiting for it to stop",
+		unknown.Namespace, unknown.Name,
+	)
+}
+
+// rollsPastUnknownPool reports whether dn may proceed while another producer's
+// pod of unknown staged pool runs. dn must already run a pod controlled by the
+// StatefulSet dn controls. Each such pod must have staged the pool dn's keys
+// now name, so the roll is the same forger's, as for a KES rotation, or itself
+// be of unknown pool, which only dn's roll replaces; holding those would
+// deadlock producers whose keys change together. A producer not running, or
+// one whose keys move to another pool, waits for the pod to stop.
+func (r *DingoNodeReconciler) rollsPastUnknownPool(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	mine forgerIdentity,
+) (bool, error) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.uncachedReader().Get(
+		ctx, client.ObjectKeyFromObject(dn), sts,
+	); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(sts, dn) {
+		return false, nil
+	}
+	var pods corev1.PodList
+	if err := r.uncachedReader().List(ctx, &pods,
+		client.InNamespace(dn.Namespace),
+		client.MatchingLabels{resources.NodeLabel: dn.Name},
+	); err != nil {
+		return false, fmt.Errorf("list pods of %s/%s: %w",
+			dn.Namespace, dn.Name, err)
+	}
+	runs := false
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if !podRunning(p) || !metav1.IsControlledBy(p, sts) {
+			continue
+		}
+		runs = true
+		// An unannotated pod staged either the bundle dn has now, and so
+		// its pool, or one of unknown pool.
+		pool := normalizedPoolID(p.Annotations[resources.KeysPoolAnnotation])
+		if pool != "" && !slices.Contains(mine.pools, pool) {
+			return false, nil
+		}
+	}
+	return runs, nil
 }
 
 // orphanHolds returns an error when a workload other than self's holds keys
@@ -356,7 +420,11 @@ func (r *DingoNodeReconciler) orphanForger(
 // counts as well as the Secret's current one. A template rendered before that
 // record existed gains it only at its next keys change; until then its pods are
 // judged by their Secret, and by stagedSum, the keys checksum the pod recorded:
-// equal to mine's, it staged the same bundle.
+// equal to mine's, it staged the same bundle. Such a pod's Secret names its
+// pool only while stagedSum equals the Secret's checksum; otherwise unknown is
+// true, since the pod may still forge a pool recorded nowhere. A pod that
+// recorded no checksum started from a template rendered before its keys were
+// first accepted, and is judged by its Secret.
 func (r *DingoNodeReconciler) orphanHolds(
 	ctx context.Context,
 	mine forgerIdentity,
@@ -365,23 +433,22 @@ func (r *DingoNodeReconciler) orphanHolds(
 	annotations map[string]string,
 	stagedSum string,
 	spec corev1.PodSpec,
-) error {
+) (unknown bool, err error) {
 	if self == (types.NamespacedName{Namespace: namespace, Name: owner}) {
-		return nil
+		return false, nil
 	}
 	secret, ok := resources.KeysSecretName(spec)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	theirs := forgerIdentity{namespace: namespace, secret: secret}
-	if p := normalizedPoolID(
-		annotations[resources.KeysPoolAnnotation],
-	); p != "" {
-		theirs.pools = append(theirs.pools, p)
+	recorded := normalizedPoolID(annotations[resources.KeysPoolAnnotation])
+	if recorded != "" {
+		theirs.pools = append(theirs.pools, recorded)
 	}
-	p, _, err := r.keysPoolID(ctx, namespace, secret)
+	p, sum, err := r.keysPoolID(ctx, namespace, secret)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if p != "" {
 		theirs.pools = append(theirs.pools, p)
@@ -391,9 +458,9 @@ func (r *DingoNodeReconciler) orphanHolds(
 		what = "keys bundle"
 	}
 	if what == "" {
-		return nil
+		return recorded == "" && stagedSum != "" && stagedSum != sum, nil
 	}
-	return unverifiedHeldf(
+	return false, unverifiedHeldf(
 		"%s %s/%s of another block producer still holds the same %s; "+
 			"waiting for it to stop",
 		kind, namespace, name, what,

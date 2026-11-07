@@ -16,11 +16,14 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"testing"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -409,4 +412,211 @@ func TestReconcileOlderHaltsForNewerPodAfterNewerHalts(t *testing.T) {
 	reconcileNode(t, r, older)
 	assert.False(t, refusedAsDuplicate(t, c, older))
 	assert.True(t, forging(t, c, older))
+}
+
+// poolKeyBundles returns a pool and two different valid key bundles for it,
+// such as an opcert re-issued with the next counter.
+func poolKeyBundles(t *testing.T) (string, map[string][]byte, map[string][]byte) {
+	t.Helper()
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	first, err := keys.SecretData(3, 5)
+	require.NoError(t, err)
+	second, err := keys.SecretData(4, 5)
+	require.NoError(t, err)
+	return hex.EncodeToString(keys.PoolID), first, second
+}
+
+// runningPod creates the pod n's StatefulSet would start from its current
+// template, controlled by that StatefulSet. A legacy pod has no keys-pool
+// annotation, as one started from a template rendered before it existed.
+func runningPod(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode, legacy bool,
+) *corev1.Pod {
+	t.Helper()
+	ctx := context.Background()
+	pod := stagedPod(t, c, n)
+	if legacy {
+		delete(pod.Annotations, resources.KeysPoolAnnotation)
+	}
+	require.NotEmpty(t, pod.Annotations[resources.KeysChecksumAnnotation])
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(n), &sts))
+	require.True(t, metav1.IsControlledBy(&sts, n))
+	setController(pod, "apps/v1", "StatefulSet", sts.Name, sts.UID)
+	require.NoError(t, c.Create(ctx, pod))
+	return pod
+}
+
+// replaceKeys points n at data, naming pool, by replacing its keys Secret's
+// contents.
+func replaceKeys(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+	pool string, data map[string][]byte,
+) {
+	t.Helper()
+	ctx := context.Background()
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{
+		Namespace: n.Namespace, Name: n.Spec.BlockProducer.Keys.SecretRef,
+	}, secret))
+	secret.Data = data
+	require.NoError(t, c.Update(ctx, secret))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(n), n))
+	n.Spec.BlockProducer.PoolID = pool
+	require.NoError(t, c.Update(ctx, n))
+}
+
+func templateAnnotation(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode, key string,
+) string {
+	t.Helper()
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(n), &sts,
+	))
+	return sts.Spec.Template.Annotations[key]
+}
+
+// A legacy pod whose keys checksum no longer matches its keys Secret staged a
+// pool recorded nowhere: here pool A, while its Secret now holds pool B.
+// Another producer with a different bundle for pool A must wait until that
+// pod stops. Its own node still rolls onto the new keys.
+func TestReconcileLegacyPodUnknownPoolHolds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	poolA, dataA, dataA2 := poolKeyBundles(t)
+	poolB, dataB := poolKeys(t)
+	moved := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+	moved.UID = "moved-uid"
+	loser := forgerNode("bp-2", "ns-2", poolA, "keys-c", 0)
+	loser.UID = "loser-uid"
+	c := conflictClient(t, moved, loser,
+		keysSecret("keys-a", "ns", dataA),
+		keysSecret("keys-c", "ns-2", dataA2),
+	)
+	r := reconcilerFor(c)
+	reconcileNode(t, r, moved)
+	require.True(t, forging(t, c, moved))
+	pod := runningPod(t, c, moved, true)
+
+	replaceKeys(t, c, moved, poolB, dataB)
+	reconcileNode(t, r, moved)
+	assert.False(t, refusedAsDuplicate(t, c, moved))
+	assert.True(t, forging(t, c, moved))
+	assert.Equal(t, poolB, templateAnnotation(
+		t, c, moved, resources.KeysPoolAnnotation,
+	), "its own unknown pod does not hold the node's roll")
+
+	reconcileNode(t, r, loser)
+	assert.True(t, refusedAsDuplicate(t, c, loser),
+		"the legacy pod may still forge pool A")
+	assert.False(t, forging(t, c, loser))
+
+	require.NoError(t, c.Delete(ctx, pod))
+	reconcileNode(t, r, loser)
+	assert.False(t, refusedAsDuplicate(t, c, loser))
+	assert.True(t, forging(t, c, loser))
+}
+
+// A pod of unknown staged pool refuses without halting. A running producer
+// whose keys still name the pool its own pod staged keeps rolling, as for a
+// KES rotation; one whose keys move to another pool waits, still running,
+// until that pod stops.
+func TestReconcileUnknownPoolPodSparesRunningProducer(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		repoint bool
+	}{
+		{"same pool rolls", false},
+		{"other pool waits", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			poolA, dataA := poolKeys(t)
+			poolB, dataB := poolKeys(t)
+			poolC, dataC, dataC2 := poolKeyBundles(t)
+			poolD, dataD := poolKeys(t)
+			moved := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+			moved.UID = "moved-uid"
+			other := forgerNode("bp-2", "ns-2", poolC, "keys-c", 0)
+			other.UID = "other-uid"
+			c := conflictClient(t, moved, other,
+				keysSecret("keys-a", "ns", dataA),
+				keysSecret("keys-c", "ns-2", dataC),
+			)
+			r := reconcilerFor(c)
+			reconcileNode(t, r, moved)
+			reconcileNode(t, r, other)
+			require.True(t, forging(t, c, moved))
+			require.True(t, forging(t, c, other))
+			pod := runningPod(t, c, moved, true)
+			runningPod(t, c, other, false)
+			replaceKeys(t, c, moved, poolB, dataB)
+
+			pool, data := poolC, dataC2
+			if tt.repoint {
+				pool, data = poolD, dataD
+			}
+			replaceKeys(t, c, other, pool, data)
+			reconcileNode(t, r, other)
+			assert.Equal(t, int32(1), replicasOf(t, c, other))
+			assert.Equal(t, tt.repoint, refusedAsDuplicate(t, c, other))
+			want := keysChecksum(keysSecret("keys-c", "ns-2", data))
+			if tt.repoint {
+				want = keysChecksum(keysSecret("keys-c", "ns-2", dataC))
+			}
+			assert.Equal(t, want, templateAnnotation(
+				t, c, other, resources.KeysChecksumAnnotation,
+			))
+
+			require.NoError(t, c.Delete(ctx, pod))
+			reconcileNode(t, r, other)
+			assert.False(t, refusedAsDuplicate(t, c, other))
+			assert.Equal(t, int32(1), replicasOf(t, c, other))
+			assert.Equal(t, pool, templateAnnotation(
+				t, c, other, resources.KeysPoolAnnotation,
+			))
+		})
+	}
+}
+
+// Two legacy producers whose keys change in the same window each hold a pod
+// of unknown staged pool. Each still rolls past the other's pod, since its own
+// pod is unknown too and only its roll replaces it.
+func TestReconcileConcurrentLegacyKeyChangesRoll(t *testing.T) {
+	t.Parallel()
+	poolA, dataA := poolKeys(t)
+	poolB, dataB := poolKeys(t)
+	poolC, dataC := poolKeys(t)
+	poolD, dataD := poolKeys(t)
+	x := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+	x.UID = "x-uid"
+	y := forgerNode("bp-2", "ns-2", poolC, "keys-c", 0)
+	y.UID = "y-uid"
+	c := conflictClient(t, x, y,
+		keysSecret("keys-a", "ns", dataA),
+		keysSecret("keys-c", "ns-2", dataC),
+	)
+	r := reconcilerFor(c)
+	reconcileNode(t, r, x)
+	reconcileNode(t, r, y)
+	runningPod(t, c, x, true)
+	runningPod(t, c, y, true)
+	replaceKeys(t, c, x, poolB, dataB)
+	replaceKeys(t, c, y, poolD, dataD)
+
+	reconcileNode(t, r, x)
+	reconcileNode(t, r, y)
+	for n, pool := range map[*dingov1alpha1.DingoNode]string{
+		x: poolB, y: poolD,
+	} {
+		assert.False(t, refusedAsDuplicate(t, c, n), n.Name)
+		assert.True(t, forging(t, c, n), n.Name)
+		assert.Equal(t, pool, templateAnnotation(
+			t, c, n, resources.KeysPoolAnnotation,
+		), n.Name)
+	}
 }

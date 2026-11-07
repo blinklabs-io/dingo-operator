@@ -118,8 +118,16 @@ rendered or its keys change. A template rendered before that annotation existed
 gains it only at its next keys change, normally the next KES rotation, so
 adding it does not restart running producers; until then every pod it starts is
 judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a pod
-whose checksum equals another producer's keys staged the same bundle. A
-different bundle for the same pool on such a pod is not detected. Only two
+whose checksum equals another producer's keys staged the same bundle. Its
+keys Secret names its pool only while that checksum equals the Secret's. Once
+its keys are replaced, the pod may still forge a pool recorded nowhere, so
+until it stops every other block producer is refused, without halting. A
+producer already running still rolls when its own pod staged the pool its keys
+now name, as for a KES rotation, or when its own pod's pool is unknown too, so
+producers whose keys change together do not hold each other; such a pair can
+forge one pool together until the pod stops only if one's keys move onto the
+pool the other's pod staged. A pod that records no keys checksum is judged by
+its keys Secret. Only two
 kinds of evidence scale a running producer to zero: an older valid DingoNode
 naming the same pool or keys, and the workload of a live DingoNode that shares
 them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
