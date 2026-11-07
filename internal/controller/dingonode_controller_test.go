@@ -231,6 +231,9 @@ func TestReconcileBlockProducer(t *testing.T) {
 		Spec: dingov1alpha1.DingoNodeSpec{
 			Role:    dingov1alpha1.RoleBlockProducer,
 			Network: "preview",
+			Topology: dingov1alpha1.TopologySpec{
+				RelayRefs: []string{"relay"},
+			},
 			BlockProducer: &dingov1alpha1.BlockProducerSpec{
 				PoolID:            strings.Repeat("ab", 28),
 				SlotsPerKESPeriod: 129600,
@@ -287,6 +290,9 @@ func blockProducerNode(
 		Spec: dingov1alpha1.DingoNodeSpec{
 			Role:    dingov1alpha1.RoleBlockProducer,
 			Network: "preview",
+			Topology: dingov1alpha1.TopologySpec{
+				RelayRefs: []string{"relay"},
+			},
 			BlockProducer: &dingov1alpha1.BlockProducerSpec{
 				PoolID:            poolID,
 				SlotsPerKESPeriod: 129600,
