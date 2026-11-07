@@ -237,15 +237,25 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 		labelPod bool
 		// podUID overrides the UID the pod's controller reference names.
 		podUID types.UID
+		// keys gives the newer node a copy of the victim's keys; otherwise
+		// only its poolId names the pool.
+		keys   bool
 		wanted int32
 	}{
-		{"pod with the name label", false, true, "", 1},
-		{"StatefulSet with the name", false, false, "", 1},
-		{"StatefulSet the newer node controls", true, false, "", 0},
+		{"pod with the name label", false, true, "", true, 1},
+		{"StatefulSet with the name", false, false, "", true, 1},
+		{"StatefulSet the newer node controls", true, false, "", true, 0},
 		// The StatefulSet is at zero; its pod still runs.
-		{"pod of the StatefulSet the newer node controls", true, true, "", 0},
+		{"pod of the StatefulSet the newer node controls", true, true, "",
+			true, 0},
 		{"pod naming that StatefulSet with another UID", true, true,
-			"other-uid", 1},
+			"other-uid", true, 1},
+		// A poolId is public: claiming it in another namespace proves no
+		// custody of the pool's keys.
+		{"StatefulSet the newer node controls, poolId only", true, false,
+			"", false, 1},
+		{"pod of the StatefulSet the newer node controls, poolId only",
+			true, true, "", false, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -261,6 +271,9 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 			require.Equal(t, int32(1), replicasOf(t, c, victim))
 
 			objs := []client.Object{newer}
+			if tt.keys {
+				objs = append(objs, keysSecret("keys-x", "ns-evil", data))
+			}
 			sts := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: newer.Name, Namespace: newer.Namespace,
@@ -726,6 +739,48 @@ func TestReconcileLegacyHoldHaltsBothAndRecovers(t *testing.T) {
 	assert.Equal(t, keysChecksum(yKeys), templateAnnotation(
 		t, c, y, resources.KeysChecksumAnnotation,
 	))
+}
+
+// An older DingoNode in another namespace that only names a running forger's
+// pool in its poolId holds the forger's roll but does not halt it: the pool ID
+// is public. A copy of the pool's keys does halt it, and so does a claim from
+// the forger's own namespace, whose writers could scale it anyway.
+func TestReconcileOlderPoolIDClaimHaltsOnlyWithKeys(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name   string
+		ns     string
+		keys   bool
+		wanted int32
+	}{
+		{"poolId only in another namespace", "ns-evil", false, 1},
+		{"copy of the keys in another namespace", "ns-evil", true, 0},
+		{"poolId only in the same namespace", "ns-a", false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pool, data := poolKeys(t)
+			victim := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
+			victim.UID = "victim-uid"
+			c := conflictClient(t, victim, keysSecret("keys-a", "ns-a", data))
+			r := reconcilerFor(c)
+			reconcileNode(t, r, victim)
+			require.Equal(t, int32(1), replicasOf(t, c, victim))
+
+			older := forgerNode("bp-0", tt.ns, pool, "keys-x", 2*time.Hour)
+			objs := []client.Object{older}
+			if tt.keys {
+				objs = append(objs, keysSecret("keys-x", tt.ns, data))
+			}
+			for _, obj := range objs {
+				require.NoError(t, c.Create(ctx, obj))
+			}
+			reconcileNode(t, r, victim)
+			assert.Equal(t, tt.wanted, replicasOf(t, c, victim))
+			assert.True(t, refusedAsDuplicate(t, c, victim))
+		})
+	}
 }
 
 // A producer refused without halting keeps its template, which mounts its keys

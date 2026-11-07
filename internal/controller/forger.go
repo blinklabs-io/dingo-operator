@@ -23,6 +23,7 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -71,11 +72,30 @@ const (
 // (from poolId, from the cold key in the delivered opcert, or recorded on the
 // pod that staged the keys) or a keys Secret. checksum is the keys Secret's
 // keys checksum, compared against what a pod recorded when it staged its keys.
+// keyed lists the pools whose keys the Secret holds: a pool ID and an opcert
+// are public, a KES signing key bound to an opcert is not.
 type forgerIdentity struct {
 	pools     []string
+	keyed     []string
 	namespace string
 	secret    string
 	checksum  string
+}
+
+// backedBy reports whether b's claim on a's keys may halt a. A writer in a's
+// namespace can scale a's StatefulSet directly, so any shared identity counts
+// there. Across namespaces only b's custody of a pool a names counts: anyone
+// may copy a pool ID, or an opcert from a block header, into a DingoNode.
+func (a forgerIdentity) backedBy(b forgerIdentity) bool {
+	if a.namespace == b.namespace {
+		return true
+	}
+	for _, p := range b.keyed {
+		if slices.Contains(a.pools, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // sharedWith describes what a and b share, or returns "" when they are
@@ -95,25 +115,45 @@ func (a forgerIdentity) sharedWith(b forgerIdentity) string {
 // keysPoolID returns the pool the keys Secret's opcert belongs to, and the
 // Secret's keys checksum: a copy of the same bundle under another Secret name
 // still hashes to the same cold key, which poolId (optional) does not reveal.
-// An absent Secret yields "" for both, and one without a parseable opcert ""
-// for the pool. A failed read is an error, since treating it as "no pool"
-// would admit a copy of the keys.
+// keyed reports whether the Secret also holds the KES signing key that opcert
+// certifies. An absent Secret yields "" for both, and one without a parseable
+// opcert "" for the pool. A failed read is an error, since treating it as "no
+// pool" would admit a copy of the keys.
 func (r *DingoNodeReconciler) keysPoolID(
 	ctx context.Context,
 	namespace, secretName string,
-) (pool, sum string, err error) {
+) (pool, sum string, keyed bool, err error) {
 	if r.APIReader == nil || secretName == "" {
-		return "", "", nil
+		return "", "", false, nil
 	}
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Name: secretName, Namespace: namespace}
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", "", nil
+			return "", "", false, nil
 		}
-		return "", "", fmt.Errorf("read keys Secret %s: %w", key, err)
+		return "", "", false, fmt.Errorf("read keys Secret %s: %w", key, err)
 	}
-	return opCertPoolID(secret.Data), keysChecksum(secret), nil
+	pool = opCertPoolID(secret.Data)
+	return pool, keysChecksum(secret), pool != "" && holdsKESKey(secret.Data),
+		nil
+}
+
+// holdsKESKey reports whether a keys Secret's opcert is signed by its cold key
+// and certifies the KES signing key beside it, the key a forger signs with.
+func holdsKESKey(data map[string][]byte) bool {
+	cert, _, err := opCertFile(data)
+	if err != nil || cert == nil {
+		return false
+	}
+	oc, coldVkey, err := opcert.Parse(cert)
+	if err != nil || ledger.VerifyOpCertSignature(oc, coldVkey) != nil {
+		return false
+	}
+	kesRaw, err := checkKeyEnvelope(
+		data[keyFileKES], keyFileKES, kesEnvelopeTypePrefix,
+	)
+	return err == nil && checkKESBinding(kesRaw, oc.KesVkey) == nil
 }
 
 // opCertPoolID returns the pool of the opcert in a keys Secret's data, or ""
@@ -141,12 +181,15 @@ func (r *DingoNodeReconciler) nodeIdentity(
 			id.pools = append(id.pools, p)
 		}
 	}
-	p, sum, err := r.keysPoolID(ctx, id.namespace, id.secret)
+	p, sum, keyed, err := r.keysPoolID(ctx, id.namespace, id.secret)
 	if err != nil {
 		return id, err
 	}
 	if p != "" {
 		id.pools = append(id.pools, p)
+	}
+	if keyed {
+		id.keyed = append(id.keyed, p)
 	}
 	id.checksum = sum
 	return id, nil
@@ -223,10 +266,17 @@ func (r *DingoNodeReconciler) heldBy(
 		if what == "" {
 			continue
 		}
+		// Without custody of the keys, a node in another namespace holds dn
+		// back but does not halt it.
+		backed := mine.backedBy(theirs)
 		// An older node whose spec fails validation is not reconciled, so it
 		// keeps the pool only while the workload it already has runs.
 		if forgerOutranks(o, dn) && validateSpec(o) == nil {
-			return heldf(
+			held := heldf
+			if !backed {
+				held = unverifiedHeldf
+			}
+			return held(
 				"block producer %s/%s already forges with the same %s; only "+
 					"one DingoNode may stage a pool's keys",
 				o.Namespace, o.Name, what,
@@ -246,6 +296,9 @@ func (r *DingoNodeReconciler) heldBy(
 		case workloadUnverified:
 			held = unverifiedHeldf
 		case workloadVerified:
+			if !backed {
+				held = unverifiedHeldf
+			}
 		}
 		return held(
 			"block producer %s/%s still runs with the same %s; waiting "+
@@ -439,7 +492,7 @@ func (r *DingoNodeReconciler) restagesOtherPool(
 	if !ok {
 		return false, nil
 	}
-	pool, sum, err := r.keysPoolID(ctx, sts.Namespace, secret)
+	pool, sum, _, err := r.keysPoolID(ctx, sts.Namespace, secret)
 	if err != nil || sum == "" {
 		return false, err
 	}
@@ -537,7 +590,7 @@ func (r *DingoNodeReconciler) orphanHolds(
 	if recorded != "" {
 		theirs.pools = append(theirs.pools, recorded)
 	}
-	p, sum, err := r.keysPoolID(ctx, namespace, secret)
+	p, sum, _, err := r.keysPoolID(ctx, namespace, secret)
 	if err != nil {
 		return false, err
 	}

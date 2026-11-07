@@ -199,9 +199,10 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 // because another one already stages the same pool or keys.
 const reasonDuplicateForger = "DuplicateForger"
 
-// forgerConflict refuses dn when an older block producer would forge with the
-// same keys: the same pool ID in any namespace, or the same keys Secret in dn's
-// namespace. The older node (creation time, then namespace/name) keeps running
+// forgerConflict refuses dn when an older block producer in dn's namespace
+// would forge with the same keys: the same pool ID or the same keys Secret. A
+// pool ID claimed from another namespace is public, so forgerHeld decides it
+// against that node's keys. The older node (creation time, then namespace/name) keeps running
 // so exactly one of any conflicting set is admitted, whatever the reconcile
 // order. A node being deleted no longer holds the keys.
 func forgerConflict(
@@ -215,7 +216,7 @@ func forgerConflict(
 	for i := range all {
 		o := &all[i]
 		// Other objects are unvalidated, so BlockProducer may be nil.
-		if o.Namespace == dn.Namespace && o.Name == dn.Name ||
+		if o.Namespace != dn.Namespace || o.Name == dn.Name ||
 			!resources.IsBlockProducer(o) ||
 			o.Spec.BlockProducer == nil ||
 			!o.DeletionTimestamp.IsZero() ||
@@ -233,9 +234,8 @@ func forgerConflict(
 				o.Namespace, o.Name, pool,
 			)
 		}
-		if o.Namespace == dn.Namespace &&
-			o.Spec.BlockProducer.Keys.SecretRef ==
-				dn.Spec.BlockProducer.Keys.SecretRef {
+		if o.Spec.BlockProducer.Keys.SecretRef ==
+			dn.Spec.BlockProducer.Keys.SecretRef {
 			return heldf(
 				"block producer %s/%s already stages keys Secret %q; only "+
 					"one DingoNode may use a keys Secret",
