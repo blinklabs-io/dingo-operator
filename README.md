@@ -102,8 +102,9 @@ Only one block producer may forge per pool. When two DingoNodes share a pool ID
 (any namespace, hex or bech32) or a keys Secret (same namespace), the older one
 by creation time, then namespace/name, keeps the keys. The newer is set
 `Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
-StatefulSet is scaled to zero if it exists, and it is re-checked every requeue
-interval. Copies of one key bundle under different Secret names count as the
+StatefulSet is scaled to zero if it exists (across namespaces only when the
+older node's keys Secret holds the pool's keys, as described below), and it is
+re-checked every requeue interval. Copies of one key bundle under different Secret names count as the
 same keys: the pool is also read from the cold key in the opcert. The newer
 node resumes only after the older DingoNode is gone and its StatefulSet is
 scaled to zero or removed with all its pods finished, since deleting a
@@ -157,7 +158,9 @@ accounts for, including one whose DingoNode is gone, refuses without halting:
 it keeps a producer that is not running from starting, and withholds template
 rolls, including KES and opcert rotation, from a running one until it stops or
 is removed. Anyone who may create a pod can label and annotate one, so such a
-workload cannot stop a running producer. These checks read StatefulSets and
+workload stops a running producer only through its held template: when the
+producer's keys move to another pool, or change at all under a template that
+records no pool, it is scaled to zero as described above. These checks read StatefulSets and
 pods from the API server, so the operator needs `list` on pods. A failed lookup
 is not a refusal: the reconcile returns the error and leaves the workload as it
 is. The exception is another block producer's keys Secret the operator may not

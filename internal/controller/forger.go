@@ -36,9 +36,11 @@ import (
 // forgerHeldError refuses a block producer its keys. Any other error from
 // forgerHeld is a failed lookup, which must neither halt a running forger nor
 // admit a new one. halt is false when the only evidence is a workload no live
-// DingoNode accounts for: anyone who may create a pod can forge one, so it may
-// keep a producer from starting or its template from rolling, but must not
-// scale a running one to zero.
+// DingoNode accounts for, or a claim from another namespace not backed by the
+// pool's keys: anyone who may create a pod can forge one, so it may keep a
+// producer from starting or its template from rolling, but must not scale a
+// running one to zero. forgerHeld still halts a producer so refused whose held
+// template would stage another pool's keys (restagesOtherPool).
 type forgerHeldError struct {
 	msg  string
 	halt bool
@@ -378,8 +380,8 @@ func podRunning(p *corev1.Pod) bool {
 // StatefulSet at zero replicas with no pods is down. Live block producers that
 // share dn's keys were already decided by forgerHeld, so this finds only
 // workloads they no longer account for. Such a workload refuses without
-// halting: a running dn was admitted when none held its keys, and none of
-// this is proof the operator started it.
+// halting, except as restagesOtherPool decides: a running dn was admitted when
+// none held its keys, and none of this is proof the operator started it.
 func (r *DingoNodeReconciler) orphanForger(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,

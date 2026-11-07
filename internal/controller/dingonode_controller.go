@@ -249,6 +249,8 @@ func (r *DingoNodeReconciler) Reconcile(
 			// A node already running would keep forging beside the holder.
 			// Evidence that does not verify only keeps the node from
 			// starting or rolling: anyone who may create a pod can forge it.
+			// forgerHeld still halts a node whose held template would stage
+			// another pool's keys.
 			if held.halt {
 				if herr := r.haltForger(ctx, dn); herr != nil {
 					return ctrl.Result{}, herr
