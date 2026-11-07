@@ -253,6 +253,13 @@ type ColdSignerSpec struct {
 	// ID.
 	// +optional
 	ColdKeyHash string `json:"coldKeyHash,omitempty"`
+	// Profile is the Bursa signer profile (backend profile name, for example
+	// otg@preview) that holds the cold key. Required when the signer holds the
+	// same cold key in several profiles; only for Type=bursa.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9@._-]+$`
+	// +optional
+	Profile string `json:"profile,omitempty"`
 	// SecretRef names a Secret holding the cold key as a cardano-cli text
 	// envelope in cold.skey (only when Type=secret). DEV/TESTNET ONLY.
 	// +optional
