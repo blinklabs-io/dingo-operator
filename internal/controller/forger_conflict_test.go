@@ -64,6 +64,9 @@ func forgerNode(
 		Spec: dingov1alpha1.DingoNodeSpec{
 			Role:    dingov1alpha1.RoleBlockProducer,
 			Network: "preview",
+			Topology: dingov1alpha1.TopologySpec{
+				RelayRefs: []string{"relay"},
+			},
 			BlockProducer: &dingov1alpha1.BlockProducerSpec{
 				PoolID: poolID,
 				Keys:   dingov1alpha1.KeysSpec{SecretRef: secret},
