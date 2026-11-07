@@ -118,23 +118,24 @@ rendered or its keys change. A template rendered before that annotation existed
 gains it only at its next keys change, normally the next KES rotation, so
 adding it does not restart running producers; until then every pod it starts is
 judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a pod
-controlled by a StatefulSet that a live DingoNode controls, whose checksum
-equals another producer's keys staged the same bundle. A different bundle for
-the same pool on such a pod is not detected. Only a StatefulSet that wants a
-replica and is controlled by the live DingoNode of the same namespace, name,
-and UID can scale a running producer to zero. Owner references are set by
-whoever creates the object, so this shows only that the StatefulSet's creator
-could write StatefulSets in that DingoNode's namespace. Every other workload
-refuses without halting: it keeps a producer that is not running from starting
-and a running one from rolling, which includes KES and opcert rotation, until
-it stops or is removed. That covers pods, which anyone who may create a pod can
-label, annotate, and point at any StatefulSet in their namespace, and workloads
-whose DingoNode is gone. These checks read StatefulSets and pods from the API
-server, so the operator needs `list` on pods. A failed lookup is not a refusal:
-the reconcile returns the error and leaves the workload as it is. The exception
-is another block producer's keys Secret the operator may not read with its
-current permissions: only that node's pool ID and Secret name count, and if its
-workload is running the reconcile fails closed.
+whose checksum equals another producer's keys staged the same bundle. A
+different bundle for the same pool on such a pod is not detected. Only two
+kinds of evidence scale a running producer to zero: an older valid DingoNode
+naming the same pool or keys, and the workload of a live DingoNode that shares
+them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
+controls, matched by UID. Owner references are set by whoever creates the
+object, so this trusts anyone who may create pods or StatefulSets in the
+namespace of a DingoNode that names the pool. A workload no live DingoNode
+accounts for, including one whose DingoNode is gone, refuses without halting:
+it keeps a producer that is not running from starting, and withholds template
+rolls, including KES and opcert rotation, from a running one until it stops or
+is removed. Anyone who may create a pod can label and annotate one, so such a
+workload cannot stop a running producer. These checks read StatefulSets and
+pods from the API server, so the operator needs `list` on pods. A failed lookup
+is not a refusal: the reconcile returns the error and leaves the workload as it
+is. The exception is another block producer's keys Secret the operator may not
+read with its current permissions: only that node's pool ID and Secret name
+count, and if its workload is running the reconcile fails closed.
 
 ## Installation
 

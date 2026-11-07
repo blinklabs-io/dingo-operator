@@ -177,10 +177,10 @@ func TestReconcilePodOfOtherStatefulSetDoesNotHalt(t *testing.T) {
 	assert.True(t, refusedAsDuplicate(t, c, victim))
 }
 
-// A StatefulSet holds a running forger's pool, and halts it, only when it is
-// the one a live DingoNode of the same name and UID controls: the operator
-// names each node's StatefulSet after it.
-func TestReconcileStatefulSetHaltsOnlyUnderItsNode(t *testing.T) {
+// A StatefulSet no live DingoNode accounts for by its spec does not halt a
+// running forger, even when its controller reference names a live DingoNode
+// of the same name and UID: whoever creates a StatefulSet sets that reference.
+func TestReconcileOrphanStatefulSetDoesNotHalt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	for _, tt := range []struct {
@@ -188,7 +188,7 @@ func TestReconcileStatefulSetHaltsOnlyUnderItsNode(t *testing.T) {
 		stsName string
 		wanted  int32
 	}{
-		{"StatefulSet named after its DingoNode", "evil", 0},
+		{"StatefulSet named after its DingoNode", "evil", 1},
 		{"StatefulSet under another name", "x", 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,14 +232,17 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 		name     string
 		owned    bool
 		labelPod bool
-		wanted   int32
+		// podUID overrides the UID the pod's controller reference names.
+		podUID types.UID
+		wanted int32
 	}{
-		{"pod with the name label", false, true, 1},
-		{"StatefulSet with the name", false, false, 1},
-		{"StatefulSet the newer node controls", true, false, 0},
-		// The StatefulSet is at zero; only its pod, which could name any
-		// StatefulSet as its controller, still runs.
-		{"pod of the StatefulSet the newer node controls", true, true, 1},
+		{"pod with the name label", false, true, "", 1},
+		{"StatefulSet with the name", false, false, "", 1},
+		{"StatefulSet the newer node controls", true, false, "", 0},
+		// The StatefulSet is at zero; its pod still runs.
+		{"pod of the StatefulSet the newer node controls", true, true, "", 0},
+		{"pod naming that StatefulSet with another UID", true, true,
+			"other-uid", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -273,8 +276,12 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 				}}
 				if tt.owned {
 					sts.Spec.Replicas = new(int32)
+					uid := sts.UID
+					if tt.podUID != "" {
+						uid = tt.podUID
+					}
 					setController(pod, "apps/v1", "StatefulSet",
-						sts.Name, sts.UID)
+						sts.Name, uid)
 					objs = append(objs, sts)
 				}
 				objs = append(objs, pod)
@@ -293,16 +300,16 @@ func TestReconcileNewerNodeUnownedWorkloadDoesNotHalt(t *testing.T) {
 
 // A pod started from a template rendered before the keys-pool annotation
 // existed records only the keys checksum. When that checksum equals the
-// admitted node's keys, the pod staged the same bundle and holds its pool;
-// the checksum counts only on a pod whose controller chain verifies.
+// admitted node's keys, the pod staged the same bundle and holds its pool,
+// whether or not the StatefulSet that started it is still there.
 func TestReconcileLegacyPodHoldsSameKeysBundle(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name     string
 		verified bool
 	}{
-		{"verified pod holds", true},
-		{"unverified pod does not", false},
+		{"pod of its StatefulSet", true},
+		{"pod whose StatefulSet is gone", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -323,14 +330,16 @@ func TestReconcileLegacyPodHoldsSameKeysBundle(t *testing.T) {
 			pod := stagedPod(t, c, moved)
 			delete(pod.Annotations, resources.KeysPoolAnnotation)
 			require.NotEmpty(t, pod.Annotations[resources.KeysChecksumAnnotation])
-			if tt.verified {
-				var sts appsv1.StatefulSet
-				require.NoError(t, c.Get(
-					ctx, client.ObjectKeyFromObject(moved), &sts,
-				))
-				require.True(t, metav1.IsControlledBy(&sts, moved))
-				setController(pod, "apps/v1", "StatefulSet", sts.Name, sts.UID)
+			var sts appsv1.StatefulSet
+			require.NoError(t, c.Get(
+				ctx, client.ObjectKeyFromObject(moved), &sts,
+			))
+			require.True(t, metav1.IsControlledBy(&sts, moved))
+			uid := sts.UID
+			if !tt.verified {
+				uid = "gone-uid"
 			}
+			setController(pod, "apps/v1", "StatefulSet", sts.Name, uid)
 			require.NoError(t, c.Create(ctx, pod))
 
 			require.NoError(t, c.Get(
@@ -347,8 +356,57 @@ func TestReconcileLegacyPodHoldsSameKeysBundle(t *testing.T) {
 			require.True(t, forging(t, c, moved))
 
 			reconcileNode(t, r, loser)
-			assert.Equal(t, tt.verified, refusedAsDuplicate(t, c, loser))
-			assert.Equal(t, !tt.verified, forging(t, c, loser))
+			assert.True(t, refusedAsDuplicate(t, c, loser))
+			assert.False(t, forging(t, c, loser))
 		})
 	}
+}
+
+// Two producers already running turn out to share a pool, and the newer one
+// reconciles first: it halts itself, but its pod still runs until it stops,
+// so the older one must halt too rather than forge beside it.
+func TestReconcileOlderHaltsForNewerPodAfterNewerHalts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	poolA, dataA := poolKeys(t)
+	poolB, dataB := poolKeys(t)
+	older := forgerNode("bp-1", "ns-a", poolA, "keys-a", time.Hour)
+	older.UID = "older-uid"
+	newer := forgerNode("bp-2", "ns-b", poolB, "keys-b", 0)
+	newer.UID = "newer-uid"
+	secretB := keysSecret("keys-b", "ns-b", dataB)
+	c := conflictClient(t, older, newer,
+		keysSecret("keys-a", "ns-a", dataA), secretB,
+	)
+	r := reconcilerFor(c)
+	reconcileNode(t, r, older)
+	reconcileNode(t, r, newer)
+	require.True(t, forging(t, c, older))
+	require.True(t, forging(t, c, newer))
+	pod := stagedPod(t, c, newer)
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(newer), &sts))
+	setController(pod, "apps/v1", "StatefulSet", sts.Name, sts.UID)
+	require.NoError(t, c.Create(ctx, pod))
+
+	// The newer node now names the older one's pool and keys.
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(secretB), secretB))
+	secretB.Data = dataA
+	require.NoError(t, c.Update(ctx, secretB))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(newer), newer))
+	newer.Spec.BlockProducer.PoolID = poolA
+	require.NoError(t, c.Update(ctx, newer))
+
+	reconcileNode(t, r, newer)
+	require.True(t, refusedAsDuplicate(t, c, newer))
+	require.False(t, forging(t, c, newer))
+
+	reconcileNode(t, r, older)
+	assert.True(t, refusedAsDuplicate(t, c, older), "newer pod alive")
+	assert.False(t, forging(t, c, older))
+
+	require.NoError(t, c.Delete(ctx, pod))
+	reconcileNode(t, r, older)
+	assert.False(t, refusedAsDuplicate(t, c, older))
+	assert.True(t, forging(t, c, older))
 }
