@@ -385,7 +385,10 @@ func (r *DingoNodeReconciler) orphanForger(
 	dn *dingov1alpha1.DingoNode,
 	mine forgerIdentity,
 ) error {
-	self := client.ObjectKeyFromObject(dn)
+	own, err := r.ownStatefulSet(ctx, dn)
+	if err != nil {
+		return err
+	}
 	selector := client.MatchingLabels{
 		"app.kubernetes.io/managed-by": resources.ManagedByName,
 		"app.kubernetes.io/component":  resources.ComponentBlockProducer,
@@ -401,8 +404,11 @@ func (r *DingoNodeReconciler) orphanForger(
 		}
 		// A pod a template starts stages the Secret as it is then, so only
 		// a pod can have staged a pool its Secret no longer shows.
+		if ownedBy(s, own) {
+			continue
+		}
 		if _, err := r.orphanHolds(
-			ctx, mine, self, "StatefulSet", s.Namespace, s.Name, s.Name,
+			ctx, mine, "StatefulSet", s.Namespace, s.Name,
 			s.Spec.Template.Annotations, "", s.Spec.Template.Spec,
 		); err != nil {
 			return err
@@ -416,12 +422,13 @@ func (r *DingoNodeReconciler) orphanForger(
 	var unknown *corev1.Pod
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		if !podRunning(p) {
+		// A pod is dn's own only when the StatefulSet dn controls controls
+		// it: its labels are copied by whoever creates it.
+		if !podRunning(p) || ownedBy(p, own) {
 			continue
 		}
 		u, err := r.orphanHolds(
-			ctx, mine, self, "pod", p.Namespace, p.Name,
-			p.Labels[resources.NodeLabel], p.Annotations,
+			ctx, mine, "pod", p.Namespace, p.Name, p.Annotations,
 			p.Annotations[resources.KeysChecksumAnnotation], p.Spec,
 		)
 		if err != nil {
@@ -465,6 +472,20 @@ func (r *DingoNodeReconciler) ownStatefulSet(
 		return nil, nil
 	}
 	return sts, nil
+}
+
+// ownedBy reports whether obj is own, the StatefulSet a DingoNode controls,
+// or a pod own controls by UID.
+func ownedBy(obj client.Object, own *appsv1.StatefulSet) bool {
+	if own == nil || obj.GetNamespace() != own.Namespace {
+		return false
+	}
+	if _, ok := obj.(*appsv1.StatefulSet); ok {
+		return obj.GetName() == own.Name
+	}
+	ref := metav1.GetControllerOf(obj)
+	return ref != nil && ref.Kind == "StatefulSet" && ref.Name == own.Name &&
+		ref.UID == own.UID
 }
 
 // restagesOtherPool reports whether the StatefulSet dn controls would start a
@@ -558,7 +579,7 @@ func (r *DingoNodeReconciler) rollsPastUnknownPool(
 	return runs, nil
 }
 
-// orphanHolds returns an error when a workload other than self's holds keys
+// orphanHolds returns an error when another producer's workload holds keys
 // mine shares. A pod keeps the keys its init container copied until it stops,
 // whatever its Secret now holds, so the pool recorded on it when it was created
 // counts as well as the Secret's current one. A template rendered before that
@@ -572,15 +593,11 @@ func (r *DingoNodeReconciler) rollsPastUnknownPool(
 func (r *DingoNodeReconciler) orphanHolds(
 	ctx context.Context,
 	mine forgerIdentity,
-	self types.NamespacedName,
-	kind, namespace, name, owner string,
+	kind, namespace, name string,
 	annotations map[string]string,
 	stagedSum string,
 	spec corev1.PodSpec,
 ) (unknown bool, err error) {
-	if self == (types.NamespacedName{Namespace: namespace, Name: owner}) {
-		return false, nil
-	}
 	secret, ok := resources.KeysSecretName(spec)
 	if !ok {
 		return false, nil

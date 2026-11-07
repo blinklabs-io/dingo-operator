@@ -369,7 +369,11 @@ func TestReconcileLegacyPodHoldsSameKeysBundle(t *testing.T) {
 			require.NoError(t, c.Update(ctx, secretA))
 			require.NoError(t, c.Update(ctx, moved))
 			reconcileNode(t, r, moved)
-			require.True(t, forging(t, c, moved))
+			// A pod its StatefulSet does not control is not moved's own,
+			// whatever its labels: it holds moved, whose held template
+			// would stage another pool's keys, so moved halts.
+			require.Equal(t, tt.verified, forging(t, c, moved))
+			require.Equal(t, !tt.verified, refusedAsDuplicate(t, c, moved))
 
 			reconcileNode(t, r, loser)
 			assert.True(t, refusedAsDuplicate(t, c, loser))
@@ -781,6 +785,94 @@ func TestReconcileOlderPoolIDClaimHaltsOnlyWithKeys(t *testing.T) {
 			assert.True(t, refusedAsDuplicate(t, c, victim))
 		})
 	}
+}
+
+// forgedSelfPod returns a pod in n's namespace that carries n's labels and
+// mounts n's keys Secret, as n's own pod does.
+func forgedSelfPod(n *dingov1alpha1.DingoNode) *corev1.Pod {
+	pod := holderPod(n)
+	pod.Name = n.Name + "-forged"
+	pod.UID = "forged-uid"
+	return pod
+}
+
+// A pod is n's own only when the StatefulSet n controls controls it, by UID.
+// One that merely carries n's name label is another forger of n's keys: it
+// holds n's roll without halting it.
+func TestReconcileLabelOnlyPodIsNotOwnPod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name string
+		// controller names the StatefulSet UID the pod claims; "" is none,
+		// and "own" is the UID of the StatefulSet n controls.
+		controller types.UID
+		refused    bool
+	}{
+		{"pod with only the name label", "", true},
+		{"pod naming another StatefulSet UID", "other-uid", true},
+		{"pod of the StatefulSet the node controls", "own", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pool, data := poolKeys(t)
+			victim := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
+			victim.UID = "victim-uid"
+			c := conflictClient(t, victim, keysSecret("keys-a", "ns-a", data))
+			r := reconcilerFor(c)
+			reconcileNode(t, r, victim)
+			require.Equal(t, int32(1), replicasOf(t, c, victim))
+
+			var sts appsv1.StatefulSet
+			require.NoError(t, c.Get(
+				ctx, client.ObjectKeyFromObject(victim), &sts,
+			))
+			pod := forgedSelfPod(victim)
+			switch tt.controller {
+			case "":
+			case "own":
+				setController(pod, "apps/v1", "StatefulSet", sts.Name, sts.UID)
+			default:
+				setController(pod, "apps/v1", "StatefulSet", sts.Name,
+					tt.controller)
+			}
+			require.NoError(t, c.Create(ctx, pod))
+			reconcileNode(t, r, victim)
+			assert.Equal(t, tt.refused, refusedAsDuplicate(t, c, victim))
+			assert.Equal(t, int32(1), replicasOf(t, c, victim),
+				"a label is not evidence enough to halt")
+		})
+	}
+}
+
+// A StatefulSet named after a node but not controlled by it is not the node's
+// own workload, so it holds the node rather than being adopted beside it.
+func TestReconcileNamedStatefulSetIsNotOwnWorkload(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, data := poolKeys(t)
+	victim := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
+	victim.UID = "victim-uid"
+	pod := holderPod(victim)
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: victim.Name, Namespace: victim.Namespace, UID: "sts-uid",
+			Labels: pod.Labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: new(int32(1)),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: pod.Labels},
+				Spec:       pod.Spec,
+			},
+		},
+	}
+	c := conflictClient(t, victim, sts, keysSecret("keys-a", "ns-a", data))
+	reconcileNode(t, reconcilerFor(c), victim)
+	assert.True(t, refusedAsDuplicate(t, c, victim))
+	got := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(sts), got))
+	assert.False(t, metav1.IsControlledBy(got, victim))
 }
 
 // A producer refused without halting keeps its template, which mounts its keys

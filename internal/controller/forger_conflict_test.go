@@ -935,6 +935,11 @@ func TestReconcileRepointedForgerOldPodHoldsPool(t *testing.T) {
 			reconcileNode(t, r, moved)
 			require.True(t, forging(t, c, moved))
 			pod := stagedPod(t, c, moved)
+			var sts appsv1.StatefulSet
+			require.NoError(t, c.Get(
+				ctx, client.ObjectKeyFromObject(moved), &sts,
+			))
+			setController(pod, "apps/v1", "StatefulSet", sts.Name, sts.UID)
 			require.NoError(t, c.Create(ctx, pod))
 
 			require.NoError(t, c.Get(
