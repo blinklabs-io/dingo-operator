@@ -583,40 +583,141 @@ func TestReconcileUnknownPoolPodSparesRunningProducer(t *testing.T) {
 	}
 }
 
-// Two legacy producers whose keys change in the same window each hold a pod
-// of unknown staged pool. Each still rolls past the other's pod, since its own
-// pod is unknown too and only its roll replaces it.
-func TestReconcileConcurrentLegacyKeyChangesRoll(t *testing.T) {
+// A running producer whose own pod records no pool, but whose recorded keys
+// checksum equals its keys Secret's, staged the pool its keys name, and so
+// still proceeds past another producer's pod of unknown staged pool.
+func TestReconcileUnknownPoolPodSparesLegacyCurrentPod(t *testing.T) {
 	t.Parallel()
 	poolA, dataA := poolKeys(t)
 	poolB, dataB := poolKeys(t)
 	poolC, dataC := poolKeys(t)
-	poolD, dataD := poolKeys(t)
-	x := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
-	x.UID = "x-uid"
-	y := forgerNode("bp-2", "ns-2", poolC, "keys-c", 0)
-	y.UID = "y-uid"
-	c := conflictClient(t, x, y,
+	moved := forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+	moved.UID = "moved-uid"
+	other := forgerNode("bp-2", "ns-2", poolC, "keys-c", 0)
+	other.UID = "other-uid"
+	c := conflictClient(t, moved, other,
 		keysSecret("keys-a", "ns", dataA),
 		keysSecret("keys-c", "ns-2", dataC),
 	)
 	r := reconcilerFor(c)
+	reconcileNode(t, r, moved)
+	reconcileNode(t, r, other)
+	runningPod(t, c, moved, true)
+	runningPod(t, c, other, true)
+	replaceKeys(t, c, moved, poolB, dataB)
+
+	reconcileNode(t, r, other)
+	assert.False(t, refusedAsDuplicate(t, c, other))
+	assert.Equal(t, int32(1), replicasOf(t, c, other))
+}
+
+// legacyPair starts two block producers on pools A and C, each with a
+// template and pod rendered before the keys-pool annotation existed, then
+// replaces their keys: x's with pool B, y's with a different bundle for pool
+// A. x's pod still stages A and y's still stages C, both recorded nowhere.
+func legacyPair(t *testing.T) (
+	c client.Client, r *DingoNodeReconciler,
+	x, y *dingov1alpha1.DingoNode, xPod, yPod *corev1.Pod,
+	poolA, poolB string, yKeys *corev1.Secret,
+) {
+	t.Helper()
+	poolA, dataA, dataA2 := poolKeyBundles(t)
+	poolB, dataB := poolKeys(t)
+	poolC, dataC := poolKeys(t)
+	x = forgerNode("bp-1", "ns", poolA, "keys-a", time.Hour)
+	x.UID = "x-uid"
+	y = forgerNode("bp-2", "ns-2", poolC, "keys-c", 0)
+	y.UID = "y-uid"
+	c = conflictClient(t, x, y,
+		keysSecret("keys-a", "ns", dataA),
+		keysSecret("keys-c", "ns-2", dataC),
+	)
+	r = reconcilerFor(c)
 	reconcileNode(t, r, x)
 	reconcileNode(t, r, y)
-	runningPod(t, c, x, true)
-	runningPod(t, c, y, true)
+	require.True(t, forging(t, c, x))
+	require.True(t, forging(t, c, y))
+	for _, n := range []*dingov1alpha1.DingoNode{x, y} {
+		var sts appsv1.StatefulSet
+		require.NoError(t, c.Get(
+			context.Background(), client.ObjectKeyFromObject(n), &sts,
+		))
+		delete(sts.Spec.Template.Annotations, resources.KeysPoolAnnotation)
+		require.NoError(t, c.Update(context.Background(), &sts))
+	}
+	xPod = runningPod(t, c, x, true)
+	yPod = runningPod(t, c, y, true)
 	replaceKeys(t, c, x, poolB, dataB)
-	replaceKeys(t, c, y, poolD, dataD)
+	replaceKeys(t, c, y, poolA, dataA2)
+	return c, r, x, y, xPod, yPod, poolA, poolB,
+		keysSecret("keys-c", "ns-2", dataA2)
+}
+
+// Two legacy producers whose keys change in the same window each hold a pod
+// of unknown staged pool. y's keys now name pool A, which x's pod may still
+// forge, so neither rolls past the other's pod; both keep running on the keys
+// they staged.
+func TestReconcileLegacyKeyChangesOntoUnknownPoolHold(t *testing.T) {
+	t.Parallel()
+	c, r, x, y, xPod, yPod, _, _, _ := legacyPair(t)
+	xSum := xPod.Annotations[resources.KeysChecksumAnnotation]
+	ySum := yPod.Annotations[resources.KeysChecksumAnnotation]
 
 	reconcileNode(t, r, x)
 	reconcileNode(t, r, y)
-	for n, pool := range map[*dingov1alpha1.DingoNode]string{
-		x: poolB, y: poolD,
+	for n, sum := range map[*dingov1alpha1.DingoNode]string{
+		x: xSum, y: ySum,
 	} {
-		assert.False(t, refusedAsDuplicate(t, c, n), n.Name)
-		assert.True(t, forging(t, c, n), n.Name)
-		assert.Equal(t, pool, templateAnnotation(
-			t, c, n, resources.KeysPoolAnnotation,
-		), n.Name)
+		assert.True(t, refusedAsDuplicate(t, c, n), n.Name)
+		assert.Equal(t, int32(1), replicasOf(t, c, n),
+			"%s: an unknown pod refuses without halting", n.Name)
+		assert.Equal(t, sum, templateAnnotation(
+			t, c, n, resources.KeysChecksumAnnotation,
+		), "%s: the template does not roll", n.Name)
 	}
+}
+
+// Scaling one of two producers that hold each other to zero lets the other
+// roll. The scaled one stays at zero while refused, and resumes on its new
+// keys, with its pool recorded, once the other's old pod has stopped.
+func TestReconcileLegacyHoldRecoversByScalingDown(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	c, r, x, y, xPod, yPod, poolA, poolB, yKeys := legacyPair(t)
+	reconcileNode(t, r, x)
+	reconcileNode(t, r, y)
+	require.True(t, refusedAsDuplicate(t, c, x))
+	require.True(t, refusedAsDuplicate(t, c, y))
+
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(y), &sts))
+	sts.Spec.Replicas = new(int32)
+	require.NoError(t, c.Update(ctx, &sts))
+	reconcileNode(t, r, y)
+	assert.True(t, refusedAsDuplicate(t, c, y))
+	assert.Equal(t, int32(0), replicasOf(t, c, y),
+		"a refused producer is not scaled back up")
+	require.NoError(t, c.Delete(ctx, yPod))
+
+	reconcileNode(t, r, x)
+	assert.False(t, refusedAsDuplicate(t, c, x))
+	assert.Equal(t, poolB, templateAnnotation(
+		t, c, x, resources.KeysPoolAnnotation,
+	))
+	reconcileNode(t, r, y)
+	assert.True(t, refusedAsDuplicate(t, c, y),
+		"x's old pod may still forge pool A")
+	assert.Equal(t, int32(0), replicasOf(t, c, y))
+
+	require.NoError(t, c.Delete(ctx, xPod))
+	runningPod(t, c, x, false)
+	reconcileNode(t, r, y)
+	assert.False(t, refusedAsDuplicate(t, c, y))
+	assert.Equal(t, int32(1), replicasOf(t, c, y))
+	assert.Equal(t, poolA, templateAnnotation(
+		t, c, y, resources.KeysPoolAnnotation,
+	))
+	assert.Equal(t, keysChecksum(yKeys), templateAnnotation(
+		t, c, y, resources.KeysChecksumAnnotation,
+	))
 }

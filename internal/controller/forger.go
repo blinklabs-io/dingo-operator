@@ -370,11 +370,14 @@ func (r *DingoNodeReconciler) orphanForger(
 
 // rollsPastUnknownPool reports whether dn may proceed while another producer's
 // pod of unknown staged pool runs. dn must already run a pod controlled by the
-// StatefulSet dn controls. Each such pod must have staged the pool dn's keys
-// now name, so the roll is the same forger's, as for a KES rotation, or itself
-// be of unknown pool, which only dn's roll replaces; holding those would
-// deadlock producers whose keys change together. A producer not running, or
-// one whose keys move to another pool, waits for the pod to stop.
+// StatefulSet dn controls, and each such pod must have staged the pool dn's
+// keys now name, so the roll is the same forger's, as for a KES rotation. A
+// pod of dn's that is itself of unknown pool does not qualify: the other pod
+// may have staged the pool dn's keys now name, and dn's roll would then start
+// a second forger of it. Two such producers hold each other until one's
+// StatefulSet is scaled to zero; a refused producer's replicas are left as
+// they are, and deleting its pod instead would restage its keys Secret's
+// current contents under its held template.
 func (r *DingoNodeReconciler) rollsPastUnknownPool(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -404,10 +407,17 @@ func (r *DingoNodeReconciler) rollsPastUnknownPool(
 			continue
 		}
 		runs = true
-		// An unannotated pod staged either the bundle dn has now, and so
-		// its pool, or one of unknown pool.
 		pool := normalizedPoolID(p.Annotations[resources.KeysPoolAnnotation])
-		if pool != "" && !slices.Contains(mine.pools, pool) {
+		if pool != "" {
+			if !slices.Contains(mine.pools, pool) {
+				return false, nil
+			}
+			continue
+		}
+		// An unannotated pod names its pool only by the keys checksum it
+		// recorded: equal to the Secret's, it staged the bundle dn has now.
+		sum := p.Annotations[resources.KeysChecksumAnnotation]
+		if sum == "" || sum != mine.checksum {
 			return false, nil
 		}
 	}
