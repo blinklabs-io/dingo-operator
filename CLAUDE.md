@@ -477,27 +477,33 @@ producer already running still rolls when its own pod staged the pool its keys
 now name, as for a KES rotation: the pod records that pool, or records no pool
 but the keys checksum its keys Secret has now. A producer whose own pod is of
 unknown pool too waits, since the other pod may have staged the pool its keys
-now name. Two legacy producers whose keys are replaced in the same window
-therefore hold each other, both still running on the keys they staged. To
-recover, scale one of their StatefulSets to zero: the operator leaves a refused
-producer's replicas as they are, the other rolls once that pod has stopped, and
-the scaled one resumes on its new keys, with its pool recorded, once the
-other's old pod has stopped. Recover promptly, and do not delete the pod
-instead: while the pair is held, any recreation of a pod, including a `kubectl
-delete` or the loss of its Kubernetes node, restarts it from the held template,
-and it stages its keys Secret's current contents, which may be the pool the
-other's old pod still forges. The PodDisruptionBudget blocks a voluntary
-eviction of the only pod while it is enabled. A pod stays unknown while its own
+now name. A refused producer keeps its template, which mounts its keys Secret
+by name, so any recreation of its pod, including a `kubectl delete` or the
+loss of its Kubernetes node, stages the Secret's current contents. A refused
+producer is therefore also scaled to zero when its keys Secret no longer holds
+the keys its template was rendered with, unless the new keys are for the pool
+the template records, as after a KES rotation; a template that records no pool
+halts on any new keys. Two legacy producers whose keys are replaced in the same
+window hold each other and are both scaled to zero; the first whose rival pod
+stops rolls onto its new keys, and the other resumes, with its pool recorded,
+once the first one's old pod has stopped. A pod stays unknown while its own
 node's keys are refused or missing, since its template is held. Anyone who may
 create a pod can make one unknown, and so keep every block producer that is not
 running from starting. A pod that records no keys checksum is judged by its
-keys Secret. Only two kinds of
+keys Secret. Besides that held template, only two kinds of
 evidence scale a running producer to zero: an older valid DingoNode
 naming the same pool or keys, and the workload of a live DingoNode that shares
 them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
-controls, matched by UID. Owner references are set by whoever creates the
-object, so this trusts anyone who may create pods or StatefulSets in the
-namespace of a DingoNode that names the pool. A workload no live DingoNode
+controls, matched by UID. Across namespaces either counts only when that
+DingoNode's keys Secret holds the KES signing key its opcert certifies for the
+shared pool: a pool ID, or an opcert copied from a block header, is public, so
+a DingoNode in another namespace that only names the pool refuses without
+halting. Owner references are set by whoever creates the object, so this
+trusts anyone who may create pods or StatefulSets in the producer's namespace,
+or in the namespace of a DingoNode whose keys Secret holds the pool's keys. A
+producer's own pods are only those controlled, by UID, by the StatefulSet it
+controls; a pod that only carries its name label is another workload. A
+workload no live DingoNode
 accounts for, including one whose DingoNode is gone, refuses without halting:
 it keeps a producer that is not running from starting, and withholds template
 rolls, including KES and opcert rotation, from a running one until it stops or
