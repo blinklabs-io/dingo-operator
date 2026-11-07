@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -156,6 +157,9 @@ func (r *DingoNodeReconciler) nodeIdentity(
 // newer one or a DingoNode that is gone or being deleted still runs them. The
 // DingoNode going away does not stop its pod; the StatefulSet and pod outlive
 // it through garbage collection and the termination grace period.
+//
+// A refusal that may not halt dn still halts it when dn's held template would
+// start a pod on another pool's keys; see restagesOtherPool.
 func (r *DingoNodeReconciler) forgerHeld(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -168,6 +172,26 @@ func (r *DingoNodeReconciler) forgerHeld(
 	if err != nil {
 		return err
 	}
+	err = r.heldBy(ctx, dn, all, mine)
+	held, ok := errors.AsType[*forgerHeldError](err)
+	if !ok || held.halt {
+		return err
+	}
+	restages, rerr := r.restagesOtherPool(ctx, dn)
+	if rerr != nil {
+		return rerr
+	}
+	held.halt = restages
+	return held
+}
+
+// heldBy is forgerHeld for a dn no older DingoNode refuses by spec alone.
+func (r *DingoNodeReconciler) heldBy(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	all []dingov1alpha1.DingoNode,
+	mine forgerIdentity,
+) error {
 	for i := range all {
 		o := &all[i]
 		if !o.DeletionTimestamp.IsZero() {
@@ -368,16 +392,73 @@ func (r *DingoNodeReconciler) orphanForger(
 	)
 }
 
+// ownStatefulSet returns the StatefulSet dn controls, or nil when there is
+// none: a StatefulSet that only has dn's name is not dn's workload.
+func (r *DingoNodeReconciler) ownStatefulSet(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (*appsv1.StatefulSet, error) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.uncachedReader().Get(
+		ctx, client.ObjectKeyFromObject(dn), sts,
+	); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read statefulset %s/%s: %w",
+			dn.Namespace, dn.Name, err)
+	}
+	if !metav1.IsControlledBy(sts, dn) {
+		return nil, nil
+	}
+	return sts, nil
+}
+
+// restagesOtherPool reports whether the StatefulSet dn controls would start a
+// pod on keys for a pool its template was not rendered for. A refused
+// producer's template is held, but it mounts the keys Secret by name, so a pod
+// recreated after a node failure or eviction copies what the Secret holds
+// then, whatever another producer still forges: neither holding reconciliation
+// nor a PodDisruptionBudget prevents that. Keys equal to the template's, or
+// for the pool the template records, as after a KES rotation, start no new
+// forger. A template that records no pool cannot show its keys' pool, so new
+// keys halt it. A missing keys Secret fails the pod's volume mount.
+func (r *DingoNodeReconciler) restagesOtherPool(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (bool, error) {
+	sts, err := r.ownStatefulSet(ctx, dn)
+	if err != nil || sts == nil {
+		return false, err
+	}
+	if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
+		return false, nil
+	}
+	tmpl := sts.Spec.Template
+	secret, ok := resources.KeysSecretName(tmpl.Spec)
+	if !ok {
+		return false, nil
+	}
+	pool, sum, err := r.keysPoolID(ctx, sts.Namespace, secret)
+	if err != nil || sum == "" {
+		return false, err
+	}
+	if sum == tmpl.Annotations[resources.KeysChecksumAnnotation] {
+		return false, nil
+	}
+	staged := normalizedPoolID(tmpl.Annotations[resources.KeysPoolAnnotation])
+	return staged == "" || staged != pool, nil
+}
+
 // rollsPastUnknownPool reports whether dn may proceed while another producer's
 // pod of unknown staged pool runs. dn must already run a pod controlled by the
 // StatefulSet dn controls, and each such pod must have staged the pool dn's
 // keys now name, so the roll is the same forger's, as for a KES rotation. A
 // pod of dn's that is itself of unknown pool does not qualify: the other pod
 // may have staged the pool dn's keys now name, and dn's roll would then start
-// a second forger of it. Two such producers hold each other until one's
-// StatefulSet is scaled to zero; a refused producer's replicas are left as
-// they are, and deleting its pod instead would restage its keys Secret's
-// current contents under its held template.
+// a second forger of it. Two such producers hold each other; each whose keys
+// moved to another pool is halted (restagesOtherPool), and the first whose
+// rival pod stops rolls.
 func (r *DingoNodeReconciler) rollsPastUnknownPool(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,

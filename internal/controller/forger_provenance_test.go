@@ -521,8 +521,8 @@ func TestReconcileLegacyPodUnknownPoolHolds(t *testing.T) {
 
 // A pod of unknown staged pool refuses without halting. A running producer
 // whose keys still name the pool its own pod staged keeps rolling, as for a
-// KES rotation; one whose keys move to another pool waits, still running,
-// until that pod stops.
+// KES rotation; one whose keys move to another pool halts until that pod
+// stops.
 func TestReconcileUnknownPoolPodSparesRunningProducer(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -562,7 +562,13 @@ func TestReconcileUnknownPoolPodSparesRunningProducer(t *testing.T) {
 			}
 			replaceKeys(t, c, other, pool, data)
 			reconcileNode(t, r, other)
-			assert.Equal(t, int32(1), replicasOf(t, c, other))
+			// Moved to another pool, its held template would stage that
+			// pool's keys in any recreated pod, so it halts.
+			wantReplicas := int32(1)
+			if tt.repoint {
+				wantReplicas = 0
+			}
+			assert.Equal(t, wantReplicas, replicasOf(t, c, other))
 			assert.Equal(t, tt.repoint, refusedAsDuplicate(t, c, other))
 			want := keysChecksum(keysSecret("keys-c", "ns-2", data))
 			if tt.repoint {
@@ -655,8 +661,9 @@ func legacyPair(t *testing.T) (
 
 // Two legacy producers whose keys change in the same window each hold a pod
 // of unknown staged pool. y's keys now name pool A, which x's pod may still
-// forge, so neither rolls past the other's pod; both keep running on the keys
-// they staged.
+// forge, so neither rolls past the other's pod. Each held template mounts its
+// keys Secret by name, so a recreated pod would stage the new keys beside the
+// other's pod: both are scaled to zero, and neither template rolls.
 func TestReconcileLegacyKeyChangesOntoUnknownPoolHold(t *testing.T) {
 	t.Parallel()
 	c, r, x, y, xPod, yPod, _, _, _ := legacyPair(t)
@@ -669,18 +676,19 @@ func TestReconcileLegacyKeyChangesOntoUnknownPoolHold(t *testing.T) {
 		x: xSum, y: ySum,
 	} {
 		assert.True(t, refusedAsDuplicate(t, c, n), n.Name)
-		assert.Equal(t, int32(1), replicasOf(t, c, n),
-			"%s: an unknown pod refuses without halting", n.Name)
+		assert.Equal(t, int32(0), replicasOf(t, c, n),
+			"%s: a recreated pod must not stage unadmitted keys", n.Name)
 		assert.Equal(t, sum, templateAnnotation(
 			t, c, n, resources.KeysChecksumAnnotation,
 		), "%s: the template does not roll", n.Name)
 	}
 }
 
-// Scaling one of two producers that hold each other to zero lets the other
-// roll. The scaled one stays at zero while refused, and resumes on its new
-// keys, with its pool recorded, once the other's old pod has stopped.
-func TestReconcileLegacyHoldRecoversByScalingDown(t *testing.T) {
+// Two producers that hold each other are both scaled to zero. The first whose
+// rival pod stops rolls; the other stays at zero while refused, and resumes
+// on its new keys, with its pool recorded, once the other's old pod has
+// stopped.
+func TestReconcileLegacyHoldHaltsBothAndRecovers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	c, r, x, y, xPod, yPod, poolA, poolB, yKeys := legacyPair(t)
@@ -689,10 +697,8 @@ func TestReconcileLegacyHoldRecoversByScalingDown(t *testing.T) {
 	require.True(t, refusedAsDuplicate(t, c, x))
 	require.True(t, refusedAsDuplicate(t, c, y))
 
-	var sts appsv1.StatefulSet
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(y), &sts))
-	sts.Spec.Replicas = new(int32)
-	require.NoError(t, c.Update(ctx, &sts))
+	require.Equal(t, int32(0), replicasOf(t, c, x))
+	require.Equal(t, int32(0), replicasOf(t, c, y))
 	reconcileNode(t, r, y)
 	assert.True(t, refusedAsDuplicate(t, c, y))
 	assert.Equal(t, int32(0), replicasOf(t, c, y),
@@ -720,4 +726,52 @@ func TestReconcileLegacyHoldRecoversByScalingDown(t *testing.T) {
 	assert.Equal(t, keysChecksum(yKeys), templateAnnotation(
 		t, c, y, resources.KeysChecksumAnnotation,
 	))
+}
+
+// A producer refused without halting keeps its template, which mounts its keys
+// Secret by name: a pod recreated after a node failure copies what the Secret
+// holds then. Keys for the pool the template was admitted on, as after a KES
+// rotation, keep it running; keys for another pool halt it.
+func TestReconcileRefusedForgerHaltsBeforeRestagingAnotherPool(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name    string
+		repoint bool
+		wanted  int32
+	}{
+		{"same pool, new bundle", false, 1},
+		{"another pool", true, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			poolA, dataA, dataA2 := poolKeyBundles(t)
+			poolB, dataB := poolKeys(t)
+			victim := forgerNode("bp-1", "ns-a", poolA, "keys-a", time.Hour)
+			victim.UID = "victim-uid"
+			c := conflictClient(t, victim, keysSecret("keys-a", "ns-a", dataA))
+			r := reconcilerFor(c)
+			reconcileNode(t, r, victim)
+			require.Equal(t, int32(1), replicasOf(t, c, victim))
+			sum := templateAnnotation(
+				t, c, victim, resources.KeysChecksumAnnotation,
+			)
+
+			pool, data := poolA, dataA2
+			if tt.repoint {
+				pool, data = poolB, dataB
+			}
+			// An unverified workload already claims the pool the keys move
+			// to, so the node is refused without halting.
+			forged, _ := forgedWorkload(pool)
+			require.NoError(t, c.Create(ctx, forged))
+			replaceKeys(t, c, victim, pool, data)
+			reconcileNode(t, r, victim)
+			assert.True(t, refusedAsDuplicate(t, c, victim))
+			assert.Equal(t, tt.wanted, replicasOf(t, c, victim))
+			assert.Equal(t, sum, templateAnnotation(
+				t, c, victim, resources.KeysChecksumAnnotation,
+			), "a refused template does not roll")
+		})
+	}
 }
