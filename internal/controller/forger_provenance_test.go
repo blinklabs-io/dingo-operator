@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -919,6 +920,74 @@ func TestReconcileRefusedForgerHaltsBeforeRestagingAnotherPool(t *testing.T) {
 			assert.Equal(t, sum, templateAnnotation(
 				t, c, victim, resources.KeysChecksumAnnotation,
 			), "a refused template does not roll")
+		})
+	}
+}
+
+// A node whose spec fails validation keeps its template too, so a pod
+// recreated under it stages what its keys Secret holds then. The same rule
+// halts it: keys for another pool, or any new keys under a template that
+// records no pool.
+func TestReconcileInvalidSpecHaltsBeforeRestagingAnotherPool(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name     string
+		repoint  bool
+		legacy   bool
+		unchange bool
+		wanted   int32
+	}{
+		{"keys unchanged", false, false, true, 1},
+		{"same pool, new bundle", false, false, false, 1},
+		{"another pool", true, false, false, 0},
+		{"new bundle under a template with no pool", false, true, false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			poolA, dataA, dataA2 := poolKeyBundles(t)
+			poolB, dataB := poolKeys(t)
+			n := forgerNode("bp-1", "ns-a", poolA, "keys-a", time.Hour)
+			n.UID = "n-uid"
+			c := conflictClient(t, n, keysSecret("keys-a", "ns-a", dataA))
+			r := reconcilerFor(c)
+			reconcileNode(t, r, n)
+			require.Equal(t, int32(1), replicasOf(t, c, n))
+			if tt.legacy {
+				var sts appsv1.StatefulSet
+				require.NoError(t, c.Get(
+					ctx, client.ObjectKeyFromObject(n), &sts,
+				))
+				delete(sts.Spec.Template.Annotations,
+					resources.KeysPoolAnnotation)
+				require.NoError(t, c.Update(ctx, &sts))
+			}
+			sum := templateAnnotation(
+				t, c, n, resources.KeysChecksumAnnotation,
+			)
+
+			if !tt.unchange {
+				pool, data := poolA, dataA2
+				if tt.repoint {
+					pool, data = poolB, dataB
+				}
+				replaceKeys(t, c, n, pool, data)
+			}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(n), n))
+			n.Spec.Topology = dingov1alpha1.TopologySpec{}
+			require.NoError(t, c.Update(ctx, n))
+			require.Error(t, validateSpec(n))
+
+			reconcileNode(t, r, n)
+			var got dingov1alpha1.DingoNode
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(n), &got))
+			d := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+			require.NotNil(t, d)
+			assert.Equal(t, "InvalidSpec", d.Reason)
+			assert.Equal(t, tt.wanted, replicasOf(t, c, n))
+			assert.Equal(t, sum, templateAnnotation(
+				t, c, n, resources.KeysChecksumAnnotation,
+			), "an invalid spec does not roll the template")
 		})
 	}
 }

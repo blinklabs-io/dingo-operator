@@ -133,7 +133,10 @@ loss of its Kubernetes node, stages the Secret's current contents. A refused
 producer is therefore also scaled to zero when its keys Secret no longer holds
 the keys its template was rendered with, unless the new keys are for the pool
 the template records, as after a KES rotation; a template that records no pool
-halts on any new keys. Two legacy producers whose keys are replaced in the same
+halts on any new keys. The same rule applies to a node whose spec fails
+validation, such as a block producer without `spec.topology`: its template is
+held too, so it is scaled to zero on such a key change while the spec stays
+invalid. Two legacy producers whose keys are replaced in the same
 window hold each other and are both scaled to zero; the first whose rival pod
 stops rolls onto its new keys, and the other resumes, with its pool recorded,
 once the first one's old pod has stopped. A pod stays unknown while its own

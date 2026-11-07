@@ -224,6 +224,17 @@ func (r *DingoNodeReconciler) Reconcile(
 				"spec.blockProducer is missing; KES status is not observed",
 			)
 		}
+		// The template is held as well, and a pod recreated under it stages
+		// what the keys Secret holds then.
+		restages, rerr := r.restagesOtherPool(ctx, dn)
+		if rerr != nil {
+			return ctrl.Result{}, rerr
+		}
+		if restages {
+			if herr := r.haltForger(ctx, dn); herr != nil {
+				return ctrl.Result{}, herr
+			}
+		}
 		// Requeue: nothing else reconciles the node until it or an owned
 		// resource changes, which would stop the observation above.
 		return ctrl.Result{RequeueAfter: requeueInterval}, r.markNotReady(
