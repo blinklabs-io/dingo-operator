@@ -731,7 +731,8 @@ type DingoNodeStatus struct {
 // column would read as broken on every healthy new pool.
 // Keys surfaces a refused key bundle, which is otherwise invisible in the
 // default table: the node keeps running on what its process already loaded, so
-// readiness stays True while rotation has stopped. Phase reports Degraded.
+// readiness stays True while rotation has stopped. While the node is ready,
+// Phase reports Degraded.
 // +kubebuilder:printcolumn:name="OpCert",type=integer,JSONPath=`.status.opcert.onDiskCounter`
 // +kubebuilder:printcolumn:name="Keys",type=string,JSONPath=`.status.conditions[?(@.type=="KeysValid")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

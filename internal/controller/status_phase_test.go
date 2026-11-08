@@ -63,7 +63,6 @@ func TestStatefulSetReady(t *testing.T) {
 				ObservedGeneration: 1, ReadyReplicas: 1,
 			},
 			desired: 1,
-			want:    true,
 		},
 		{
 			name:       "rollout in progress",
@@ -253,4 +252,54 @@ func TestReconcileStatusWedgedProducerIsNotForging(t *testing.T) {
 	assert.True(
 		t, meta.IsStatusConditionTrue(got.Status.Conditions, condDegraded),
 	)
+}
+
+// TestStatefulSetRollingOut checks that a rollout is recognised from the
+// generation and revisions alone, including the moment the only pod has been
+// taken down and no pod is ready.
+func TestStatefulSetRollingOut(t *testing.T) {
+	tests := []struct {
+		name       string
+		generation int64
+		status     appsv1.StatefulSetStatus
+		want       bool
+	}{
+		{
+			name:       "revisions differ with no pod ready",
+			generation: 2,
+			status: appsv1.StatefulSetStatus{
+				ObservedGeneration: 2,
+				CurrentRevision:    "r1", UpdateRevision: "r2",
+			},
+			want: true,
+		},
+		{
+			name:       "new generation not yet observed",
+			generation: 3,
+			status:     appsv1.StatefulSetStatus{ObservedGeneration: 2},
+			want:       true,
+		},
+		{
+			name:       "settled",
+			generation: 2,
+			status: appsv1.StatefulSetStatus{
+				ObservedGeneration: 2, ReadyReplicas: 1,
+				CurrentRevision: "r2", UpdateRevision: "r2",
+			},
+		},
+		{
+			name:       "first create, nothing reported yet",
+			generation: 1,
+			status:     appsv1.StatefulSetStatus{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: tt.generation},
+				Status:     tt.status,
+			}
+			assert.Equal(t, tt.want, statefulSetRollingOut(sts))
+		})
+	}
 }

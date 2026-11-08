@@ -673,7 +673,21 @@ func statefulSetReady(sts *appsv1.StatefulSet, desired int32) bool {
 	if st.ReadyReplicas == 0 || st.ReadyReplicas != desired {
 		return false
 	}
-	return st.UpdateRevision == "" || st.CurrentRevision == st.UpdateRevision
+	return st.UpdateRevision != "" && st.CurrentRevision == st.UpdateRevision
+}
+
+// statefulSetRollingOut reports whether the StatefulSet is moving to a new
+// spec, judged from generation and revision alone. It must not depend on the
+// ready count: replacing the only pod drops ReadyReplicas to zero, which is
+// exactly when the rollout should be reported. A StatefulSet that has not
+// reported a revision yet (a first create) is not rolling out.
+func statefulSetRollingOut(sts *appsv1.StatefulSet) bool {
+	st := sts.Status
+	if st.ObservedGeneration > 0 && st.ObservedGeneration < sts.Generation {
+		return true
+	}
+	return st.CurrentRevision != "" && st.UpdateRevision != "" &&
+		st.CurrentRevision != st.UpdateRevision
 }
 
 // reconcileStatus refreshes the DingoNode status from live children.
@@ -686,8 +700,7 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	rollingOut := false
 	if err := r.Get(ctx, types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}, sts); err == nil {
 		ready = statefulSetReady(sts, desiredReplicas(dn))
-		rollingOut = !ready && sts.Status.ReadyReplicas > 0 &&
-			sts.Status.ReadyReplicas == desiredReplicas(dn)
+		rollingOut = !ready && statefulSetRollingOut(sts)
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
