@@ -100,7 +100,9 @@ func TestEnvNetwork(t *testing.T) {
 		envFrom bool
 		want    string
 	}{
-		{"known name", []corev1.EnvVar{v("CARDANO_NETWORK", "preview")}, false, "magic:2"},
+		{"known name", []corev1.EnvVar{
+			v("CARDANO_NETWORK", "preview"),
+		}, false, "magic:2"},
 		{"magic wins over name", []corev1.EnvVar{
 			v("CARDANO_NETWORK", "preview"), v("CARDANO_NETWORK_MAGIC", "42"),
 		}, false, "magic:42"},
@@ -170,22 +172,23 @@ func TestPodNetwork(t *testing.T) {
 
 func TestForgerConflictIsPerNetwork(t *testing.T) {
 	t.Parallel()
+	type node = dingov1alpha1.DingoNode
 	for _, tt := range []struct {
 		name     string
-		other    func(*dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode
+		other    func(*node) *node
 		conflict bool
 	}{
-		{"different named network", func(n *dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode {
+		{"different named network", func(n *node) *node {
 			n.Spec.Network = "preprod"
 			return n
 		}, false},
-		{"custom network with another magic", func(n *dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode {
+		{"custom network with another magic", func(n *node) *node {
 			return onNetwork(n, 424242)
 		}, false},
-		{"custom network with the same magic", func(n *dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode {
+		{"custom network with the same magic", func(n *node) *node {
 			return onNetwork(n, 2)
 		}, true},
-		{"same network", func(n *dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode {
+		{"same network", func(n *node) *node {
 			return n
 		}, true},
 	} {

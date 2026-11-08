@@ -109,10 +109,12 @@ re-checked every requeue interval. One cold key may register the same pool ID on
 several networks, so a pool shared across networks is not a conflict. The network
 is the one Dingo gets from the node's effective environment, including
 `spec.environment` overrides, and for a workload from the environment of its
-`dingo` container: `CARDANO_NETWORK_MAGIC` when it is a plain non-zero number,
-otherwise the magic of the named `CARDANO_NETWORK`. A network that cannot be
-resolved (an unknown name, a value from a Secret or ConfigMap, `envFrom`, or a
-container command or arguments, which can override it) matches any network. Copies of one key bundle under different Secret names count as the
+`dingo` container: `CARDANO_NETWORK_MAGIC` when it is a non-zero number, the
+magic of the named `CARDANO_NETWORK` when the magic is unset or zero. A network
+that cannot be resolved (an unparseable or out-of-range magic, an unknown name,
+a value from a Secret or ConfigMap, `envFrom`, a container command or
+arguments, which can override it, or no `dingo` container) matches any
+network. Copies of one key bundle under different Secret names count as the
 same keys: the pool is also read from the cold key in the opcert. The newer
 node resumes only after the older DingoNode is gone and its StatefulSet is
 scaled to zero or removed with all its pods finished, since deleting a
