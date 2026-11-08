@@ -475,10 +475,17 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 				Name:  "CARDANO_SHELLEY_VRF_KEY",
 				Value: keysMountPath + "/vrf.skey",
 			},
-			corev1.EnvVar{
-				Name:  "CARDANO_SHELLEY_KES_KEY",
+		)
+		// With a remote signing agent no kes.skey is staged, and Dingo
+		// refuses CARDANO_SHELLEY_KES_KEY alongside an agent address.
+		if bp.SigningAgent == nil {
+			env = append(env, corev1.EnvVar{
+				Name:  KESKeyEnv,
 				Value: keysMountPath + "/kes.skey",
-			},
+			})
+		}
+		env = append(
+			env,
 			corev1.EnvVar{
 				Name:  "CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE",
 				Value: keysMountPath + "/opcert.cert",
@@ -500,6 +507,9 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 				Value: strconv.FormatInt(bp.ForgeStaleGapThresholdSlots, 10),
 			},
 		)
+		if bp.SigningAgent != nil {
+			env = append(env, signingAgentEnv(bp.SigningAgent)...)
+		}
 	}
 	// The optional Leios vote key shares the key-mount gate, so a keyless
 	// standby never gets a vote signing key.
@@ -793,6 +803,13 @@ func volumeMounts(
 			ReadOnly:  true,
 		})
 	}
+	if signingAgentCertSecret(dn, opts) != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      signingAgentTLSVolume,
+			MountPath: signingAgentTLSPath,
+			ReadOnly:  true,
+		})
+	}
 	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
 		mounts = append(
 			mounts,
@@ -867,6 +884,21 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 				},
 			},
 		)
+	}
+	if certSecret := signingAgentCertSecret(dn, opts); certSecret != "" {
+		vols = append(vols, corev1.Volume{
+			Name: signingAgentTLSVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: certSecret,
+					Items: []corev1.KeyToPath{
+						{Key: "tls.crt", Path: "tls.crt"},
+						{Key: "tls.key", Path: "tls.key"},
+					},
+					DefaultMode: new(int32(0o440)),
+				},
+			},
+		})
 	}
 	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
 		vols = append(vols, corev1.Volume{

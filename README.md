@@ -49,6 +49,37 @@ operators.
   no vote key is staged. On a network without Leios, Dingo logs a warning and
   ignores the key. Dingo no longer reads `DINGO_LEIOS_VOTER_PUBLIC_KEYS`; the
   vote key must be registered on chain for the pool.
+- **Remote signing agent** — `spec.blockProducer.signingAgent` signs block
+  headers through a remote Bursa KES agent, so the KES key never reaches the
+  node. The keys Secret then needs only `vrf.skey` and the opcert: `kes.skey`
+  is not required, checked, staged or passed to Dingo (one left in the Secret
+  is ignored and noted in the `KeysValid` message), and the opcert is not
+  bound to a local KES key, since Dingo checks it against the agent when it
+  connects. Every other check, and the optional vote key, are unchanged. The
+  operator sets Dingo's `CARDANO_SHELLEY_KES_AGENT_*` variables instead of
+  `CARDANO_SHELLEY_KES_KEY` and refuses `spec.environment` overrides of them.
+  The link is TLS unless `plaintext` is set; `serverSpkiSha256` pins the
+  agent's key, and `clientCertSecretRef` names a Secret with `tls.crt` and
+  `tls.key`, mounted read-only and read by the operator with the same grant
+  as the keys Secret. While that Secret is missing or holds only half the
+  pair, the pod template is held as for a refused keys bundle. Dingo loads the
+  client certificate at startup, so a renewed one takes effect when the pod
+  restarts.
+  `plaintext` takes neither a pin nor a client certificate, and
+  `rotation.mode: Auto` is refused, since it generates the KES key in the
+  operator. The field is named for signing in general: Leios vote signing can
+  move to the agent once Dingo and Bursa support it.
+
+  ```yaml
+  blockProducer:
+    poolId: <pool id, bech32 or hex>
+    keys: { secretRef: producer-pool-keys }   # vrf.skey + opcert.cert
+    rotation: { mode: Assisted }
+    signingAgent:
+      address: kes-agent.signing.svc:7000
+      serverSpkiSha256: <64 hex characters>
+      clientCertSecretRef: kes-agent-client
+  ```
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
   Prometheus endpoint, including blockfetch delay and fetch duration, ledger
   block-apply batch latency, and the KES/opcert metrics used for status and

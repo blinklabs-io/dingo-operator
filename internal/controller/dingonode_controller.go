@@ -500,16 +500,20 @@ func (r *DingoNodeReconciler) reconcileResources(
 				voteData, _, _ := voteKeyFile(secret.Data)
 				opts.MountVoteKey = voteData != nil
 				dn.Status.OpCert.OnDiskCounter = state.Counter
+				msg := fmt.Sprintf(
+					"opcert counter %d, kes start period %d",
+					state.Counter, state.KESPeriod,
+				)
+				if state.UnusedKESKey {
+					msg += "; " + unusedKESKeyMessage
+				}
 				meta.SetStatusCondition(
 					&dn.Status.Conditions,
 					metav1.Condition{
-						Type:   condKeysValid,
-						Status: metav1.ConditionTrue,
-						Reason: "OpCertAccepted",
-						Message: fmt.Sprintf(
-							"opcert counter %d, kes start period %d",
-							state.Counter, state.KESPeriod,
-						),
+						Type:               condKeysValid,
+						Status:             metav1.ConditionTrue,
+						Reason:             "OpCertAccepted",
+						Message:            msg,
 						ObservedGeneration: dn.Generation,
 					},
 				)
@@ -530,6 +534,25 @@ func (r *DingoNodeReconciler) reconcileResources(
 			r.missingKeys(ctx, dn, bp.Keys.SecretRef)
 		} else {
 			return fmt.Errorf("read keys secret: %w", err)
+		}
+		// The agent client certificate is mounted from its own Secret. One
+		// that is missing, or holds only half the pair, fails the volume
+		// mount, so hold the template rather than roll the forging pod onto
+		// one that cannot start.
+		if !keepTemplate {
+			problem, err := r.checkSigningAgentCert(ctx, dn)
+			if err != nil {
+				return err
+			}
+			if problem != "" {
+				prev, err := r.liveKeysChecksum(ctx, dn)
+				if err != nil {
+					return err
+				}
+				opts.KeysChecksum = prev
+				keepTemplate = true
+				r.rejectSigningAgentCert(ctx, dn, problem)
+			}
 		}
 	}
 	// Roll the pod when the referenced config bundle (config.json + genesis)

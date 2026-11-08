@@ -75,6 +75,50 @@ if [ -n "${vote}" ]; then
 fi
 `
 
+// prepareSigningAgentKeysScript stages the keys of a block producer that signs
+// through a remote agent. It is prepareBlockProducerKeysScript without
+// kes.skey: the agent holds the KES key, and one left in the Secret is never
+// copied into the node. It is a separate script so the init container of a
+// node with a local KES key stays byte-identical.
+const prepareSigningAgentKeysScript = `set -eu
+source_dir="${DINGO_KEYS_SOURCE:-/var/run/dingo-keys-source}"
+destination_dir="${DINGO_KEYS_DESTINATION:-/keys}"
+umask 077
+cp "${source_dir}/vrf.skey" "${destination_dir}/vrf.skey"
+# The operational certificate is opcert.cert or, as in the dingo Helm chart,
+# node.cert. Dingo is always pointed at /keys/opcert.cert.
+cert=node.cert
+if [ -s "${source_dir}/opcert.cert" ]; then
+  cert=opcert.cert
+fi
+cp "${source_dir}/${cert}" "${destination_dir}/opcert.cert"
+chmod 0600 \
+  "${destination_dir}/vrf.skey" \
+  "${destination_dir}/opcert.cert"
+# vote.skey (or the dingo Helm chart's bls.skey) is the optional Leios vote
+# signing key; Dingo requires it to be owner-only.
+vote=
+if [ -s "${source_dir}/vote.skey" ]; then
+  vote=vote.skey
+elif [ -s "${source_dir}/bls.skey" ]; then
+  vote=bls.skey
+fi
+if [ -n "${vote}" ]; then
+  cp "${source_dir}/${vote}" "${destination_dir}/vote.skey"
+  chmod 0600 "${destination_dir}/vote.skey"
+fi
+`
+
+// keysScript returns the staging script for dn's keys, chosen by the spec, not
+// by what the Secret holds: a node that signs through an agent never stages a
+// kes.skey, even one left in the Secret.
+func keysScript(dn *dingov1alpha1.DingoNode) string {
+	if UsesSigningAgent(dn) {
+		return prepareSigningAgentKeysScript
+	}
+	return prepareBlockProducerKeysScript
+}
+
 // initContainers prepares private key files when mounted and builds the Mithril
 // bootstrap init container when enabled. The Secret source can be widened by a
 // pod fsGroup, so Dingo reads an owner-only copy from a memory-backed volume.
@@ -91,7 +135,7 @@ func initContainers(
 			Command: []string{
 				"/bin/sh",
 				"-c",
-				prepareBlockProducerKeysScript,
+				keysScript(dn),
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{

@@ -137,6 +137,11 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				cs.Type,
 			)
 		}
+		// Before the Auto checks, so Auto with a signing agent is refused
+		// for that reason rather than for an incomplete cold signer.
+		if err := validateSigningAgent(bp); err != nil {
+			return err
+		}
 		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
 			if err := validateAutoRotation(&dn.Spec, bp); err != nil {
 				return err
