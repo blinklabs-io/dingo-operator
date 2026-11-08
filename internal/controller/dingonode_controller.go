@@ -482,20 +482,49 @@ func (r *DingoNodeReconciler) reconcileResources(
 				// checksum already on the live template is carried forward as
 				// well, so the rendered template never records the rejected
 				// material.
-				prev, err := r.liveKeysChecksum(ctx, dn)
+				live, err := r.liveKeysTemplate(ctx, dn)
 				if err != nil {
 					return err
 				}
-				opts.KeysChecksum = prev
+				opts.KeysChecksum = live.checksum
+				opts.KeysStaticChecksum = live.static
 				keepTemplate = true
 				r.rejectKeys(ctx, dn, verr)
 			} else {
-				opts.KeysChecksum = keysChecksum(secret)
 				// validateKeysSecret bound the opcert to poolId, so either
 				// names the pool these keys forge for.
-				opts.KeysPool = opCertPoolID(secret.Data)
-				if opts.KeysPool == "" {
-					opts.KeysPool = normalizedPoolID(bp.PoolID)
+				pool := opCertPoolID(secret.Data)
+				if pool == "" {
+					pool = normalizedPoolID(bp.PoolID)
+				}
+				live, err := r.liveKeysTemplate(ctx, dn)
+				if err != nil {
+					return err
+				}
+				rollout := decideKeysRollout(
+					resources.ReloadsKeysInPlace(dn), live,
+					keysChecksum(secret), staticKeysChecksum(secret.Data),
+					pool, state.Counter, dn.Status.OpCert.InPlaceReload, r.now(),
+				)
+				opts.KeysChecksum = rollout.checksum
+				opts.KeysStaticChecksum = rollout.static
+				opts.KeysPool = pool
+				dn.Status.OpCert.InPlaceReload = rollout.pending
+				if rollout.approve {
+					if err := r.upsertKeysApprovalConfigMap(
+						ctx, dn, approvedKeysDigest(secret.Data),
+					); err != nil {
+						return fmt.Errorf("apply keys approval configmap: %w", err)
+					}
+				}
+				if rollout.timedOut && r.Recorder != nil {
+					r.Recorder.Eventf(
+						dn, nil, corev1.EventTypeNormal, "KeysReloadTimedOut",
+						"ReloadKeys",
+						"node did not report opcert counter %d within %s; "+
+							"rolling the pod onto it",
+						state.Counter, keysReloadTimeout,
+					)
 				}
 				voteData, _, _ := voteKeyFile(secret.Data)
 				opts.MountVoteKey = voteData != nil
@@ -521,11 +550,12 @@ func (r *DingoNodeReconciler) reconcileResources(
 			// not optional), so keep the live template and carry its checksum
 			// forward, as for a rejected bundle. With no StatefulSet yet,
 			// prev is empty and the first render proceeds unchanged.
-			prev, lerr := r.liveKeysChecksum(ctx, dn)
+			live, lerr := r.liveKeysTemplate(ctx, dn)
 			if lerr != nil {
 				return lerr
 			}
-			opts.KeysChecksum = prev
+			opts.KeysChecksum = live.checksum
+			opts.KeysStaticChecksum = live.static
 			keepTemplate = true
 			r.missingKeys(ctx, dn, bp.Keys.SecretRef)
 		} else {
@@ -720,37 +750,6 @@ func (r *DingoNodeReconciler) missingKeys(
 	})
 }
 
-// liveKeysChecksum returns the keys-checksum annotation currently on the
-// node's StatefulSet pod template, so a render after a rejected or missing key
-// bundle carries the accepted checksum rather than one of the rejected material
-// or none.
-//
-// It reads through the cached client, separately from the read
-// controllerutil.CreateOrUpdate does in upsertStatefulSet. On an existing
-// StatefulSet the rejection path keeps the template that CreateOrUpdate itself
-// read (keepTemplate), so the two reads need not agree for the template to stay
-// unchanged.
-//
-// Only a missing StatefulSet yields "" (nothing to carry forward, and an absent
-// annotation is correct for a first render). Every other read failure is
-// returned: "" is the one value that *removes* the annotation, so on the single
-// path whose whole purpose is never rendering without the live checksum, an
-// unclassified error must not be indistinguishable from absence.
-func (r *DingoNodeReconciler) liveKeysChecksum(
-	ctx context.Context,
-	dn *dingov1alpha1.DingoNode,
-) (string, error) {
-	sts := &appsv1.StatefulSet{}
-	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
-	if err := r.Get(ctx, key, sts); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read statefulset for keys checksum: %w", err)
-	}
-	return sts.Spec.Template.Annotations[resources.KeysChecksumAnnotation], nil
-}
-
 // reconcileStatus refreshes the DingoNode status from live children.
 func (r *DingoNodeReconciler) reconcileStatus(
 	ctx context.Context,
@@ -934,6 +933,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// Block producers have one replica in v1; keep KES status tied to that
 	// replica's keys rather than an aggregate pipeline observation.
 	st := statuses[0]
+	r.observeLoadedOpCert(dn, st)
 	if !st.HasKESData {
 		setRotationDueUnknown(
 			dn,

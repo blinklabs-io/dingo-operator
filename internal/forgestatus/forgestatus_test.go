@@ -144,3 +144,37 @@ func TestParseTipSlot(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, s.HasTipSlot)
 }
+
+func TestParseOpCertCounter(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    int64
+		wantHas bool
+	}{
+		{
+			name:    "present",
+			body:    "dingo_forge_opcert_counter 7\n",
+			want:    7,
+			wantHas: true,
+		},
+		{
+			name:    "present at zero",
+			body:    "dingo_forge_opcert_counter 0\n",
+			want:    0,
+			wantHas: true,
+		},
+		{
+			name: "absent on a node that does not export it",
+			body: "cardano_node_metrics_currentKESPeriod_int 900\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Parse(strings.NewReader(tc.body))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.OpCertCounter)
+			assert.Equal(t, tc.wantHas, got.HasOpCertCounter)
+		})
+	}
+}

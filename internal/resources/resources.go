@@ -377,6 +377,9 @@ type RenderOptions struct {
 	KeysChecksum string
 	// KeysPool is the pool of the keys behind KeysChecksum.
 	KeysPool string
+	// KeysStaticChecksum is the checksum of the key material an in-place
+	// reload cannot change, recorded on templates that reload keys in place.
+	KeysStaticChecksum string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
 	// Replicas is the desired StatefulSet replica count.
@@ -507,6 +510,12 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 	if voteKey {
 		env = append(env, corev1.EnvVar{Name: VoteKeyEnv, Value: VoteKeyPath})
 	}
+	if reloadsKeysInPlace(dn, opts) {
+		env = append(env, corev1.EnvVar{
+			Name:  KeyWatchIntervalEnv,
+			Value: keyWatchInterval,
+		})
+	}
 	env = append(env, apiEnv(dn)...)
 	env = mergeEnv(env, dn.Spec.Environment)
 	// The gate applies to the merged result too: a spec.environment override
@@ -603,6 +612,9 @@ func BuildStatefulSet(
 	if opts.KeysPool != "" {
 		podAnnotations[KeysPoolAnnotation] = opts.KeysPool
 	}
+	if opts.KeysStaticChecksum != "" && reloadsKeysInPlace(dn, opts) {
+		podAnnotations[KeysStaticChecksumAnnotation] = opts.KeysStaticChecksum
+	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
 	}
@@ -627,7 +639,7 @@ func BuildStatefulSet(
 		ServiceAccountName:            dn.Name,
 		SecurityContext:               podSecurityContext(dn),
 		InitContainers:                initContainers(dn, opts),
-		Containers:                    []corev1.Container{container},
+		Containers:                    podContainers(dn, opts, container),
 		Volumes:                       volumes(dn, opts),
 		NodeSelector:                  dn.Spec.NodeSelector,
 		Tolerations:                   dn.Spec.Tolerations,
@@ -867,6 +879,9 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 				},
 			},
 		)
+	}
+	if reloadsKeysInPlace(dn, opts) {
+		vols = append(vols, keysApprovalVolume(dn))
 	}
 	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
 		vols = append(vols, corev1.Volume{

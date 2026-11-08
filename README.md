@@ -40,6 +40,15 @@ operators.
   The live pod keeps its staged keys when the Secret changes. Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
+  With `spec.blockProducer.rotation.reloadInPlace: true`, a validated bundle
+  that changes only the KES key and opcert is loaded into the running node
+  instead of rolling the pod: the operator approves it in the
+  `<name>-keys-approval` ConfigMap, a `sync-block-producer-keys` container
+  stages it into `/keys`, and Dingo reloads it on its credential file watch.
+  The rotation completes when the node reports the new opcert counter
+  (`status.opcert.loadedCounter`); if it does not within 10 minutes, the pod is
+  rolled. A new VRF key, vote key or pool always rolls the pod. It needs a
+  Dingo version that reloads credential files in place.
   An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
   text envelope or raw hex scalar; `bls.skey`, the dingo Helm chart's name, is
   accepted in its place, and both may be present only if identical) is staged the same way and wired to
