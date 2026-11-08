@@ -193,7 +193,9 @@ cert-manager).
   `dingo_ledger_pipeline_stuck` and `dingo_ledger_pipeline_halted` (halted is
   terminal) are scraped for every node, relays included, and drive the
   `LedgerPipelineHealthy` condition plus `Degraded`. `Ready` deliberately still
-  reports StatefulSet truth: the pod really is ready and the chain really is not
+  reports StatefulSet truth (the desired ready pods *and* a finished rollout:
+  `observedGeneration` caught up and `currentRevision` equal to
+  `updateRevision`, otherwise `Ready=False`/`RolloutInProgress`): the pod really is ready and the chain really is not
   advancing, and collapsing the two would hide which one failed. An unreadable
   scrape sets the condition `Unknown`, never True — reading a failed fetch as
   "no wedge reported" is how this detection goes blind exactly when it matters.
@@ -311,9 +313,9 @@ the pod onto it":
 - On acceptance: `KeysValid=True`/`OpCertAccepted`, the certificate's issue
   number is published as `status.opcert.onDiskCounter`, and the keys-checksum
   pod annotation changes, which rolls the pod.
-- On rejection: `KeysValid=False`/`OpCertRejected`, `Degraded=True` (the
-  only signal in `kubectl get dingonode`, since the node keeps forging and
-  readiness stays green), plus a Warning Event. The reconcile keeps the live
+- On rejection: `KeysValid=False`/`OpCertRejected`, `Degraded=True` and phase
+  `Degraded` rather than `Forging` (the node keeps running on its loaded keys,
+  so `Ready` stays True), plus a Warning Event. The reconcile keeps the live
   pod template of an existing StatefulSet unchanged until the Secret
   validates, so the operator does not roll the pod — not for the keys, and not
   for any other template change, including one introduced by an operator
