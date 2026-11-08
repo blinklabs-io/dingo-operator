@@ -955,3 +955,13 @@ func KeysSecretName(spec corev1.PodSpec) (string, bool) {
 	}
 	return "", false
 }
+
+// DingoContainer returns the Dingo container of a pod spec.
+func DingoContainer(spec corev1.PodSpec) (*corev1.Container, bool) {
+	for i := range spec.Containers {
+		if spec.Containers[i].Name == containerName {
+			return &spec.Containers[i], true
+		}
+	}
+	return nil, false
+}

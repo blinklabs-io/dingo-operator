@@ -98,13 +98,23 @@ operators.
   tag in container references. Keep `spec.image.tag` set to the pinned image's
   version because the operator uses it to select the UID and health probes.
 
-Only one block producer may forge per pool. When two DingoNodes share a pool ID
-(any namespace, hex or bech32) or a keys Secret (same namespace), the older one
+Only one block producer may forge per pool on a network. When two DingoNodes on
+the same network share a pool ID (any namespace, hex or bech32), or share a keys
+Secret (same namespace, whatever network each names), the older one
 by creation time, then namespace/name, keeps the keys. The newer is set
 `Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
 StatefulSet is scaled to zero if it exists (across namespaces only when the
 older node's keys Secret holds the pool's keys, as described below), and it is
-re-checked every requeue interval. Copies of one key bundle under different Secret names count as the
+re-checked every requeue interval. One cold key may register the same pool ID on
+several networks, so a pool shared across networks is not a conflict. The network
+is the one Dingo gets from the node's effective environment, including
+`spec.environment` overrides, and for a workload from the environment of its
+`dingo` container: `CARDANO_NETWORK_MAGIC` when it is a non-zero number, the
+magic of the named `CARDANO_NETWORK` when the magic is unset or zero. A network
+that cannot be resolved (an unparseable or out-of-range magic, an unknown name,
+a value from a Secret or ConfigMap, `envFrom`, a container command or
+arguments, which can override it, or no `dingo` container) matches any
+network. Copies of one key bundle under different Secret names count as the
 same keys: the pool is also read from the cold key in the opcert. The newer
 node resumes only after the older DingoNode is gone and its StatefulSet is
 scaled to zero or removed with all its pods finished, since deleting a
