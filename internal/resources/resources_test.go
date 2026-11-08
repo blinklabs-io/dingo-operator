@@ -464,6 +464,19 @@ func TestBuildStatefulSet(t *testing.T) {
 		)
 	})
 
+	t.Run("keys pool is recorded on the pod template", func(t *testing.T) {
+		dn := bpNode()
+		anns := func(pool string) map[string]string {
+			return BuildStatefulSet(dn, RenderOptions{
+				Replicas: 1, MountKeys: true, KeysChecksum: "abc123",
+				KeysPool: pool,
+			}).Spec.Template.Annotations
+		}
+		_, present := anns("")[KeysPoolAnnotation]
+		assert.False(t, present, "empty pool must not set the annotation")
+		assert.Equal(t, "beef", anns("beef")[KeysPoolAnnotation])
+	})
+
 	t.Run("nil block producer config omits key material", func(t *testing.T) {
 		dn := bpNode()
 		dn.Spec.BlockProducer = nil

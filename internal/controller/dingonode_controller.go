@@ -17,6 +17,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -168,6 +169,7 @@ type onChainAttempt struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
@@ -222,28 +224,54 @@ func (r *DingoNodeReconciler) Reconcile(
 				"spec.blockProducer is missing; KES status is not observed",
 			)
 		}
-		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
-			Type:               condDegraded,
-			Status:             metav1.ConditionTrue,
-			Reason:             "InvalidSpec",
-			Message:            err.Error(),
-			ObservedGeneration: dn.Generation,
-		})
-		// An invalid spec is not Ready; clear any stale Ready=True so the node
-		// does not report Ready and Degraded simultaneously.
-		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
-			Type:               condReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidSpec",
-			Message:            err.Error(),
-			ObservedGeneration: dn.Generation,
-		})
-		dn.Status.Phase = "Degraded"
+		// The template is held as well, and a pod recreated under it stages
+		// what the keys Secret holds then.
+		restages, rerr := r.restagesOtherPool(ctx, dn)
+		if rerr != nil {
+			return ctrl.Result{}, rerr
+		}
+		if restages {
+			if herr := r.haltForger(ctx, dn); herr != nil {
+				return ctrl.Result{}, herr
+			}
+		}
 		// Requeue: nothing else reconciles the node until it or an owned
 		// resource changes, which would stop the observation above.
-		return ctrl.Result{
-			RequeueAfter: requeueInterval,
-		}, r.updateStatus(ctx, dn)
+		return ctrl.Result{RequeueAfter: requeueInterval}, r.markNotReady(
+			ctx, dn, "InvalidSpec", err,
+		)
+	}
+
+	// validateSpec sees one object; two block producers staging the same pool
+	// keys would both forge, so this needs the other DingoNodes.
+	if resources.IsBlockProducer(dn) {
+		var all dingov1alpha1.DingoNodeList
+		if err := r.List(ctx, &all); err != nil {
+			return ctrl.Result{}, fmt.Errorf("list DingoNodes: %w", err)
+		}
+		if err := r.forgerHeld(ctx, dn, all.Items); err != nil {
+			held, ok := errors.AsType[*forgerHeldError](err)
+			if !ok {
+				return ctrl.Result{}, fmt.Errorf(
+					"check block producer keys holder: %w", err,
+				)
+			}
+			logger.Info("duplicate block producer", "error", err.Error())
+			// A node already running would keep forging beside the holder.
+			// Evidence that does not verify only keeps the node from
+			// starting or rolling: anyone who may create a pod can forge it.
+			// forgerHeld still halts a node whose held template would stage
+			// another pool's keys.
+			if held.halt {
+				if herr := r.haltForger(ctx, dn); herr != nil {
+					return ctrl.Result{}, herr
+				}
+			}
+			// Nothing watches the holder, so poll for it going away.
+			return ctrl.Result{RequeueAfter: requeueInterval}, r.markNotReady(
+				ctx, dn, reasonDuplicateForger, err,
+			)
+		}
 	}
 
 	// Before reconcileResources, because reconcileResources is what validates a
@@ -286,6 +314,63 @@ func (r *DingoNodeReconciler) Reconcile(
 		return ctrl.Result{}, storageErr
 	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+}
+
+// markNotReady records a spec the operator refuses to run: Degraded, and not
+// Ready, so a stale Ready=True is cleared rather than shown beside Degraded.
+func (r *DingoNodeReconciler) markNotReady(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	reason string,
+	cause error,
+) error {
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condDegraded,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            cause.Error(),
+		ObservedGeneration: dn.Generation,
+	})
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type:               condReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            cause.Error(),
+		ObservedGeneration: dn.Generation,
+	})
+	dn.Status.Phase = "Degraded"
+	return r.updateStatus(ctx, dn)
+}
+
+// haltForger scales the StatefulSet dn controls to zero so a refused block
+// producer stops forging. An absent StatefulSet is already halted. The next
+// reconcile that is not refused restores the replica count.
+func (r *DingoNodeReconciler) haltForger(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) error {
+	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, key, sts); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		// Only a StatefulSet this DingoNode controls is its workload. Another
+		// one that merely has the name is left alone, so a DingoNode cannot be
+		// used to stop a workload its author could not update.
+		if !metav1.IsControlledBy(sts, dn) {
+			return nil
+		}
+		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
+			return nil
+		}
+		sts.Spec.Replicas = new(int32)
+		return r.Update(ctx, sts)
+	})
+	if err != nil {
+		return fmt.Errorf("scale statefulset %q to zero: %w", dn.Name, err)
+	}
+	return nil
 }
 
 // relayRefPorts resolves the relay port of every in-cluster node listed in
@@ -406,6 +491,12 @@ func (r *DingoNodeReconciler) reconcileResources(
 				r.rejectKeys(ctx, dn, verr)
 			} else {
 				opts.KeysChecksum = keysChecksum(secret)
+				// validateKeysSecret bound the opcert to poolId, so either
+				// names the pool these keys forge for.
+				opts.KeysPool = opCertPoolID(secret.Data)
+				if opts.KeysPool == "" {
+					opts.KeysPool = normalizedPoolID(bp.PoolID)
+				}
 				voteData, _, _ := voteKeyFile(secret.Data)
 				opts.MountVoteKey = voteData != nil
 				dn.Status.OpCert.OnDiskCounter = state.Counter

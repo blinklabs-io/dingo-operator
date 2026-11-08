@@ -449,6 +449,78 @@ proven end to end against a real forging node in `test/e2e/rotation_test.go`
 (`make e2e`) — which is what establishes that the roll actually resumes forging
 on the new key, something envtest cannot show.
 
+Only one block producer may forge per pool. When two DingoNodes share a pool ID
+(any namespace, hex or bech32) or a keys Secret (same namespace), the older one
+by creation time, then namespace/name, keeps the keys. The newer is set
+`Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
+StatefulSet is scaled to zero if it exists (across namespaces only when the
+older node's keys Secret holds the pool's keys, as described below), and it is
+re-checked every requeue interval. Copies of one key bundle under different Secret names count as the
+same keys: the pool is also read from the cold key in the opcert. The newer
+node resumes only after the older DingoNode is gone and its StatefulSet is
+scaled to zero or removed with all its pods finished, since deleting a
+DingoNode does not stop its pod at once. Likewise the older node is held until
+a newer one already running with the same keys has stopped, and an older node
+whose spec fails validation holds the pool only while its workload runs. Any
+other block-producer workload still running the same keys, whatever DingoNode
+now carries its name, also holds them. A pod holds the pool it staged until it
+stops, even after its node's poolId and keys Secret move to another pool: the
+pod template records it in `dingo.blinklabs.io/keys-pool` when it is first
+rendered or its keys change. A template rendered before that annotation existed
+gains it only at its next keys change, normally the next KES rotation, so
+adding it does not restart running producers; until then every pod it starts is
+judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a pod
+whose checksum equals another producer's keys staged the same bundle. Its
+keys Secret names its pool only while that checksum equals the Secret's. Once
+its keys are replaced, the pod may still forge a pool recorded nowhere, so
+until it stops every other block producer is refused, without halting. A
+producer already running still rolls when its own pod staged the pool its keys
+now name, as for a KES rotation: the pod records that pool, or records no pool
+but the keys checksum its keys Secret has now. A producer whose own pod is of
+unknown pool too waits, since the other pod may have staged the pool its keys
+now name. A refused producer keeps its template, which mounts its keys Secret
+by name, so any recreation of its pod, including a `kubectl delete` or the
+loss of its Kubernetes node, stages the Secret's current contents. A refused
+producer is therefore also scaled to zero when its keys Secret no longer holds
+the keys its template was rendered with, unless the new keys are for the pool
+the template records, as after a KES rotation; a template that records no pool
+halts on any new keys. The same rule applies to a node whose spec fails
+validation, such as a block producer without `spec.topology`: its template is
+held too, so it is scaled to zero on such a key change while the spec stays
+invalid. Two legacy producers whose keys are replaced in the same
+window hold each other and are both scaled to zero; the first whose rival pod
+stops rolls onto its new keys, and the other resumes, with its pool recorded,
+once the first one's old pod has stopped. A pod stays unknown while its own
+node's keys are refused or missing, since its template is held. Anyone who may
+create a pod can make one unknown, and so keep every block producer that is not
+running from starting. A pod that records no keys checksum is judged by its
+keys Secret. Besides that held template, only two kinds of
+evidence scale a running producer to zero: an older valid DingoNode
+naming the same pool or keys, and the workload of a live DingoNode that shares
+them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
+controls, matched by UID. Across namespaces either counts only when that
+DingoNode's keys Secret holds the KES signing key its opcert certifies for the
+shared pool: a pool ID, or an opcert copied from a block header, is public, so
+a DingoNode in another namespace that only names the pool refuses without
+halting. Owner references are set by whoever creates the object, so this
+trusts anyone who may create pods or StatefulSets in the producer's namespace,
+or in the namespace of a DingoNode whose keys Secret holds the pool's keys. A
+producer's own pods are only those controlled, by UID, by the StatefulSet it
+controls; a pod that only carries its name label is another workload. A
+workload no live DingoNode
+accounts for, including one whose DingoNode is gone, refuses without halting:
+it keeps a producer that is not running from starting, and withholds template
+rolls, including KES and opcert rotation, from a running one until it stops or
+is removed. Anyone who may create a pod can label and annotate one, so such a
+workload stops a running producer only through its held template: when the
+producer's keys move to another pool, or change at all under a template that
+records no pool, it is scaled to zero as described above. These checks read StatefulSets and
+pods from the API server, so the operator needs `list` on pods. A failed lookup
+is not a refusal: the reconcile returns the error and leaves the workload as it
+is. The exception is another block producer's keys Secret the operator may not
+read with its current permissions: only that node's pool ID and Secret name
+count, and if its workload is running the reconcile fails closed.
+
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:
 

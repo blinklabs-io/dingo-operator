@@ -786,6 +786,92 @@ func TestBlockProducerFirstReconcileRejectsBadKeys(t *testing.T) {
 	assert.Zero(t, got.Status.OpCert.OnDiskCounter)
 }
 
+// keysPool returns the keys-pool annotation on the node's pod template.
+func keysPool(
+	t *testing.T,
+	ctx context.Context,
+	c client.Client,
+	name, ns string,
+) string {
+	t.Helper()
+	return podTemplate(t, ctx, c, name, ns).
+		Annotations[resources.KeysPoolAnnotation]
+}
+
+// The keys pool is recorded only when the keys checksum changes, which rolls
+// the pod anyway. A held template keeps the live value, and a template rendered
+// before the annotation existed keeps its absence: upgrading the operator must
+// not restart a running producer.
+func TestBlockProducerKeysPoolAnnotation(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "pool-ns")
+	key := types.NamespacedName{Name: "pool-keys", Namespace: "pool-ns"}
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	pool := hex.EncodeToString(keys.PoolID)
+	good, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data:       good,
+	}))
+	require.NoError(t, c.Create(ctx,
+		blockProducerNode("bp", "pool-ns", "pool-keys", pool),
+	))
+	r := reconcilerFor(c)
+	reconcile(t, ctx, r, "bp", "pool-ns")
+	require.Equal(t, pool, keysPool(t, ctx, c, "bp", "pool-ns"))
+
+	// Keys signed by another pool are refused: the template, and the pool
+	// its pod staged, stay.
+	other, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	foreign, err := other.SecretData(3, 0)
+	require.NoError(t, err)
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(ctx, key, secret))
+	secret.Data = foreign
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, r, "bp", "pool-ns")
+	assert.Equal(t, pool, keysPool(t, ctx, c, "bp", "pool-ns"),
+		"a refused bundle must not change the recorded pool")
+
+	require.NoError(t, c.Delete(ctx, secret))
+	reconcile(t, ctx, r, "bp", "pool-ns")
+	assert.Equal(t, pool, keysPool(t, ctx, c, "bp", "pool-ns"),
+		"a missing keys Secret must not change the recorded pool")
+
+	// A template from before the annotation, with the keys unchanged.
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data:       good,
+	}))
+	sts := &appsv1.StatefulSet{}
+	stsKey := types.NamespacedName{Name: "bp", Namespace: "pool-ns"}
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	delete(sts.Spec.Template.Annotations, resources.KeysPoolAnnotation)
+	require.NoError(t, c.Update(ctx, sts))
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	legacy := sts.Spec.Template
+	generation := sts.Generation
+	reconcile(t, ctx, r, "bp", "pool-ns")
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	assert.Equal(t, legacy, sts.Spec.Template,
+		"unchanged keys must not roll a template without the pool")
+	assert.Equal(t, generation, sts.Generation)
+
+	// New keys roll the pod, and the pool is recorded with them.
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	rotated, err := keys.SecretData(3, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, key, secret))
+	secret.Data = rotated
+	require.NoError(t, c.Update(ctx, secret))
+	reconcile(t, ctx, r, "bp", "pool-ns")
+	assert.Equal(t, pool, keysPool(t, ctx, c, "bp", "pool-ns"))
+}
+
 // stubOnChain is a controllable onchain.Fetcher so the controller suite can
 // exercise the on-chain counter path without a Cardano node.
 type stubOnChain struct {

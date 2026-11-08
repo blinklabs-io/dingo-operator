@@ -50,6 +50,10 @@ const (
 	TopologyChecksumAnnotation = "dingo.blinklabs.io/topology-checksum"
 	// KeysChecksumAnnotation forces a rollout when key material changes.
 	KeysChecksumAnnotation = "dingo.blinklabs.io/keys-checksum"
+	// KeysPoolAnnotation records the pool of the keys a pod stages. A pod keeps
+	// it as created, so it names the pool the pod forges for after the spec
+	// and the keys Secret have moved on.
+	KeysPoolAnnotation = "dingo.blinklabs.io/keys-pool"
 	// ConfigChecksumAnnotation forces a rollout when the config bundle
 	// (config.json + genesis files) referenced by spec.configRef changes.
 	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
@@ -371,6 +375,8 @@ type RenderOptions struct {
 	TopologyChecksum string
 	// KeysChecksum triggers a rollout when key material changes.
 	KeysChecksum string
+	// KeysPool is the pool of the keys behind KeysChecksum.
+	KeysPool string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
 	// Replicas is the desired StatefulSet replica count.
@@ -593,6 +599,9 @@ func BuildStatefulSet(
 	}
 	if opts.KeysChecksum != "" {
 		podAnnotations[KeysChecksumAnnotation] = opts.KeysChecksum
+	}
+	if opts.KeysPool != "" {
+		podAnnotations[KeysPoolAnnotation] = opts.KeysPool
 	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
@@ -934,4 +943,15 @@ func affinity(dn *dingov1alpha1.DingoNode) *corev1.Affinity {
 			},
 		},
 	}
+}
+
+// KeysSecretName returns the Secret a pod spec mounts its block-producer keys
+// from, if it mounts one.
+func KeysSecretName(spec corev1.PodSpec) (string, bool) {
+	for _, v := range spec.Volumes {
+		if v.Name == keysSourceName && v.Secret != nil {
+			return v.Secret.SecretName, true
+		}
+	}
+	return "", false
 }
