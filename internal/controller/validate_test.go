@@ -486,6 +486,23 @@ func TestValidateSpecAutoRotation(t *testing.T) {
 			wantErr: "coldKeyHash",
 		},
 		{
+			name: "bursa profile",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner.Profile = "otg@preview"
+			},
+		},
+		{
+			name: "profile with the secret signer",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
+					Type:      dingov1alpha1.ColdSignerSecret,
+					SecretRef: "cold",
+					Profile:   "otg@preview",
+				}
+			},
+			wantErr: "coldSigner.profile",
+		},
+		{
 			name: "secret signer without secret",
 			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
 				bp.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{

@@ -16,9 +16,19 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -691,6 +701,92 @@ func TestReconcileInvalidSpecKeepsObservingPipeline(t *testing.T) {
 			assert.Equal(t, int64(1000), got.Status.Tip.Slot)
 			require.NotNil(t, got.Status.Tip.LastProgressAt)
 			assert.Zero(t, f.issuer.calls, "no issuance under a rejected spec")
+		})
+	}
+}
+
+// The profile of the cold signer spec must reach the signer request; without
+// it a signer holding the key in several profiles refuses to choose.
+func TestIssuerForSendsBursaProfile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, profile string
+	}{
+		{"set", "otg@preview"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRotateFixture(t)
+			f.r.ColdSigner = nil
+			ctx := context.Background()
+
+			got := make(chan map[string]any, 1)
+			srv := httptest.NewTLSServer(http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {
+					body := map[string]any{}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					got <- body
+					http.Error(w, "stop", http.StatusBadGateway)
+				},
+			))
+			t.Cleanup(srv.Close)
+
+			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			require.NoError(t, err)
+			tmpl := &x509.Certificate{
+				SerialNumber: big.NewInt(1),
+				Subject:      pkix.Name{CommonName: "dingo-operator"},
+				NotBefore:    time.Now().Add(-time.Hour),
+				NotAfter:     time.Now().Add(time.Hour),
+				ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			}
+			der, err := x509.CreateCertificate(
+				rand.Reader, tmpl, tmpl, &priv.PublicKey, priv,
+			)
+			require.NoError(t, err)
+			keyDER, err := x509.MarshalECPrivateKey(priv)
+			require.NoError(t, err)
+			require.NoError(t, f.c.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "signer-mtls", Namespace: "pools",
+				},
+				Data: map[string][]byte{
+					signerSecretCert: pem.EncodeToMemory(
+						&pem.Block{Type: "CERTIFICATE", Bytes: der},
+					),
+					signerSecretKey: pem.EncodeToMemory(
+						&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER},
+					),
+					signerSecretCA: pem.EncodeToMemory(&pem.Block{
+						Type: "CERTIFICATE", Bytes: srv.Certificate().Raw,
+					}),
+				},
+			}))
+			f.dn.Spec.BlockProducer.Rotation.ColdSigner =
+				dingov1alpha1.ColdSignerSpec{
+					Type:          dingov1alpha1.ColdSignerBursa,
+					Endpoint:      srv.URL,
+					MTLSSecretRef: "signer-mtls",
+					ColdKeyHash:   strings.Repeat("ab", 28),
+					Profile:       tc.profile,
+				}
+
+			issuer, err := f.r.issuerFor(ctx, f.dn)
+			require.NoError(t, err)
+			_, err = issuer.SignOpCertFromChain(ctx, make([]byte, 32), 4, 900)
+			require.Error(t, err) // the stub signer refuses
+
+			select {
+			case body := <-got:
+				if tc.profile == "" {
+					assert.NotContains(t, body, "profile")
+				} else {
+					assert.Equal(t, tc.profile, body["profile"])
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("signer received no request")
+			}
 		})
 	}
 }
