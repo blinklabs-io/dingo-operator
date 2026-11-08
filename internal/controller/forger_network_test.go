@@ -133,7 +133,9 @@ func TestEnvNetwork(t *testing.T) {
 			v("CARDANO_NETWORK_MAGIC", "99999999999"),
 		}, false, ""},
 		{"envFrom", []corev1.EnvVar{v("CARDANO_NETWORK", "preview")}, true, ""},
-		{"unknown name", []corev1.EnvVar{v("CARDANO_NETWORK", "nope")}, false, ""},
+		{"unknown name", []corev1.EnvVar{
+			v("CARDANO_NETWORK", "nope"),
+		}, false, ""},
 		{"no network", nil, false, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -228,11 +230,15 @@ func TestReconcileSamePoolOnDifferentNetworksBothForge(t *testing.T) {
 		name  string
 		newer func(*dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode
 	}{
-		{"named networks", func(n *dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode {
+		{"named networks", func(
+			n *dingov1alpha1.DingoNode,
+		) *dingov1alpha1.DingoNode {
 			n.Spec.Network = "preprod"
 			return n
 		}},
-		{"custom network", func(n *dingov1alpha1.DingoNode) *dingov1alpha1.DingoNode {
+		{"custom network", func(
+			n *dingov1alpha1.DingoNode,
+		) *dingov1alpha1.DingoNode {
 			return onNetwork(n, 424242)
 		}},
 	} {
@@ -335,8 +341,10 @@ func TestReconcileOrphanPodHoldsPoolPerNetwork(t *testing.T) {
 		holds   bool
 	}{
 		{"same network", plain("CARDANO_NETWORK", "preview"), false, true},
-		{"different network", plain("CARDANO_NETWORK", "preprod"), false, false},
-		{"different magic", plain("CARDANO_NETWORK_MAGIC", "424242"), false, false},
+		{"different network", plain("CARDANO_NETWORK", "preprod"),
+			false, false},
+		{"different magic", plain("CARDANO_NETWORK_MAGIC", "424242"),
+			false, false},
 		{"same magic", plain("CARDANO_NETWORK_MAGIC", "2"), false, true},
 		{"no network env", nil, false, true},
 		{"unknown name", plain("CARDANO_NETWORK", "nope"), false, true},
@@ -345,8 +353,10 @@ func TestReconcileOrphanPodHoldsPoolPerNetwork(t *testing.T) {
 			{Name: "CARDANO_NETWORK", Value: "preprod"},
 			{Name: "CARDANO_NETWORK_MAGIC", ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "s"},
-					Key:                  "k",
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "s",
+					},
+					Key: "k",
 				},
 			}},
 		}, false, true},
