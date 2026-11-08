@@ -19,10 +19,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	ouroboros "github.com/blinklabs-io/gouroboros"
 	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	appsv1 "k8s.io/api/apps/v1"
@@ -76,12 +78,18 @@ const (
 // keys checksum, compared against what a pod recorded when it staged its keys.
 // keyed lists the pools whose keys the Secret holds: a pool ID and an opcert
 // are public, a KES signing key bound to an opcert is not.
+//
+// Pools are public and one cold key can register the same pool ID on several
+// networks, so a shared pool makes one forger only on the same network; see
+// networkKey. A shared keys Secret is one forger whatever network each node
+// names: the Secret is the keys.
 type forgerIdentity struct {
 	pools     []string
 	keyed     []string
 	namespace string
 	secret    string
 	checksum  string
+	network   string
 }
 
 // backedBy reports whether b's claim on a's keys may halt a. A writer in a's
@@ -91,6 +99,9 @@ type forgerIdentity struct {
 func (a forgerIdentity) backedBy(b forgerIdentity) bool {
 	if a.namespace == b.namespace {
 		return true
+	}
+	if !sameNetwork(a.network, b.network) {
+		return false
 	}
 	for _, p := range b.keyed {
 		if slices.Contains(a.pools, p) {
@@ -103,9 +114,11 @@ func (a forgerIdentity) backedBy(b forgerIdentity) bool {
 // sharedWith describes what a and b share, or returns "" when they are
 // different forgers.
 func (a forgerIdentity) sharedWith(b forgerIdentity) string {
-	for _, p := range a.pools {
-		if slices.Contains(b.pools, p) {
-			return "pool " + p
+	if sameNetwork(a.network, b.network) {
+		for _, p := range a.pools {
+			if slices.Contains(b.pools, p) {
+				return "pool " + p
+			}
 		}
 	}
 	if a.secret != "" && a.namespace == b.namespace && a.secret == b.secret {
@@ -176,7 +189,7 @@ func (r *DingoNodeReconciler) nodeIdentity(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) (forgerIdentity, error) {
-	id := forgerIdentity{namespace: dn.Namespace}
+	id := forgerIdentity{namespace: dn.Namespace, network: networkKey(dn)}
 	if bp := dn.Spec.BlockProducer; bp != nil {
 		id.secret = bp.Keys.SecretRef
 		if p := normalizedPoolID(bp.PoolID); p != "" {
@@ -592,6 +605,8 @@ func (r *DingoNodeReconciler) rollsPastUnknownPool(
 // true, since the pod may still forge a pool recorded nowhere. A pod that
 // recorded no checksum started from a template rendered before its keys were
 // first accepted, and is judged by its Secret.
+// A pod holds a pool only on the network its dingo container's env names; see
+// podNetwork.
 func (r *DingoNodeReconciler) orphanHolds(
 	ctx context.Context,
 	mine forgerIdentity,
@@ -604,7 +619,11 @@ func (r *DingoNodeReconciler) orphanHolds(
 	if !ok {
 		return false, nil
 	}
-	theirs := forgerIdentity{namespace: namespace, secret: secret}
+	theirs := forgerIdentity{
+		namespace: namespace,
+		secret:    secret,
+		network:   podNetwork(spec),
+	}
 	recorded := normalizedPoolID(annotations[resources.KeysPoolAnnotation])
 	if recorded != "" {
 		theirs.pools = append(theirs.pools, recorded)
@@ -617,15 +636,89 @@ func (r *DingoNodeReconciler) orphanHolds(
 		theirs.pools = append(theirs.pools, p)
 	}
 	what := mine.sharedWith(theirs)
-	if what == "" && stagedSum != "" && stagedSum == mine.checksum {
+	if what == "" && stagedSum != "" && stagedSum == mine.checksum &&
+		sameNetwork(mine.network, theirs.network) {
 		what = "keys bundle"
 	}
 	if what == "" {
-		return recorded == "" && stagedSum != "" && stagedSum != sum, nil
+		return recorded == "" && stagedSum != "" && stagedSum != sum &&
+			sameNetwork(mine.network, theirs.network), nil
 	}
 	return false, unverifiedHeldf(
 		"%s %s/%s of another block producer still holds the same %s; "+
 			"waiting for it to stop",
 		kind, namespace, name, what,
 	)
+}
+
+// networkKey is the network a DingoNode's Dingo runs on, from the environment
+// the operator renders for it, spec.environment overrides included: Dingo takes
+// its network from that environment, not from spec.network.
+func networkKey(dn *dingov1alpha1.DingoNode) string {
+	return envNetwork(resources.BuildEnv(dn, resources.RenderOptions{}), false)
+}
+
+// podNetwork is the network a pod spec or template runs Dingo on, from the
+// environment of its dingo container. Container env is fixed when the pod is
+// created, unlike annotations. A container that takes env from elsewhere
+// (envFrom), or sets a command or arguments (Dingo's --network and
+// --network-magic flags override env), can set the network where it cannot be
+// read, so it is unknown. The operator renders neither.
+func podNetwork(spec corev1.PodSpec) string {
+	c, ok := resources.DingoContainer(spec)
+	if !ok || len(c.Command) > 0 || len(c.Args) > 0 {
+		return ""
+	}
+	return envNetwork(c.Env, len(c.EnvFrom) > 0)
+}
+
+// envNetwork resolves the network identity of an env list as Dingo does:
+// CARDANO_NETWORK_MAGIC when it is a plain, non-zero integer, parsed as Dingo
+// parses it (a Go integer literal, so "010" is 8), otherwise the
+// magic of a known CARDANO_NETWORK name. Named and custom networks with one
+// magic are one network, and two magics are two. "" means unknown: a
+// valueFrom, an unparseable magic, an unknown name, no network, or envFrom. It
+// matches every network, so an unknown network can never separate two forgers.
+// A name with no known magic is not compared by name: it could be the same
+// network under a spelling this operator does not know.
+func envNetwork(env []corev1.EnvVar, envFrom bool) string {
+	if envFrom {
+		return ""
+	}
+	var magic, name *corev1.EnvVar
+	for i := range env {
+		switch env[i].Name {
+		case "CARDANO_NETWORK_MAGIC":
+			magic = &env[i]
+		case "CARDANO_NETWORK":
+			name = &env[i]
+		}
+	}
+	if magic != nil {
+		if magic.ValueFrom != nil {
+			return ""
+		}
+		if magic.Value != "" {
+			m, err := strconv.ParseUint(magic.Value, 0, 32)
+			if err != nil {
+				return ""
+			}
+			if m != 0 {
+				return "magic:" + strconv.FormatUint(m, 10)
+			}
+		}
+	}
+	if name == nil || name.ValueFrom != nil {
+		return ""
+	}
+	if n, ok := ouroboros.NetworkByName(name.Value); ok {
+		return "magic:" + strconv.FormatUint(uint64(n.NetworkMagic), 10)
+	}
+	return ""
+}
+
+// sameNetwork reports whether two network keys may name one network. Only two
+// known, different networks separate forgers; an unknown one matches any.
+func sameNetwork(a, b string) bool {
+	return a == "" || b == "" || a == b
 }
