@@ -1345,7 +1345,8 @@ spec:
                           otherwise the pod is rolled as without this setting. A change to the VRF
                           key, the vote key, any other Secret entry or the pool always rolls the
                           pod, as does an opcert that reuses the counter the node reports loaded,
-                          or one approved before the node has reported it. Needs a Dingo version
+                          or one approved before the node has reported it, or one that replaces an
+                          unconfirmed approval without a higher counter. Needs a Dingo version
                           that reloads its credential files in place; an older one is rolled after
                           the confirmation timeout. Enabling or disabling it rolls the pod once.
                         type: boolean

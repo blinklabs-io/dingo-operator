@@ -315,6 +315,57 @@ func TestDecideKeysRollout(t *testing.T) {
 			wantApprove:  true,
 			wantPending:  true,
 		},
+		{
+			// A (counter 4) was approved and may have loaded while scrapes
+			// failed, so the loaded counter still reads 3. B reuses counter
+			// 4: a later report of 4 could come from A, so B rolls.
+			name:    "a bundle reusing an unconfirmed pending counter rolls",
+			enabled: true,
+			live:    live,
+			static:  "static",
+			pool:    "pool",
+			prev: &dingov1alpha1.InPlaceReloadStatus{
+				Checksum:    "older",
+				Counter:     4,
+				RequestedAt: metav1.NewTime(now.Add(-time.Minute)),
+			},
+			wantChecksum: "new",
+			wantStatic:   "static",
+		},
+		{
+			// A (4) and then B (5) were approved unconfirmed; C reuses A's
+			// counter, which the node may already be forging with.
+			name:    "a bundle below an unconfirmed pending counter rolls",
+			enabled: true,
+			live:    live,
+			static:  "static",
+			pool:    "pool",
+			prev: &dingov1alpha1.InPlaceReloadStatus{
+				Checksum:    "older",
+				Counter:     5,
+				RequestedAt: metav1.NewTime(now.Add(-time.Minute)),
+			},
+			wantChecksum: "new",
+			wantStatic:   "static",
+		},
+		{
+			name:    "a bundle replacing a confirmed reload loads in place",
+			enabled: true,
+			live:    live,
+			static:  "static",
+			pool:    "pool",
+			loaded:  new(int64(3)),
+			prev: &dingov1alpha1.InPlaceReloadStatus{
+				Checksum:    "older",
+				Counter:     3,
+				RequestedAt: metav1.NewTime(now.Add(-time.Hour)),
+				Applied:     true,
+			},
+			wantChecksum: "old",
+			wantStatic:   "static",
+			wantApprove:  true,
+			wantPending:  true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,4 +457,50 @@ func TestObserveLoadedOpCert(t *testing.T) {
 			assert.Equal(t, tc.wantEvent, len(recorder.Events) == 1)
 		})
 	}
+}
+
+// TestKeysReloadStaleBaseline walks the sequence where an approved bundle loads
+// while metrics scrapes fail, then a second bundle with the same counter
+// arrives. The second bundle must not be approved in place, so the first
+// successful scrape cannot confirm it before it loads.
+func TestKeysReloadStaleBaseline(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	live := liveKeys{
+		exists:   true,
+		checksum: "live",
+		static:   "static",
+		pool:     "pool",
+	}
+	dn := &dingov1alpha1.DingoNode{}
+	dn.Status.OpCert.LoadedCounter = new(int64(3))
+
+	// Bundle A, counter 4, is approved for an in-place reload.
+	a := decideKeysRollout(
+		true, live, "bundle-a", "static", "pool", 4,
+		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.InPlaceReload, now,
+	)
+	require.NotNil(t, a.pending)
+	require.True(t, a.approve)
+	dn.Status.OpCert.InPlaceReload = a.pending
+
+	// A loads, but every scrape fails: LoadedCounter stays 3. Bundle B, also
+	// counter 4, arrives.
+	b := decideKeysRollout(
+		true, live, "bundle-b", "static", "pool", 4,
+		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.InPlaceReload,
+		now.Add(time.Minute),
+	)
+	assert.Equal(t, "bundle-b", b.checksum, "B rolls the pod")
+	assert.False(t, b.approve, "B is not approved for staging in place")
+	assert.Nil(t, b.pending)
+	dn.Status.OpCert.InPlaceReload = b.pending
+
+	// The first successful scrape reports A's counter. Nothing may record B
+	// as loaded.
+	r := &DingoNodeReconciler{Recorder: events.NewFakeRecorder(1)}
+	r.observeLoadedOpCert(dn, &forgestatus.Status{
+		OpCertCounter:    4,
+		HasOpCertCounter: true,
+	})
+	assert.Nil(t, dn.Status.OpCert.InPlaceReload)
 }

@@ -106,7 +106,9 @@ type keysRollout struct {
 // starts only when the node is observed (loaded is non-nil) forging with a
 // different counter. A bundle that reuses the loaded counter, or one approved
 // while the loaded counter is unknown, could never be told apart from the keys
-// already running, so it rolls the pod instead.
+// already running, so it rolls the pod instead. So does a bundle replacing an
+// unconfirmed approval without a counter above both the approved and the loaded
+// one: the earlier bundle may have loaded unobserved.
 func decideKeysRollout(
 	enabled bool,
 	live liveKeys,
@@ -133,6 +135,14 @@ func decideKeysRollout(
 	pending := prev
 	if pending == nil || pending.Checksum != full {
 		if loaded == nil || *loaded == counter {
+			return roll
+		}
+		// An earlier approval that was never confirmed may already be
+		// loaded while the scrapes that would report it failed, so the
+		// loaded counter can be stale. Replace it in place only with a
+		// counter above both, which no bundle staged so far can report.
+		if prev != nil && !prev.Applied &&
+			(counter <= prev.Counter || counter <= *loaded) {
 			return roll
 		}
 		pending = &dingov1alpha1.InPlaceReloadStatus{
