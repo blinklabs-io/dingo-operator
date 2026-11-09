@@ -111,11 +111,14 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   fails on that skip).
 - Commits: Conventional Commits, GPG-signed (required for all Blink repos
   except `skunkworks`). Only commit when the user asks.
-- securityContext defaults: managed Dingo pods always run non-root with
+- securityContext defaults: managed Dingo containers run non-root with
   numeric IDs because `runAsNonRoot` cannot verify the image's named `dingo`
-  user. The canonical `ghcr.io/blinklabs-io/dingo` image uses `100:101` for
-  `runAsUser:runAsGroup` and `fsGroup` through v0.69.x, including `/ipc`
-  ownership; v0.70.0 and later use `1000:1000` for both the process and `/ipc`.
+  user. The one exception is the `data-volume-sticky-bit` init container, which
+  runs as root with only `CAP_FOWNER` to set the sticky bit on the fsGroup
+  data volume root (see README "Data volume permissions"). The canonical
+  `ghcr.io/blinklabs-io/dingo` image uses `100:101` for `runAsUser:runAsGroup`
+  and `fsGroup` through v0.69.x, including `/ipc` ownership; v0.70.0 and later
+  use `1000:1000` for both the process and `/ipc`.
   The operator selects the matching default from the effective image tag, with
   the omitted tag resolving to `DefaultDingoTag` (currently v0.85.0). Custom
   repositories and unrecognized tags retain the conservative `100:101`
@@ -142,7 +145,9 @@ cert-manager).
 - KES auto-evolves in memory while forging — no action within an opcert's
   ~93-day window.
 - OpCert rotation today = new KES key + new opcert (counter+1, cold-signed) →
-  replace mounted files → restart the pod. Dingo has no SIGHUP/hot-reload.
+  replace mounted files → restart the pod, unless the node reloads keys in
+  place (see "In-place reload" below). Dingo reloads its credential files on
+  SIGHUP and, with `CARDANO_SHELLEY_KEY_WATCH_INTERVAL`, when they change.
 - Startup validation is strict: opcert not expired/future, VRF hash matches the
   pool's on-chain registration, and opcert counter ≥ the on-chain observed
   counter (guards `CounterOverIncrementedOCERT`).
@@ -608,6 +613,48 @@ operator `update` on Secrets in the keys namespaces, on top of `get`.
 In every rotation mode, `validateSpec` refuses `coldSigner.profile` with a
 signer type other than bursa.
 
+### In-place reload (`rotation.reloadInPlace`)
+
+Off by default. When on, a validated bundle that changes only `kes.skey` and
+the opcert is loaded into the running node instead of rolling the pod
+(`internal/controller/keyreload.go`, `internal/resources/keyreload.go`).
+
+- Why a container is needed. Dingo reads the owner-only copies in `/keys`, not
+  the Secret volume, which the pod's `fsGroup` makes group-readable. The
+  kubelet refreshes the Secret volume in place, but nothing refreshes `/keys`.
+  `sync-block-producer-keys` runs beside Dingo and does.
+- The operator's validation still gates every bundle. The container stages the
+  Secret's `kes.skey` and certificate only when SHA-256 of the two equals the
+  digest in the `<name>-keys-approval` ConfigMap, which the operator writes
+  only for a bundle that validated. It checks the copies against the digest
+  again before they replace the live files, since the Secret volume can be
+  swapped mid-read. A rejected bundle is never approved, so it is never staged
+  into the running pod.
+- Which changes qualify. The pod template records
+  `dingo.blinklabs.io/keys-static-checksum`, the checksum of every Secret
+  entry except `kes.skey` and the opcert (the VRF key, the vote key and
+  anything else). A bundle loads in place only when that and the recorded
+  pool (`keys-pool`) still match, and the node has reported a loaded opcert
+  counter that differs from the bundle's: confirmation is by counter, so a
+  bundle reusing the loaded counter, or one approved while the counter is
+  unobserved, cannot be confirmed and rolls. Anything else rolls, as does the first
+  render after enabling the setting, which adds the container, the approval
+  volume and Dingo's watch interval.
+- While a reload is pending, the live `keys-checksum` is carried forward, so
+  the template does not change, and `status.opcert.inPlaceReload` records the
+  approved checksum, counter and time. The scrape reads
+  `dingo_forge_opcert_counter` into `status.opcert.loadedCounter`; when it
+  equals the approved counter the reload is `applied` and a
+  `KeysReloadedInPlace` Event is recorded. If it is not confirmed within
+  `keysReloadTimeout` (10 minutes: kubelet refresh, the container's 5s poll,
+  Dingo's 10s watch, the 2 minute requeue), the new checksum is rendered and
+  the pod rolls, with a `KeysReloadTimedOut` Event. A Dingo without in-place
+  reload therefore still rotates, ten minutes later.
+- Fencing is unchanged. The pool recorded on the template stays true, since a
+  reload never changes the pool, so the forger checks that read `keys-pool`
+  hold. A template that keeps an older `keys-checksum` than its Secret is
+  judged by its recorded pool, as after any KES rotation.
+
 ### HA
 
 - `SingleActive` (default): `replicas: 1` + pod anti-affinity + PDB +
@@ -627,7 +674,8 @@ signer type other than bursa.
   `MonitorOnly`/`Assisted` rotation, `SingleActive` HA.
 - P2 — full auto rotation: Bursa cold-signer, counter-safe issuance, `Auto`
   mode (pod-restart rollout). Implemented; see above.
-- P3 — `ActiveStandby` + credential hot-reload.
+- P3 — `ActiveStandby` + credential hot-reload. Hot-reload of a KES rotation
+  is implemented as `rotation.reloadInPlace` (see above).
 
 P3 depends on the upstream work below; P2's Bursa backend depends on bursa
 #1081.
@@ -636,10 +684,11 @@ P3 depends on the upstream work below; P2's Bursa backend depends on bursa
 
 Upstream support now shipped: Dingo
 [#2872](https://github.com/blinklabs-io/dingo/issues/2872) (`/healthz` and
-`/readyz`), and Dingo v0.75.0's blockfetch and ledger latency metrics are wired
-through the existing PodMonitor. Remaining Dingo dependencies: dingo
-[#2870](https://github.com/blinklabs-io/dingo/issues/2870) (credential
-hot-reload), [#2871](https://github.com/blinklabs-io/dingo/issues/2871) (expose
+`/readyz`), [#2870](https://github.com/blinklabs-io/dingo/issues/2870)
+(credential hot-reload, used by `rotation.reloadInPlace`), and Dingo v0.75.0's
+blockfetch and ledger latency metrics are wired through the existing
+PodMonitor. Remaining Dingo dependencies: dingo
+[#2871](https://github.com/blinklabs-io/dingo/issues/2871) (expose
 on-chain opcert counter), [#2873](https://github.com/blinklabs-io/dingo/issues/2873)
 (SPO forging metrics); bursa
 [#1081](https://github.com/blinklabs-io/bursa/issues/1081) (opcert issued from

@@ -1334,6 +1334,22 @@ spec:
                         - Assisted
                         - MonitorOnly
                         type: string
+                      reloadInPlace:
+                        description: |-
+                          ReloadInPlace loads a new KES key and opcert into the running node
+                          instead of rolling the pod, when only those two files change. The
+                          operator validates the keys Secret as for a roll, then approves its KES
+                          key and opcert; a container beside Dingo stages the approved files into
+                          the node's key directory, and Dingo reloads them on its credential file
+                          watch. The rotation completes when Dingo reports the new opcert counter;
+                          otherwise the pod is rolled as without this setting. A change to the VRF
+                          key, the vote key, any other Secret entry or the pool always rolls the
+                          pod, as does an opcert that reuses the counter the node reports loaded,
+                          or one approved before the node has reported it, or one that replaces an
+                          unconfirmed approval without a higher counter. Needs a Dingo version
+                          that reloads its credential files in place; an older one is rolled after
+                          the confirmation timeout. Enabling or disabling it rolls the pod once.
+                        type: boolean
                       renewBeforePeriods:
                         default: 8
                         description: RenewBeforePeriods triggers rotation when remaining
@@ -2229,9 +2245,42 @@ spec:
                 description: OpCertStatus reports operational certificate counter
                   state.
                 properties:
+                  inPlaceReload:
+                    description: |-
+                      InPlaceReload tracks the key bundle approved for an in-place reload
+                      (spec.blockProducer.rotation.reloadInPlace).
+                    properties:
+                      applied:
+                        description: Applied is set once the node reports Counter
+                          as its loaded opcert.
+                        type: boolean
+                      checksum:
+                        description: Checksum is the keys checksum of the approved
+                          bundle.
+                        type: string
+                      counter:
+                        description: Counter is the approved opcert's issue number.
+                        format: int64
+                        type: integer
+                      requestedAt:
+                        description: RequestedAt is when the bundle was approved.
+                        format: date-time
+                        type: string
+                    required:
+                    - checksum
+                    - counter
+                    - requestedAt
+                    type: object
                   lastRotated:
                     format: date-time
                     type: string
+                  loadedCounter:
+                    description: |-
+                      LoadedCounter is the issue number of the opcert the node reports it is
+                      forging with (Dingo's dingo_forge_opcert_counter). Unset means not
+                      observed; zero is a real counter.
+                    format: int64
+                    type: integer
                   onChainCounter:
                     description: |-
                       OnChainCounter is the highest opcert issue number the chain has accepted

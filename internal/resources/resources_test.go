@@ -497,11 +497,10 @@ func TestBuildStatefulSet(t *testing.T) {
 
 	t.Run("mithril init container present by default", func(t *testing.T) {
 		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
-		require.Len(t, sts.Spec.Template.Spec.InitContainers, 1)
 		assert.Equal(
 			t,
-			mithrilInitName,
-			sts.Spec.Template.Spec.InitContainers[0].Name,
+			[]string{dataStickyInitName, mithrilInitName},
+			initContainerNames(sts.Spec.Template.Spec),
 		)
 	})
 
@@ -549,8 +548,7 @@ func TestBuildStatefulSet(t *testing.T) {
 		dn := relayNode()
 		dn.Spec.ConfigRef = "devnet-config"
 		sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
-		require.Len(t, sts.Spec.Template.Spec.InitContainers, 1)
-		ic := sts.Spec.Template.Spec.InitContainers[0]
+		ic := mithrilInitContainer(t, sts.Spec.Template.Spec)
 
 		var cfg string
 		for _, e := range ic.Env {
@@ -580,7 +578,7 @@ func TestBuildStatefulSet(t *testing.T) {
 		"init container omits config bundle without a ref",
 		func(t *testing.T) {
 			sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
-			ic := sts.Spec.Template.Spec.InitContainers[0]
+			ic := mithrilInitContainer(t, sts.Spec.Template.Spec)
 			for _, e := range ic.Env {
 				assert.NotEqual(t, "CARDANO_CONFIG", e.Name)
 			}
@@ -838,6 +836,10 @@ func TestStatefulSetSecurityProfile(t *testing.T) {
 			for _, container := range append(
 				pod.Containers, pod.InitContainers...,
 			) {
+				// TestDataVolumeStickyInitContainer checks its profile.
+				if container.Name == dataStickyInitName {
+					continue
+				}
 				security := container.SecurityContext
 				require.NotNil(t, security)
 				require.NotNil(t, security.ReadOnlyRootFilesystem)

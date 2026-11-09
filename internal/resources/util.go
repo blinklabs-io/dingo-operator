@@ -119,14 +119,33 @@ func keysScript(dn *dingov1alpha1.DingoNode) string {
 	return prepareBlockProducerKeysScript
 }
 
-// initContainers prepares private key files when mounted and builds the Mithril
-// bootstrap init container when enabled. The Secret source can be widened by a
-// pod fsGroup, so Dingo reads an owner-only copy from a memory-backed volume.
+// initContainers sets the sticky bit on the data volume root, prepares private
+// key files when mounted and builds the Mithril bootstrap init container when
+// enabled. The Secret source can be widened by a pod fsGroup, so Dingo reads an
+// owner-only copy from a memory-backed volume.
 func initContainers(
 	dn *dingov1alpha1.DingoNode,
 	opts RenderOptions,
 ) []corev1.Container {
-	var containers []corev1.Container
+	// The fsGroup volume root is group-writable and setgid. Dingo refuses a
+	// group-writable ancestor without the sticky bit, since any other member
+	// of the group could rename entries under it. The kubelet's fsGroup
+	// permission change keeps a sticky bit that is already set.
+	containers := []corev1.Container{{
+		Name:            dataStickyInitName,
+		Image:           imageRef(dn),
+		ImagePullPolicy: pullPolicy(dn),
+		Command: []string{
+			"/bin/sh",
+			"-c",
+			"[ -k " + dataMountPath + " ] || chmod +t " + dataMountPath,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: opts.dataVolume(), MountPath: dataMountPath},
+		},
+		SecurityContext: dataStickySecurityContext(),
+		Resources:       dn.Spec.Resources,
+	}}
 	if mountsBlockProducerKeys(dn, opts) {
 		containers = append(containers, corev1.Container{
 			Name:            keysInitName,

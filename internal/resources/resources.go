@@ -61,9 +61,10 @@ const (
 	// (config.json + genesis files) referenced by spec.configRef changes.
 	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
 
-	containerName   = "dingo"
-	keysInitName    = "prepare-block-producer-keys"
-	mithrilInitName = "mithril-sync"
+	containerName      = "dingo"
+	keysInitName       = "prepare-block-producer-keys"
+	mithrilInitName    = "mithril-sync"
+	dataStickyInitName = "data-volume-sticky-bit"
 
 	// DefaultDataVolumeName names the data volume claim template of new
 	// StatefulSets. It matches the dingo Helm chart, so claims are
@@ -397,6 +398,9 @@ type RenderOptions struct {
 	KeysChecksum string
 	// KeysPool is the pool of the keys behind KeysChecksum.
 	KeysPool string
+	// KeysStaticChecksum is the checksum of the key material an in-place
+	// reload cannot change, recorded on templates that reload keys in place.
+	KeysStaticChecksum string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
 	// SigningAgentCertChecksum triggers a rollout when the signing agent
@@ -541,6 +545,12 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 	if voteKey {
 		env = append(env, corev1.EnvVar{Name: VoteKeyEnv, Value: VoteKeyPath})
 	}
+	if reloadsKeysInPlace(dn, opts) {
+		env = append(env, corev1.EnvVar{
+			Name:  KeyWatchIntervalEnv,
+			Value: keyWatchInterval,
+		})
+	}
 	env = append(env, apiEnv(dn)...)
 	env = mergeEnv(env, dn.Spec.Environment)
 	// The gate applies to the merged result too: a spec.environment override
@@ -618,6 +628,21 @@ func containerSecurityContext() *corev1.SecurityContext {
 	}
 }
 
+// dataStickySecurityContext runs as root with CAP_FOWNER alone, which lets
+// chmod set the sticky bit on a volume root another UID owns.
+func dataStickySecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: new(false),
+		ReadOnlyRootFilesystem:   new(true),
+		RunAsNonRoot:             new(false),
+		RunAsUser:                new(int64(0)),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{"FOWNER"},
+		},
+	}
+}
+
 // BuildStatefulSet constructs the StatefulSet for a DingoNode.
 func BuildStatefulSet(
 	dn *dingov1alpha1.DingoNode,
@@ -636,6 +661,9 @@ func BuildStatefulSet(
 	}
 	if opts.KeysPool != "" {
 		podAnnotations[KeysPoolAnnotation] = opts.KeysPool
+	}
+	if opts.KeysStaticChecksum != "" && reloadsKeysInPlace(dn, opts) {
+		podAnnotations[KeysStaticChecksumAnnotation] = opts.KeysStaticChecksum
 	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
@@ -665,7 +693,7 @@ func BuildStatefulSet(
 		ServiceAccountName:            dn.Name,
 		SecurityContext:               podSecurityContext(dn),
 		InitContainers:                initContainers(dn, opts),
-		Containers:                    []corev1.Container{container},
+		Containers:                    podContainers(dn, opts, container),
 		Volumes:                       volumes(dn, opts),
 		NodeSelector:                  dn.Spec.NodeSelector,
 		Tolerations:                   dn.Spec.Tolerations,
@@ -931,6 +959,9 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 				},
 			},
 		})
+	}
+	if reloadsKeysInPlace(dn, opts) {
+		vols = append(vols, keysApprovalVolume(dn))
 	}
 	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
 		vols = append(vols, corev1.Volume{

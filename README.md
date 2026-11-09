@@ -37,9 +37,22 @@ operators.
   rolled onto a template that cannot mount it. The certificate may be named `opcert.cert` or `node.cert` (the dingo
   Helm chart's name), so a chart key Secret works unchanged; if both are present
   they must be identical, and it is staged at `/keys/opcert.cert` either way.
-  The live pod keeps its staged keys when the Secret changes. Any later pod
+  The live pod keeps its staged keys when the Secret changes (unless
+  `reloadInPlace`, below, loads a validated KES key and opcert). Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
+  With `spec.blockProducer.rotation.reloadInPlace: true`, a validated bundle
+  that changes only the KES key and opcert is loaded into the running node
+  instead of rolling the pod: after validating it, the operator records its
+  digest in the `<name>-keys-approval` ConfigMap, a `sync-block-producer-keys`
+  container stages it into `/keys`, and Dingo reloads it on its credential file
+  watch. The rotation completes when the node reports the new opcert counter
+  (`status.opcert.loadedCounter`); if it does not within 10 minutes, the pod is
+  rolled. A change to any other Secret entry (VRF key, vote key), a new pool,
+  or an opcert that reuses the loaded counter (or one approved before the node
+  has reported its counter, or one replacing an unconfirmed approval without a
+  higher counter) always rolls the pod. It needs a
+  Dingo version that reloads credential files in place.
   An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
   text envelope or raw hex scalar; `bls.skey`, the dingo Helm chart's name, is
   accepted in its place, and both may be present only if identical) is staged the same way and wired to
@@ -349,6 +362,23 @@ StatefulSet claim templates remain immutable at their original size. A new
 ordinal on an existing StatefulSet initially requests that template size; the
 operator expands its claim on a subsequent reconciliation. Reconciliation polls
 every two minutes. Plan replica increases with this asynchronous delay in mind.
+
+### Data volume permissions
+
+Pods run with `securityContext.fsGroup`, so the kubelet makes the data volume
+root (`/data`) group-writable and setgid. Dingo refuses a group- or
+other-writable ancestor without the sticky bit, because another member of the
+group could rename entries under it. The first init container,
+`data-volume-sticky-bit`, therefore runs `chmod +t /data` when the bit is not
+already set. The kubelet's fsGroup permission change keeps the bit. It runs in
+the node's Dingo image, so a custom image must provide `/bin/sh` and `chmod`, as
+the `mithril-sync` and key preparation init containers already require.
+
+The volume root is usually owned by root, so this container runs as UID 0 with
+only `CAP_FOWNER`: every other capability is dropped, the root filesystem is
+read-only and privilege escalation is disabled. The pod therefore needs a
+namespace that admits the `baseline` Pod Security Standard; `restricted` refuses
+a root container.
 
 ### Sizing and health
 

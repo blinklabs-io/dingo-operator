@@ -44,6 +44,9 @@ const (
 	metricSlotNum        = "cardano_node_metrics_slotNum_int"
 	metricPipelineStuck  = "dingo_ledger_pipeline_stuck"
 	metricPipelineHalted = "dingo_ledger_pipeline_halted"
+	// The issue counter of the opcert the forger is using, which changes when
+	// Dingo reloads its credentials in place.
+	metricOpCertCounter = "dingo_forge_opcert_counter"
 )
 
 // Status is the observed forge/KES state of a node.
@@ -71,6 +74,10 @@ type Status struct {
 	// present.
 	TipSlot    int64
 	HasTipSlot bool
+	// OpCertCounter is the issue counter of the opcert the node forges with;
+	// HasOpCertCounter reports whether the gauge was present.
+	OpCertCounter    int64
+	HasOpCertCounter bool
 }
 
 // Fetcher retrieves forge status from a node's metrics endpoint.
@@ -157,6 +164,9 @@ func Parse(r io.Reader) (*Status, error) {
 		case metricPipelineHalted:
 			s.HasPipelineHaltedMetric = true
 			s.PipelineHalted = v != 0
+		case metricOpCertCounter:
+			s.OpCertCounter = int64(v)
+			s.HasOpCertCounter = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
