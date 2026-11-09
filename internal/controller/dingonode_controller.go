@@ -750,6 +750,36 @@ func (r *DingoNodeReconciler) missingKeys(
 	})
 }
 
+// statefulSetReady reports whether the StatefulSet has the desired number of
+// ready pods and has finished rolling out its current spec. ReadyReplicas alone
+// stays at the desired count while the controller replaces pods one by one, and
+// before it has observed a new generation, so it would report Ready through a
+// rollout.
+func statefulSetReady(sts *appsv1.StatefulSet, desired int32) bool {
+	st := sts.Status
+	if st.ObservedGeneration < sts.Generation {
+		return false
+	}
+	if st.ReadyReplicas == 0 || st.ReadyReplicas != desired {
+		return false
+	}
+	return st.UpdateRevision != "" && st.CurrentRevision == st.UpdateRevision
+}
+
+// statefulSetRollingOut reports whether the StatefulSet is moving to a new
+// spec, judged from generation and revision alone. It must not depend on the
+// ready count: replacing the only pod drops ReadyReplicas to zero, which is
+// exactly when the rollout should be reported. A StatefulSet that has not
+// reported a revision yet (a first create) is not rolling out.
+func statefulSetRollingOut(sts *appsv1.StatefulSet) bool {
+	st := sts.Status
+	if st.ObservedGeneration > 0 && st.ObservedGeneration < sts.Generation {
+		return true
+	}
+	return st.CurrentRevision != "" && st.UpdateRevision != "" &&
+		st.CurrentRevision != st.UpdateRevision
+}
+
 // reconcileStatus refreshes the DingoNode status from live children.
 func (r *DingoNodeReconciler) reconcileStatus(
 	ctx context.Context,
@@ -757,9 +787,10 @@ func (r *DingoNodeReconciler) reconcileStatus(
 ) error {
 	sts := &appsv1.StatefulSet{}
 	ready := false
+	rollingOut := false
 	if err := r.Get(ctx, types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}, sts); err == nil {
-		ready = sts.Status.ReadyReplicas > 0 &&
-			sts.Status.ReadyReplicas == desiredReplicas(dn)
+		ready = statefulSetReady(sts, desiredReplicas(dn))
+		rollingOut = !ready && statefulSetRollingOut(sts)
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -777,8 +808,15 @@ func (r *DingoNodeReconciler) reconcileStatus(
 		dn.Status.Conditions,
 		condPipelineHealthy,
 	)
+	// A refused key bundle leaves the pod Ready on its last accepted keys, but
+	// rotation has stopped, so the node is not healthy and must not be
+	// reported as Forging.
+	keysRefused := meta.IsStatusConditionFalse(
+		dn.Status.Conditions,
+		condKeysValid,
+	)
 	switch {
-	case ready && wedged:
+	case ready && (wedged || keysRefused):
 		dn.Status.Phase = "Degraded"
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type: condReady, Status: metav1.ConditionTrue, Reason: "StatefulSetReady",
@@ -792,6 +830,12 @@ func (r *DingoNodeReconciler) reconcileStatus(
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type: condReady, Status: metav1.ConditionTrue, Reason: "StatefulSetReady",
 			Message: "node is ready", ObservedGeneration: dn.Generation,
+		})
+	case rollingOut:
+		dn.Status.Phase = "Pending"
+		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+			Type: condReady, Status: metav1.ConditionFalse, Reason: "RolloutInProgress",
+			Message: "waiting for the StatefulSet rollout to complete", ObservedGeneration: dn.Generation,
 		})
 	default:
 		dn.Status.Phase = "Pending"
