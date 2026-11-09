@@ -471,6 +471,11 @@ func (in *OpCertStatus) DeepCopyInto(out *OpCertStatus) {
 		*out = new(int64)
 		**out = **in
 	}
+	if in.RolledCounter != nil {
+		in, out := &in.RolledCounter, &out.RolledCounter
+		*out = new(int64)
+		**out = **in
+	}
 	if in.InPlaceReload != nil {
 		in, out := &in.InPlaceReload, &out.InPlaceReload
 		*out = new(InPlaceReloadStatus)

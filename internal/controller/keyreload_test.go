@@ -375,7 +375,7 @@ func TestDecideKeysRollout(t *testing.T) {
 			}
 			got := decideKeysRollout(
 				tc.enabled, tc.live, "new", tc.static, tc.pool, 4, loaded,
-				tc.prev, now,
+				nil, tc.prev, now,
 			)
 			assert.Equal(t, tc.wantChecksum, got.checksum)
 			assert.Equal(t, tc.wantStatic, got.static)
@@ -477,7 +477,8 @@ func TestKeysReloadStaleBaseline(t *testing.T) {
 	// Bundle A, counter 4, is approved for an in-place reload.
 	a := decideKeysRollout(
 		true, live, "bundle-a", "static", "pool", 4,
-		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.InPlaceReload, now,
+		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+		dn.Status.OpCert.InPlaceReload, now,
 	)
 	require.NotNil(t, a.pending)
 	require.True(t, a.approve)
@@ -487,8 +488,8 @@ func TestKeysReloadStaleBaseline(t *testing.T) {
 	// counter 4, arrives.
 	b := decideKeysRollout(
 		true, live, "bundle-b", "static", "pool", 4,
-		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.InPlaceReload,
-		now.Add(time.Minute),
+		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+		dn.Status.OpCert.InPlaceReload, now.Add(time.Minute),
 	)
 	assert.Equal(t, "bundle-b", b.checksum, "B rolls the pod")
 	assert.False(t, b.approve, "B is not approved for staging in place")
@@ -503,4 +504,236 @@ func TestKeysReloadStaleBaseline(t *testing.T) {
 		HasOpCertCounter: true,
 	})
 	assert.Nil(t, dn.Status.OpCert.InPlaceReload)
+}
+
+// TestKeysReloadAfterRoll walks the sequence where the pod rolls onto a bundle
+// and the scrapes of the new pod fail, so the loaded counter still holds the
+// outgoing pod's. A next bundle reusing the counter rolled onto must not be
+// approved in place: the new pod reports that counter from the bundle it
+// started with, which would confirm a reload that never happened.
+func TestKeysReloadAfterRoll(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	dn := &dingov1alpha1.DingoNode{}
+	dn.Status.OpCert.LoadedCounter = new(int64(3))
+
+	// Bundle 1, counter 4, changes the VRF key, so the pod rolls onto it.
+	live := liveKeys{
+		exists:   true,
+		checksum: "bundle-0",
+		static:   "static",
+		pool:     "pool",
+	}
+	b1 := decideKeysRollout(
+		true, live, "bundle-1", "static-2", "pool", 4,
+		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+		dn.Status.OpCert.InPlaceReload, now,
+	)
+	require.Equal(t, "bundle-1", b1.checksum, "bundle 1 rolls the pod")
+	dn.Status.OpCert.InPlaceReload = b1.pending
+	dn.Status.OpCert.RolledCounter = b1.rolled
+
+	// The new pod staged bundle 1 at start, but every scrape fails: the
+	// loaded counter stays 3. Bundle 2, also counter 4, arrives.
+	live = liveKeys{
+		exists:   true,
+		checksum: "bundle-1",
+		static:   "static-2",
+		pool:     "pool",
+	}
+	b2 := decideKeysRollout(
+		true, live, "bundle-2", "static-2", "pool", 4,
+		dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+		dn.Status.OpCert.InPlaceReload, now.Add(time.Minute),
+	)
+	assert.Equal(t, "bundle-2", b2.checksum, "bundle 2 rolls the pod")
+	assert.False(t, b2.approve, "bundle 2 is not approved for staging in place")
+	assert.Nil(t, b2.pending)
+	dn.Status.OpCert.InPlaceReload = b2.pending
+
+	// The first successful scrape reports bundle 1's counter. Nothing may
+	// record bundle 2 as loaded.
+	r := &DingoNodeReconciler{Recorder: events.NewFakeRecorder(1)}
+	r.observeLoadedOpCert(dn, &forgestatus.Status{
+		OpCertCounter:    4,
+		HasOpCertCounter: true,
+	})
+	assert.Nil(t, dn.Status.OpCert.InPlaceReload)
+}
+
+// TestKeysReloadAfterRollOutgoingScrape covers scrapes that still reach the
+// outgoing pod after a roll. A counter other than the rolled one leaves the
+// guard in place; a bundle above it loads in place, and its confirmation ends
+// the guard.
+func TestKeysReloadAfterRollOutgoingScrape(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	r := &DingoNodeReconciler{Recorder: events.NewFakeRecorder(2)}
+	report := func(dn *dingov1alpha1.DingoNode, counter int64) {
+		r.observeLoadedOpCert(dn, &forgestatus.Status{
+			OpCertCounter:    counter,
+			HasOpCertCounter: true,
+		})
+	}
+	live := liveKeys{
+		exists:   true,
+		checksum: "bundle-1",
+		static:   "static",
+		pool:     "pool",
+	}
+	decide := func(dn *dingov1alpha1.DingoNode, full string, counter int64) keysRollout {
+		out := decideKeysRollout(
+			true, live, full, "static", "pool", counter,
+			dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+			dn.Status.OpCert.InPlaceReload, now,
+		)
+		dn.Status.OpCert.InPlaceReload = out.pending
+		dn.Status.OpCert.RolledCounter = out.rolled
+		return out
+	}
+
+	t.Run("a different counter keeps the guard", func(t *testing.T) {
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(3))
+		dn.Status.OpCert.RolledCounter = new(int64(4))
+		report(dn, 3)
+		require.NotNil(t, dn.Status.OpCert.RolledCounter)
+		out := decide(dn, "bundle-2", 4)
+		assert.Equal(t, "bundle-2", out.checksum, "a reused counter rolls")
+	})
+
+	t.Run("a higher counter loads in place and clears", func(t *testing.T) {
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(3))
+		dn.Status.OpCert.RolledCounter = new(int64(4))
+		out := decide(dn, "bundle-2", 5)
+		assert.Equal(t, "bundle-1", out.checksum, "the pod keeps running")
+		require.NotNil(t, out.pending)
+		require.NotNil(t, dn.Status.OpCert.RolledCounter)
+		assert.Equal(t, int64(4), *dn.Status.OpCert.RolledCounter)
+		report(dn, 4)
+		assert.Nil(t, dn.Status.OpCert.RolledCounter)
+		assert.False(t, dn.Status.OpCert.InPlaceReload.Applied)
+		report(dn, 5)
+		assert.True(t, dn.Status.OpCert.InPlaceReload.Applied)
+	})
+
+	t.Run("confirming a reload clears the guard", func(t *testing.T) {
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(3))
+		dn.Status.OpCert.RolledCounter = new(int64(4))
+		decide(dn, "bundle-2", 5)
+		report(dn, 5)
+		assert.True(t, dn.Status.OpCert.InPlaceReload.Applied)
+		assert.Nil(t, dn.Status.OpCert.RolledCounter)
+	})
+
+	t.Run("an equal outgoing counter still rolls a reuse", func(t *testing.T) {
+		// The pod rolled onto a bundle with the counter it already had.
+		// The outgoing pod's report clears the guard, and the loaded
+		// counter check refuses a bundle reusing it.
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(4))
+		dn.Status.OpCert.RolledCounter = new(int64(4))
+		report(dn, 4)
+		assert.Nil(t, dn.Status.OpCert.RolledCounter)
+		out := decide(dn, "bundle-2", 4)
+		assert.Equal(t, "bundle-2", out.checksum)
+		assert.Nil(t, out.pending)
+	})
+}
+
+// TestDecideKeysRolloutRolledCounter covers when the rolled counter is set
+// and when it is carried forward.
+func TestDecideKeysRolloutRolledCounter(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	live := liveKeys{
+		exists:   true,
+		checksum: "old",
+		static:   "static",
+		pool:     "pool",
+	}
+	tests := []struct {
+		name    string
+		enabled bool
+		live    liveKeys
+		static  string
+		prev    *dingov1alpha1.InPlaceReloadStatus
+		rolled  *int64
+		want    *int64
+	}{
+		{
+			name:    "a first render starts the pod on the bundle",
+			enabled: true,
+			live:    liveKeys{},
+			static:  "static",
+			want:    new(int64(4)),
+		},
+		{
+			name:    "a roll records the bundle counter",
+			enabled: true,
+			live:    live,
+			static:  "static-2",
+			rolled:  new(int64(2)),
+			want:    new(int64(4)),
+		},
+		{
+			name:    "reload in place disabled records nothing",
+			enabled: false,
+			live:    live,
+			static:  "static",
+			rolled:  new(int64(2)),
+		},
+		{
+			name:    "a timed out reload rolls and records it",
+			enabled: true,
+			live:    live,
+			static:  "static",
+			prev: &dingov1alpha1.InPlaceReloadStatus{
+				Checksum:    "new",
+				Counter:     4,
+				RequestedAt: metav1.NewTime(now.Add(-keysReloadTimeout - time.Second)),
+			},
+			want: new(int64(4)),
+		},
+		{
+			name:    "an in-place load keeps the previous value",
+			enabled: true,
+			live:    live,
+			static:  "static",
+			rolled:  new(int64(2)),
+			want:    new(int64(2)),
+		},
+		{
+			name:    "a staged bundle keeps the previous value",
+			enabled: true,
+			live: liveKeys{
+				exists:   true,
+				checksum: "new",
+				static:   "static",
+				pool:     "pool",
+			},
+			static: "static",
+			rolled: new(int64(4)),
+			want:   new(int64(4)),
+		},
+		{
+			name:    "a staged bundle keeps an absent value",
+			enabled: true,
+			live: liveKeys{
+				exists:   true,
+				checksum: "new",
+				static:   "static",
+				pool:     "pool",
+			},
+			static: "static",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideKeysRollout(
+				tc.enabled, tc.live, "new", tc.static, "pool", 4,
+				new(int64(1)), tc.rolled, tc.prev, now,
+			)
+			assert.Equal(t, tc.want, got.rolled)
+		})
+	}
 }

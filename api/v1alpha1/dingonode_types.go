@@ -293,7 +293,9 @@ type RotationSpec struct {
 	// key, the vote key, any other Secret entry or the pool always rolls the
 	// pod, as does an opcert that reuses the counter the node reports loaded,
 	// or one approved before the node has reported it, or one that replaces an
-	// unconfirmed approval without a higher counter. Needs a Dingo version
+	// unconfirmed approval without a higher counter, or one that follows a roll
+	// without a counter above the rolled one before the node reports that
+	// (status.opcert.rolledCounter). Needs a Dingo version
 	// that reloads its credential files in place; an older one is rolled after
 	// the confirmation timeout. Enabling or disabling it rolls the pod once.
 	// +optional
@@ -697,6 +699,12 @@ type OpCertStatus struct {
 	// observed; zero is a real counter.
 	// +optional
 	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
+	// RolledCounter is the issue number of the opcert in the bundle the pod
+	// last started with, until the node reports it loaded. Until then
+	// LoadedCounter may still be the outgoing pod's, so a bundle loads in place
+	// only with a counter above both.
+	// +optional
+	RolledCounter *int64 `json:"rolledCounter,omitempty"`
 	// InPlaceReload tracks the key bundle approved for an in-place reload
 	// (spec.blockProducer.rotation.reloadInPlace).
 	// +optional

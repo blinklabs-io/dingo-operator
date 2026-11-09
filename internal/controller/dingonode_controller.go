@@ -505,12 +505,14 @@ func (r *DingoNodeReconciler) reconcileResources(
 					resources.ReloadsKeysInPlace(dn), live,
 					keysChecksum(secret), staticKeysChecksum(secret.Data),
 					pool, state.Counter, dn.Status.OpCert.LoadedCounter,
+					dn.Status.OpCert.RolledCounter,
 					dn.Status.OpCert.InPlaceReload, r.now(),
 				)
 				opts.KeysChecksum = rollout.checksum
 				opts.KeysStaticChecksum = rollout.static
 				opts.KeysPool = pool
 				dn.Status.OpCert.InPlaceReload = rollout.pending
+				dn.Status.OpCert.RolledCounter = rollout.rolled
 				if rollout.approve {
 					if err := r.upsertKeysApprovalConfigMap(
 						ctx, dn, approvedKeysDigest(secret.Data),

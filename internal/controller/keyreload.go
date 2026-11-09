@@ -94,6 +94,11 @@ type keysRollout struct {
 	// timedOut reports that an approved reload was not confirmed in time and
 	// the pod is rolled instead.
 	timedOut bool
+	// rolled is the status.opcert.rolledCounter to record: with reload in
+	// place enabled, the counter of the bundle a pod starts with when the
+	// rendered checksum differs from the live one, otherwise the previous
+	// value; nil when disabled.
+	rolled *int64
 }
 
 // decideKeysRollout chooses between rolling the pod onto a validated bundle and
@@ -109,12 +114,45 @@ type keysRollout struct {
 // already running, so it rolls the pod instead. So does a bundle replacing an
 // unconfirmed approval without a counter above both the approved and the loaded
 // one: the earlier bundle may have loaded unobserved.
+//
+// After a roll, until the node reports the counter of the bundle the pod
+// started with (rolled), the loaded counter may still be the outgoing pod's:
+// the scrape cannot tell the two pods apart. A bundle then loads in place only
+// with a counter above both, which neither pod can report before it loads.
 func decideKeysRollout(
 	enabled bool,
 	live liveKeys,
 	full, static, pool string,
 	counter int64,
-	loaded *int64,
+	loaded, rolled *int64,
+	prev *dingov1alpha1.InPlaceReloadStatus,
+	now time.Time,
+) keysRollout {
+	out := decideKeysLoad(
+		enabled, live, full, static, pool, counter, loaded, rolled, prev, now,
+	)
+	switch {
+	case !enabled:
+		// Nothing loads in place, so every pod runs the template's bundle.
+		// After enabling, a pod rolled onto that same bundle reports the
+		// counter the outgoing one did, and a new bundle records its own.
+		out.rolled = nil
+	case !live.exists || out.checksum != live.checksum:
+		// The pod starts with this bundle.
+		out.rolled = new(counter)
+	default:
+		out.rolled = rolled
+	}
+	return out
+}
+
+// decideKeysLoad is decideKeysRollout without the rolled counter bookkeeping.
+func decideKeysLoad(
+	enabled bool,
+	live liveKeys,
+	full, static, pool string,
+	counter int64,
+	loaded, rolled *int64,
 	prev *dingov1alpha1.InPlaceReloadStatus,
 	now time.Time,
 ) keysRollout {
@@ -143,6 +181,11 @@ func decideKeysRollout(
 		// counter above both, which no bundle staged so far can report.
 		if prev != nil && !prev.Applied &&
 			(counter <= prev.Counter || counter <= *loaded) {
+			return roll
+		}
+		// Likewise after a roll the node has not been seen to report:
+		// the loaded counter may be the outgoing pod's.
+		if rolled != nil && (counter <= *rolled || counter <= *loaded) {
 			return roll
 		}
 		pending = &dingov1alpha1.InPlaceReloadStatus{
@@ -220,8 +263,9 @@ func (r *DingoNodeReconciler) upsertKeysApprovalConfigMap(
 	})
 }
 
-// observeLoadedOpCert records the opcert counter the node reports and confirms
-// a pending in-place reload once that counter is the approved one.
+// observeLoadedOpCert records the opcert counter the node reports, clears the
+// rolled counter once the node reports it, and confirms a pending in-place
+// reload once that counter is the approved one.
 func (r *DingoNodeReconciler) observeLoadedOpCert(
 	dn *dingov1alpha1.DingoNode,
 	st *forgestatus.Status,
@@ -230,12 +274,20 @@ func (r *DingoNodeReconciler) observeLoadedOpCert(
 		return
 	}
 	dn.Status.OpCert.LoadedCounter = new(st.OpCertCounter)
+	// Only an equal counter clears it: the outgoing pod may report any other.
+	if rc := dn.Status.OpCert.RolledCounter; rc != nil &&
+		*rc == st.OpCertCounter {
+		dn.Status.OpCert.RolledCounter = nil
+	}
 	pending := dn.Status.OpCert.InPlaceReload
 	if pending == nil || pending.Applied ||
 		st.OpCertCounter != pending.Counter {
 		return
 	}
 	pending.Applied = true
+	// The approval was made with a counter above the rolled one, so the node
+	// is past the bundle it rolled onto.
+	dn.Status.OpCert.RolledCounter = nil
 	if r.Recorder != nil {
 		r.Recorder.Eventf(
 			dn, nil, corev1.EventTypeNormal, "KeysReloadedInPlace",
