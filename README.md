@@ -61,8 +61,9 @@ operators.
   The link is TLS unless `plaintext` is set; `serverSpkiSha256` pins the
   agent's key, and `clientCertSecretRef` names a Secret with `tls.crt` and
   `tls.key`, mounted read-only and read by the operator with the same grant
-  as the keys Secret. While that Secret is missing or holds only half the
-  pair, the pod template is held as for a refused keys bundle. Dingo loads the
+  as the keys Secret. While that Secret is missing, holds only half the pair,
+  or does not load as a matching PEM pair, the pod template is held as for a
+  refused keys bundle. Dingo loads the
   client certificate at startup, so a renewed one takes effect when the pod
   restarts.
   `plaintext` takes neither a pin nor a client certificate, and

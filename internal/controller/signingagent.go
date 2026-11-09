@@ -17,10 +17,12 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -43,7 +45,8 @@ const reasonSigningAgentCertInvalid = "SigningAgentCertInvalid"
 
 // validateSigningAgent mirrors the checks Dingo applies to a remote KES agent
 // at startup, so a spec it would refuse is refused here instead of
-// crash-looping the forging pod.
+// crash-looping the forging pod. It also refuses a port that is not a number
+// from 1 to 65535, which Dingo accepts at startup but cannot dial.
 func validateSigningAgent(bp *dingov1alpha1.BlockProducerSpec) error {
 	sa := bp.SigningAgent
 	if sa == nil {
@@ -63,6 +66,13 @@ func validateSigningAgent(bp *dingov1alpha1.BlockProducerSpec) error {
 	if err != nil || host == "" || port == "" {
 		return fmt.Errorf(
 			"spec.blockProducer.signingAgent.address %q must be host:port",
+			sa.Address,
+		)
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return fmt.Errorf(
+			"spec.blockProducer.signingAgent.address %q must have a port "+
+				"from 1 to 65535",
 			sa.Address,
 		)
 	}
@@ -87,9 +97,10 @@ func validateSigningAgent(bp *dingov1alpha1.BlockProducerSpec) error {
 }
 
 // checkSigningAgentCertData describes what an agent client certificate Secret
-// lacks, or returns "" when it holds both halves of the pair. Dingo refuses a
-// certificate without its key and the reverse, and the volume mount fails on
-// either missing.
+// lacks, or returns "" when it holds a usable certificate and key pair. Dingo
+// refuses a certificate without its key and the reverse, and one it cannot
+// load as a pair, and the volume mount fails on either file missing. Expiry
+// and the issuer are left to the TLS handshake.
 func checkSigningAgentCertData(name string, data map[string][]byte) string {
 	var missing []string
 	for _, k := range []string{
@@ -105,6 +116,16 @@ func checkSigningAgentCertData(name string, data map[string][]byte) string {
 			"signing agent client certificate Secret %q is missing %s; "+
 				"tls.crt and tls.key are set as a pair",
 			name, strings.Join(missing, ", "),
+		)
+	}
+	if _, err := tls.X509KeyPair(
+		data[corev1.TLSCertKey],
+		data[corev1.TLSPrivateKeyKey],
+	); err != nil {
+		return fmt.Sprintf(
+			"signing agent client certificate Secret %q does not hold a "+
+				"usable PEM certificate and matching key: %v",
+			name, err,
 		)
 	}
 	return ""

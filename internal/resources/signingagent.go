@@ -17,6 +17,7 @@ package resources
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -56,10 +57,11 @@ func signingAgentEnv(sa *dingov1alpha1.SigningAgentSpec) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: signingAgentAddressEnv, Value: sa.Address},
 	}
-	if sa.ServerSPKISHA256 != "" {
+	// The pin is validated trimmed, so it is rendered trimmed.
+	if pin := strings.TrimSpace(sa.ServerSPKISHA256); pin != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  signingAgentPinEnv,
-			Value: sa.ServerSPKISHA256,
+			Value: pin,
 		})
 	}
 	if sa.Plaintext {

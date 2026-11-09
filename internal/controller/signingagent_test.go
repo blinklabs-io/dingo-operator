@@ -15,11 +15,18 @@
 package controller
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/pem"
 	"maps"
+	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
@@ -290,6 +297,39 @@ func TestValidateSpecSigningAgent(t *testing.T) {
 			wantErr: "host:port",
 		},
 		{
+			name: "address with a non-numeric port",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.SigningAgent.Address = "kes-agent:http"
+			},
+			wantErr: "port from 1 to 65535",
+		},
+		{
+			name: "address with port 0",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.SigningAgent.Address = "kes-agent:0"
+			},
+			wantErr: "port from 1 to 65535",
+		},
+		{
+			name: "address with a port above 65535",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.SigningAgent.Address = "kes-agent:65536"
+			},
+			wantErr: "port from 1 to 65535",
+		},
+		{
+			name: "address with port 65535",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.SigningAgent.Address = "kes-agent:65535"
+			},
+		},
+		{
+			name: "padded pin",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.SigningAgent.ServerSPKISHA256 = " " + testSPKIPin + " "
+			},
+		},
+		{
 			name: "plaintext with a pin",
 			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
 				bp.SigningAgent.Plaintext = true
@@ -345,9 +385,30 @@ func TestValidateSpecSigningAgent(t *testing.T) {
 	})
 }
 
+// testClientCertPair returns a PEM self-signed client certificate and its key.
+func testClientCertPair(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "producer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+}
+
 func TestCheckSigningAgentCertData(t *testing.T) {
 	t.Parallel()
-	pem := []byte("pem")
+	crt, key := testClientCertPair(t)
+	_, otherKey := testClientCertPair(t)
 	for _, tc := range []struct {
 		name string
 		data map[string][]byte
@@ -355,22 +416,35 @@ func TestCheckSigningAgentCertData(t *testing.T) {
 	}{
 		{
 			name: "both halves",
-			data: map[string][]byte{"tls.crt": pem, "tls.key": pem},
+			data: map[string][]byte{"tls.crt": crt, "tls.key": key},
 		},
 		{
 			name: "certificate only",
-			data: map[string][]byte{"tls.crt": pem},
+			data: map[string][]byte{"tls.crt": crt},
 			want: "missing tls.key",
 		},
 		{
 			name: "key only",
-			data: map[string][]byte{"tls.key": pem},
+			data: map[string][]byte{"tls.key": key},
 			want: "missing tls.crt",
 		},
 		{
 			name: "empty certificate",
-			data: map[string][]byte{"tls.crt": {}, "tls.key": pem},
+			data: map[string][]byte{"tls.crt": {}, "tls.key": key},
 			want: "missing tls.crt",
+		},
+		{
+			name: "not PEM",
+			data: map[string][]byte{
+				"tls.crt": []byte("cert"),
+				"tls.key": []byte("key"),
+			},
+			want: "usable PEM certificate and matching key",
+		},
+		{
+			name: "key of another certificate",
+			data: map[string][]byte{"tls.crt": crt, "tls.key": otherKey},
+			want: "usable PEM certificate and matching key",
 		},
 		{
 			name: "neither",

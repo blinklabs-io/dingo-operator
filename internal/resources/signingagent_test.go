@@ -105,6 +105,30 @@ func TestBuildEnvSigningAgent(t *testing.T) {
 		assert.NotContains(t, env, signingAgentPinEnv)
 	})
 
+	t.Run("padded pin rendered trimmed", func(t *testing.T) {
+		t.Parallel()
+		env := envMap(
+			agentNode(dingov1alpha1.SigningAgentSpec{
+				Address:          "kes-agent:7000",
+				ServerSPKISHA256: " " + testAgentPin + "\n",
+			}),
+			RenderOptions{MountKeys: true},
+		)
+		assert.Equal(t, testAgentPin, env[signingAgentPinEnv])
+	})
+
+	t.Run("blank pin renders no pin", func(t *testing.T) {
+		t.Parallel()
+		env := envMap(
+			agentNode(dingov1alpha1.SigningAgentSpec{
+				Address:          "kes-agent:7000",
+				ServerSPKISHA256: "  ",
+			}),
+			RenderOptions{MountKeys: true},
+		)
+		assert.NotContains(t, env, signingAgentPinEnv)
+	})
+
 	t.Run("client certificate files", func(t *testing.T) {
 		t.Parallel()
 		env := envMap(
@@ -161,6 +185,8 @@ func TestSigningAgentCertVolume(t *testing.T) {
 	require.NotNil(t, vol)
 	require.NotNil(t, vol.Secret)
 	assert.Equal(t, "agent-client", vol.Secret.SecretName)
+	require.NotNil(t, vol.Secret.DefaultMode)
+	assert.Equal(t, int32(0o440), *vol.Secret.DefaultMode)
 	assert.Equal(
 		t,
 		[]corev1.KeyToPath{

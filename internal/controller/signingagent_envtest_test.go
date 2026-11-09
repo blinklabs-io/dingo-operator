@@ -49,11 +49,12 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "pool-keys", Namespace: ns},
 		Data:       data,
 	}))
+	clientCrt, clientKey := testClientCertPair(t)
 	require.NoError(t, c.Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-client", Namespace: ns},
 		Data: map[string][]byte{
-			"tls.crt": []byte("cert"),
-			"tls.key": []byte("key"),
+			"tls.crt": clientCrt,
+			"tls.key": clientKey,
 		},
 	}))
 
@@ -114,6 +115,11 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 	))
 	keysSecret.Data = rotated
 	require.NoError(t, c.Update(ctx, keysSecret))
+	// A spec change too, so the held render differs from the live template
+	// and the hold is reported.
+	moved := getNode()
+	moved.Spec.BlockProducer.SigningAgent.Address = "kes-agent.signing.svc:7001"
+	require.NoError(t, c.Update(ctx, moved))
 
 	reconcile(t, ctx, reconcilerFor(c), "bp", ns)
 	assert.Equal(t, tpl, podTemplate(t, ctx, c, "bp", ns),
@@ -122,6 +128,8 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, reasonSigningAgentCertInvalid, cond.Reason)
 	assert.Contains(t, cond.Message, "missing tls.key")
+	assert.Contains(t, cond.Message, signingAgentCertHeldMessage)
+	assert.NotContains(t, cond.Message, templateHeldMessage)
 	assert.True(t, meta.IsStatusConditionTrue(
 		getNode().Status.Conditions, condDegraded,
 	))
@@ -131,7 +139,7 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 		ctx, types.NamespacedName{Name: "agent-client", Namespace: ns},
 		certSecret,
 	))
-	certSecret.Data["tls.key"] = []byte("key")
+	certSecret.Data["tls.key"] = clientKey
 	require.NoError(t, c.Update(ctx, certSecret))
 	reconcile(t, ctx, reconcilerFor(c), "bp", ns)
 	second := keysAnnotation(t, ctx, c, "bp", ns)

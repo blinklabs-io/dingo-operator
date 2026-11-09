@@ -70,6 +70,10 @@ const (
 	// while a pod template change is withheld because the keys are refused or
 	// missing.
 	templateHeldMessage = "pod template update held until the keys Secret validates"
+	// signingAgentCertHeldMessage replaces templateHeldMessage when the
+	// template is held for the signing agent client certificate Secret.
+	signingAgentCertHeldMessage = "pod template update held until the " +
+		"signing agent client certificate Secret validates"
 )
 
 // DingoNodeReconciler reconciles a DingoNode object.
@@ -461,6 +465,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// Set when the keys Secret is rejected or missing: the live pod template is
 	// kept.
 	keepTemplate := false
+	holdMessage := templateHeldMessage
 	// Roll the block-producer pod when its mounted key Secret changes so an
 	// externally-delivered key/opcert swap takes effect. The Secret is read via
 	// the uncached APIReader (get-only, no informer/watch) to avoid holding the
@@ -551,6 +556,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 				}
 				opts.KeysChecksum = prev
 				keepTemplate = true
+				holdMessage = signingAgentCertHeldMessage
 				r.rejectSigningAgentCert(ctx, dn, problem)
 			}
 		}
@@ -618,7 +624,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if held {
 		for _, t := range []string{condKeysValid, condDegraded} {
 			if c := meta.FindStatusCondition(dn.Status.Conditions, t); c != nil {
-				c.Message += "; " + templateHeldMessage
+				c.Message += "; " + holdMessage
 			}
 		}
 	}

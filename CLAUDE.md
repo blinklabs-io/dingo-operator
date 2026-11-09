@@ -304,12 +304,16 @@ the pod onto it":
   `CARDANO_SHELLEY_KES_KEY`, which Dingo refuses alongside an agent address,
   and `validateSpec` mirrors Dingo's own refusals (address not host:port,
   `plaintext` with a pin or client certificate, a pin that is not 64 hex
-  characters) and refuses `rotation.mode: Auto`, which generates the KES key
-  in the operator. The keys checksum still hashes the whole Secret, so editing
-  a stray `kes.skey` rolls the pod. A missing or half client certificate
-  Secret holds the pod template like a refused bundle. Such a node's keys
-  Secret holds no KES key, so across namespaces its claim on a pool is never
-  key-backed: it holds other producers back without halting them.
+  characters), refuses a port outside 1-65535, and refuses
+  `rotation.mode: Auto`, which generates the KES key in the operator. The pin
+  is validated and rendered trimmed. The keys checksum still hashes the whole
+  Secret, so editing a stray `kes.skey` rolls the pod. A client certificate
+  Secret that is missing, holds only half the pair, or does not load as a
+  matching PEM pair holds the pod template like a refused bundle. Such a
+  node's keys Secret needs no KES key, so across namespaces its claim on a
+  pool counts as key-backed only when a stray `kes.skey` binds to the opcert
+  (`holdsKESKey` does not look at the spec). Otherwise it holds other
+  producers back without halting them.
 - The KES period checks — both of them — only run once
   `status.kes.currentPeriod > 0`. Zero means "not scraped yet", not "period
   0", and failing on it would refuse a healthy node's own valid keys on the

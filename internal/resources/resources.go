@@ -885,6 +885,10 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 			},
 		)
 	}
+	// The client key is read by Dingo straight from the Secret volume, like
+	// the UTxORPC TLS key below. Its files are root-owned and Dingo runs as a
+	// non-root user that reads them through the pod fsGroup, so the group
+	// bit is needed; Dingo loads the pair with no file mode check.
 	if certSecret := signingAgentCertSecret(dn, opts); certSecret != "" {
 		vols = append(vols, corev1.Volume{
 			Name: signingAgentTLSVolume,
