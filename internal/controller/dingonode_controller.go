@@ -518,7 +518,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 				dn.Status.OpCert.InPlaceReload = rollout.pending
 				if rollout.approve {
 					if err := r.upsertKeysApprovalConfigMap(
-						ctx, dn, approvedKeysDigest(secret.Data),
+						ctx, dn,
+						approvedKeysDigest(
+							secret.Data, resources.UsesSigningAgent(dn),
+						),
 					); err != nil {
 						return fmt.Errorf("apply keys approval configmap: %w", err)
 					}
