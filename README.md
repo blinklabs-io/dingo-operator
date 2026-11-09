@@ -317,7 +317,9 @@ root (`/data`) group-writable and setgid. Dingo refuses a group- or
 other-writable ancestor without the sticky bit, because another member of the
 group could rename entries under it. The first init container,
 `data-volume-sticky-bit`, therefore runs `chmod +t /data` when the bit is not
-already set. The kubelet's fsGroup permission change keeps the bit.
+already set. The kubelet's fsGroup permission change keeps the bit. It runs in
+the node's Dingo image, so a custom image must provide `/bin/sh` and `chmod`, as
+the `mithril-sync` and key preparation init containers already require.
 
 The volume root is usually owned by root, so this container runs as UID 0 with
 only `CAP_FOWNER`: every other capability is dropped, the root filesystem is
