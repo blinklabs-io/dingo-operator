@@ -700,9 +700,10 @@ type OpCertStatus struct {
 	// +optional
 	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
 	// RolledCounter is the issue number of the opcert in the bundle the pod
-	// last started with, until the node reports it loaded. Until then
-	// LoadedCounter may still be the outgoing pod's, so a bundle loads in place
-	// only with a counter above both.
+	// last started with. It is cleared when the node reports that counter, or
+	// when an in-place reload with a higher counter is confirmed. While it is
+	// set, LoadedCounter may still be the outgoing pod's, so a bundle loads in
+	// place only with a counter above both.
 	// +optional
 	RolledCounter *int64 `json:"rolledCounter,omitempty"`
 	// InPlaceReload tracks the key bundle approved for an in-place reload

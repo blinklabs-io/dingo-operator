@@ -96,8 +96,9 @@ type keysRollout struct {
 	timedOut bool
 	// rolled is the status.opcert.rolledCounter to record: with reload in
 	// place enabled, the counter of the bundle a pod starts with when the
-	// rendered checksum differs from the live one, otherwise the previous
-	// value; nil when disabled.
+	// rendered checksum differs from the live one, or of the bundle the live
+	// template staged while the node reports another counter, otherwise the
+	// previous value; nil when disabled.
 	rolled *int64
 }
 
@@ -139,6 +140,11 @@ func decideKeysRollout(
 		out.rolled = nil
 	case !live.exists || out.checksum != live.checksum:
 		// The pod starts with this bundle.
+		out.rolled = new(counter)
+	case live.checksum == full && (loaded == nil || *loaded != counter):
+		// The pod staged this bundle at start and the node has not been
+		// seen reporting its counter. This also restores the guard when the
+		// status write after the roll was lost.
 		out.rolled = new(counter)
 	default:
 		out.rolled = rolled

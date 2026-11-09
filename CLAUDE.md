@@ -614,7 +614,10 @@ the opcert is loaded into the running node instead of rolling the pod
 - After a roll. The scrape goes through the pod's stable DNS name, so until the
   new pod is scraped, `loadedCounter` may still be the outgoing pod's. Every
   render that changes the live `keys-checksum` (or creates the StatefulSet)
-  records the bundle's counter in `status.opcert.rolledCounter`; while it is
+  records the bundle's counter in `status.opcert.rolledCounter`, and so does a
+  render whose live template already staged the bundle while the node reports
+  another counter (restoring it if the status write after the roll was lost);
+  while it is
   set, a bundle loads in place only with a counter above it and the loaded
   one, which neither pod can report before that bundle loads. The scrape
   clears it when the node reports exactly that counter (any other value may be

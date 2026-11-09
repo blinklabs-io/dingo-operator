@@ -658,7 +658,9 @@ func TestDecideKeysRolloutRolledCounter(t *testing.T) {
 		static  string
 		prev    *dingov1alpha1.InPlaceReloadStatus
 		rolled  *int64
-		want    *int64
+		// loaded defaults to 1.
+		loaded *int64
+		want   *int64
 	}{
 		{
 			name:    "a first render starts the pod on the bundle",
@@ -716,7 +718,9 @@ func TestDecideKeysRolloutRolledCounter(t *testing.T) {
 			want:   new(int64(4)),
 		},
 		{
-			name:    "a staged bundle keeps an absent value",
+			// The status write after the roll was lost: the template
+			// staged this bundle and the node reports another counter.
+			name:    "a staged bundle restores a lost value",
 			enabled: true,
 			live: liveKeys{
 				exists:   true,
@@ -725,13 +729,30 @@ func TestDecideKeysRolloutRolledCounter(t *testing.T) {
 				pool:     "pool",
 			},
 			static: "static",
+			want:   new(int64(4)),
+		},
+		{
+			name:    "a staged bundle the node reports records nothing",
+			enabled: true,
+			live: liveKeys{
+				exists:   true,
+				checksum: "new",
+				static:   "static",
+				pool:     "pool",
+			},
+			static: "static",
+			loaded: new(int64(4)),
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			loaded := tc.loaded
+			if loaded == nil {
+				loaded = new(int64(1))
+			}
 			got := decideKeysRollout(
 				tc.enabled, tc.live, "new", tc.static, "pool", 4,
-				new(int64(1)), tc.rolled, tc.prev, now,
+				loaded, tc.rolled, tc.prev, now,
 			)
 			assert.Equal(t, tc.want, got.rolled)
 		})

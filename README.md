@@ -52,8 +52,9 @@ operators.
   or an opcert that reuses the loaded counter (or one approved before the node
   has reported its counter, or one replacing an unconfirmed approval without a
   higher counter) always rolls the pod. After a roll, until the node reports the
-  counter the pod started with (`status.opcert.rolledCounter`), a bundle loads in
-  place only with a counter above it and the loaded one. It needs a
+  counter the pod started with (`status.opcert.rolledCounter`) or confirms a
+  later in-place reload, a bundle loads in place only with a counter above it
+  and the loaded one. It needs a
   Dingo version that reloads credential files in place.
   An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
   text envelope or raw hex scalar; `bls.skey`, the dingo Helm chart's name, is
