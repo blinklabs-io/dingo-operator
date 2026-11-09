@@ -504,7 +504,8 @@ func (r *DingoNodeReconciler) reconcileResources(
 				rollout := decideKeysRollout(
 					resources.ReloadsKeysInPlace(dn), live,
 					keysChecksum(secret), staticKeysChecksum(secret.Data),
-					pool, state.Counter, dn.Status.OpCert.InPlaceReload, r.now(),
+					pool, state.Counter, dn.Status.OpCert.LoadedCounter,
+					dn.Status.OpCert.InPlaceReload, r.now(),
 				)
 				opts.KeysChecksum = rollout.checksum
 				opts.KeysStaticChecksum = rollout.static

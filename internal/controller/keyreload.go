@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -38,10 +39,22 @@ import (
 // Dingo's credential file watch and the operator's own scrape interval.
 const keysReloadTimeout = 10 * time.Minute
 
-// staticKeysChecksum returns the checksum of the key material an in-place
-// reload cannot change: the VRF key and the optional vote key.
+// staticKeysChecksum returns the checksum of everything in a keys Secret that
+// an in-place reload cannot change: every entry except kes.skey and the opcert.
+// That covers the VRF key and the optional vote key, and any other entry, so a
+// change to anything but the KES key and opcert rolls the pod. The vote key is
+// hashed under one name, whichever file it came from.
 func staticKeysChecksum(data map[string][]byte) string {
-	static := map[string][]byte{keyFileVRF: data[keyFileVRF]}
+	static := maps.Clone(data)
+	delete(static, keyFileKES)
+	delete(static, keyFileOpCert)
+	delete(static, keyFileNodeCert)
+	delete(static, keyFileVote)
+	delete(static, keyFileBLS)
+	if static == nil {
+		static = map[string][]byte{}
+	}
+	static[keyFileVRF] = data[keyFileVRF]
 	if vote, _, _ := voteKeyFile(data); vote != nil {
 		static[resources.VoteKeyFile] = vote
 	}
@@ -88,11 +101,18 @@ type keysRollout struct {
 // in place and the live template staged the same VRF key, vote key and pool, so
 // only the KES key and opcert differ. Until the node reports the new opcert
 // counter the live checksum is kept; after keysReloadTimeout the pod rolls.
+//
+// The reload is confirmed by the node reporting the bundle's counter, so it
+// starts only when the node is observed (loaded is non-nil) forging with a
+// different counter. A bundle that reuses the loaded counter, or one approved
+// while the loaded counter is unknown, could never be told apart from the keys
+// already running, so it rolls the pod instead.
 func decideKeysRollout(
 	enabled bool,
 	live liveKeys,
 	full, static, pool string,
 	counter int64,
+	loaded *int64,
 	prev *dingov1alpha1.InPlaceReloadStatus,
 	now time.Time,
 ) keysRollout {
@@ -112,6 +132,9 @@ func decideKeysRollout(
 	}
 	pending := prev
 	if pending == nil || pending.Checksum != full {
+		if loaded == nil || *loaded == counter {
+			return roll
+		}
 		pending = &dingov1alpha1.InPlaceReloadStatus{
 			Checksum:    full,
 			Counter:     counter,
@@ -196,7 +219,7 @@ func (r *DingoNodeReconciler) observeLoadedOpCert(
 	if !st.HasOpCertCounter {
 		return
 	}
-	dn.Status.OpCert.LoadedCounter = st.OpCertCounter
+	dn.Status.OpCert.LoadedCounter = new(st.OpCertCounter)
 	pending := dn.Status.OpCert.InPlaceReload
 	if pending == nil || pending.Applied ||
 		st.OpCertCounter != pending.Counter {

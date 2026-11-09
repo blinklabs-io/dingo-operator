@@ -290,7 +290,9 @@ type RotationSpec struct {
 	// the node's key directory, and Dingo reloads them on its credential file
 	// watch. The rotation completes when Dingo reports the new opcert counter;
 	// otherwise the pod is rolled as without this setting. A change to the VRF
-	// key, the vote key or the pool always rolls the pod. Needs a Dingo version
+	// key, the vote key, any other Secret entry or the pool always rolls the
+	// pod, as does an opcert that reuses the counter the node reports loaded,
+	// or one approved before the node has reported it. Needs a Dingo version
 	// that reloads its credential files in place; an older one is rolled after
 	// the confirmation timeout. Enabling or disabling it rolls the pod once.
 	// +optional
@@ -690,10 +692,10 @@ type OpCertStatus struct {
 	// +optional
 	LastRotated *metav1.Time `json:"lastRotated,omitempty"`
 	// LoadedCounter is the issue number of the opcert the node reports it is
-	// forging with (Dingo's dingo_forge_opcert_counter). Zero means not
-	// observed.
+	// forging with (Dingo's dingo_forge_opcert_counter). Unset means not
+	// observed; zero is a real counter.
 	// +optional
-	LoadedCounter int64 `json:"loadedCounter,omitempty"`
+	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
 	// InPlaceReload tracks the key bundle approved for an in-place reload
 	// (spec.blockProducer.rotation.reloadInPlace).
 	// +optional

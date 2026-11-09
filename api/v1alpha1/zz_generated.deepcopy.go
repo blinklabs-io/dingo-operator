@@ -466,6 +466,11 @@ func (in *OpCertStatus) DeepCopyInto(out *OpCertStatus) {
 		in, out := &in.LastRotated, &out.LastRotated
 		*out = (*in).DeepCopy()
 	}
+	if in.LoadedCounter != nil {
+		in, out := &in.LoadedCounter, &out.LoadedCounter
+		*out = new(int64)
+		**out = **in
+	}
 	if in.InPlaceReload != nil {
 		in, out := &in.InPlaceReload, &out.InPlaceReload
 		*out = new(InPlaceReloadStatus)

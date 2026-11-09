@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 )
 
 func TestStaticKeysChecksum(t *testing.T) {
@@ -66,6 +67,22 @@ func TestStaticKeysChecksum(t *testing.T) {
 	}
 	assert.Equal(t, staticKeysChecksum(withVote), staticKeysChecksum(chartVote),
 		"the vote key hashes the same under either file name")
+
+	withExtra := map[string][]byte{
+		"vrf.skey":    []byte("vrf"),
+		"kes.skey":    []byte("kes-2"),
+		"opcert.cert": []byte("cert-2"),
+		"extra":       []byte("x"),
+	}
+	assert.NotEqual(t, sum, staticKeysChecksum(withExtra),
+		"any entry but the KES key and opcert is static")
+	nodeCert := map[string][]byte{
+		"vrf.skey":  []byte("vrf"),
+		"kes.skey":  []byte("kes-2"),
+		"node.cert": []byte("cert-2"),
+	}
+	assert.Equal(t, sum, staticKeysChecksum(nodeCert),
+		"the opcert is not static under either file name")
 }
 
 // The digest must be what the staging container computes with
@@ -108,6 +125,10 @@ func TestDecideKeysRollout(t *testing.T) {
 		enabled      bool
 		live         liveKeys
 		static, pool string
+		// loaded is the counter the node reports; nil defaults to 3,
+		// unless unobserved is set.
+		loaded       *int64
+		unobserved   bool
 		prev         *dingov1alpha1.InPlaceReloadStatus
 		wantChecksum string
 		wantStatic   string
@@ -233,6 +254,52 @@ func TestDecideKeysRollout(t *testing.T) {
 			wantStatic:   "static",
 		},
 		{
+			name:         "a bundle reusing the loaded counter rolls",
+			enabled:      true,
+			live:         live,
+			static:       "static",
+			pool:         "pool",
+			loaded:       new(int64(4)),
+			wantChecksum: "new",
+			wantStatic:   "static",
+		},
+		{
+			name:         "an unobserved loaded counter rolls",
+			enabled:      true,
+			live:         live,
+			static:       "static",
+			pool:         "pool",
+			unobserved:   true,
+			wantChecksum: "new",
+			wantStatic:   "static",
+		},
+		{
+			name:         "a loaded counter of zero is observed",
+			enabled:      true,
+			live:         live,
+			static:       "static",
+			pool:         "pool",
+			loaded:       new(int64(0)),
+			wantChecksum: "old",
+			wantStatic:   "static",
+			wantApprove:  true,
+			wantPending:  true,
+		},
+		{
+			name:         "a pending reload is kept once the counter loads",
+			enabled:      true,
+			live:         live,
+			static:       "static",
+			pool:         "pool",
+			loaded:       new(int64(4)),
+			prev:         pendingAt(now.Add(-time.Minute), true),
+			wantChecksum: "old",
+			wantStatic:   "static",
+			wantApprove:  true,
+			wantPending:  true,
+			wantApplied:  true,
+		},
+		{
 			name:    "a newer bundle replaces the pending one",
 			enabled: true,
 			live:    live,
@@ -251,8 +318,13 @@ func TestDecideKeysRollout(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			loaded := tc.loaded
+			if loaded == nil && !tc.unobserved {
+				loaded = new(int64(3))
+			}
 			got := decideKeysRollout(
-				tc.enabled, tc.live, "new", tc.static, tc.pool, 4, tc.prev, now,
+				tc.enabled, tc.live, "new", tc.static, tc.pool, 4, loaded,
+				tc.prev, now,
 			)
 			assert.Equal(t, tc.wantChecksum, got.checksum)
 			assert.Equal(t, tc.wantStatic, got.static)
@@ -323,7 +395,7 @@ func TestObserveLoadedOpCert(t *testing.T) {
 			dn := &dingov1alpha1.DingoNode{}
 			dn.Status.OpCert.InPlaceReload = tc.pending
 			r.observeLoadedOpCert(dn, &tc.st)
-			assert.Equal(t, tc.wantLoaded, dn.Status.OpCert.LoadedCounter)
+			assert.Equal(t, tc.wantLoaded, ptr.Deref(dn.Status.OpCert.LoadedCounter, 0))
 			if tc.pending != nil {
 				assert.Equal(
 					t,

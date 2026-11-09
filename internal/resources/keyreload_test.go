@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -85,16 +86,24 @@ func TestReloadInPlaceRendering(t *testing.T) {
 			assert.Equal(t, keyWatchInterval, interval)
 			// The node keeps its key directory read-only; only the staging
 			// container writes to it.
-			for _, m := range tmpl.Spec.Containers[0].VolumeMounts {
-				if m.Name == keysVolumeName {
-					assert.True(t, m.ReadOnly)
+			mount := func(c corev1.Container) *corev1.VolumeMount {
+				for i := range c.VolumeMounts {
+					if c.VolumeMounts[i].Name == keysVolumeName {
+						return &c.VolumeMounts[i]
+					}
 				}
+				return nil
 			}
-			for _, m := range sync.VolumeMounts {
-				if m.Name == keysVolumeName {
-					assert.False(t, m.ReadOnly)
-				}
-			}
+			nodeMount := mount(tmpl.Spec.Containers[0])
+			require.NotNil(t, nodeMount, "node container mounts the keys")
+			assert.True(t, nodeMount.ReadOnly)
+			syncMount := mount(*sync)
+			require.NotNil(t, syncMount, "staging container mounts the keys")
+			assert.False(t, syncMount.ReadOnly)
+			// Requests equal limits, so the container never changes a
+			// Guaranteed pod's QoS class.
+			require.NotEmpty(t, sync.Resources.Limits)
+			assert.Equal(t, sync.Resources.Limits, sync.Resources.Requests)
 		})
 	}
 }
@@ -200,6 +209,42 @@ func TestKeysSyncScript(t *testing.T) {
 			time.Sleep(500 * time.Millisecond)
 			assert.Equal(t, tc.wantKES, read("kes.skey"))
 			assert.Equal(t, tc.wantCert, read("opcert.cert"))
+			// Control: the loop is still running and stages the pair once it
+			// is approved, so the unchanged files above came from the gate,
+			// not from a script that had stopped.
+			write(apr, KeysApprovalKey, keysDigest("kes-new", "cert-new"))
+			require.Eventually(t, func() bool {
+				return read("kes.skey") == "kes-new" &&
+					read("opcert.cert") == "cert-new"
+			}, 5*time.Second, 20*time.Millisecond)
 		})
+	}
+}
+
+// The script runs as the container's PID 1, which ignores SIGTERM without a
+// handler. It must exit on SIGTERM, promptly and with status 0, even while
+// waiting out a long poll interval.
+func TestKeysSyncScriptExitsOnSIGTERM(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("/bin/sh", "-c", syncBlockProducerKeysScript)
+	cmd.Env = append(
+		os.Environ(),
+		"DINGO_KEYS_SOURCE="+t.TempDir(),
+		"DINGO_KEYS_DESTINATION="+t.TempDir(),
+		"DINGO_KEYS_APPROVAL="+filepath.Join(t.TempDir(), KeysApprovalKey),
+		"DINGO_KEYS_SYNC_INTERVAL=60",
+	)
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	// Let the shell install its trap and enter the wait.
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+	select {
+	case err := <-done:
+		require.NoError(t, err, "the script exits 0 on SIGTERM")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the script did not exit within 5s of SIGTERM")
 	}
 }

@@ -17,15 +17,16 @@ package resources
 import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
 	// KeysStaticChecksumAnnotation records, on a pod template that reloads
 	// keys in place, the checksum of the key material a reload cannot change:
-	// the VRF key and the vote key. The operator loads a new KES key and
-	// opcert into the running pod only while this still matches the keys
-	// Secret.
+	// every keys Secret entry except the KES key and opcert. The operator
+	// loads a new KES key and opcert into the running pod only while this
+	// still matches the keys Secret.
 	KeysStaticChecksumAnnotation = "dingo.blinklabs.io/keys-static-checksum"
 	// KeysApprovalKey is the key of the approval ConfigMap that holds the
 	// digest of the KES key and opcert the operator approved.
@@ -52,7 +53,13 @@ const (
 // checked against the digest again before they replace the live files, since
 // the Secret volume can be swapped while they are read. The certificate is
 // chosen as the init container chooses it.
+//
+// The container runs this as PID 1, which ignores SIGTERM unless it installs a
+// handler, so the script traps it and sleeps in the background where the trap
+// can interrupt the wait; otherwise every pod stop would wait out the grace
+// period.
 const syncBlockProducerKeysScript = `set -u
+trap 'exit 0' TERM INT
 source_dir="${DINGO_KEYS_SOURCE:-/var/run/dingo-keys-source}"
 destination_dir="${DINGO_KEYS_DESTINATION:-/keys}"
 approval="${DINGO_KEYS_APPROVAL:-/var/run/dingo-keys-approval/approved}"
@@ -62,7 +69,8 @@ digest() {
   cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1
 }
 while :; do
-  sleep "${interval}"
+  sleep "${interval}" &
+  wait "$!"
   [ -s "${approval}" ] || continue
   want="$(cat "${approval}")"
   cert=node.cert
@@ -121,6 +129,21 @@ func BuildKeysApprovalConfigMap(
 	}
 }
 
+// keysSyncResources are the staging container's requests, set equal to its
+// limits. It copies two small files at most every few seconds. Requests equal
+// to limits keep a pod whose node container is Guaranteed in that QoS class,
+// and copying the node's own resources would double the pod's requests.
+var keysSyncResources = corev1.ResourceRequirements{
+	Requests: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("50m"),
+		corev1.ResourceMemory: resource.MustParse("32Mi"),
+	},
+	Limits: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("50m"),
+		corev1.ResourceMemory: resource.MustParse("32Mi"),
+	},
+}
+
 // keysSyncContainer stages approved key changes into the running pod.
 func keysSyncContainer(dn *dingov1alpha1.DingoNode) corev1.Container {
 	return corev1.Container{
@@ -137,6 +160,7 @@ func keysSyncContainer(dn *dingov1alpha1.DingoNode) corev1.Container {
 				ReadOnly:  true,
 			},
 		},
+		Resources:       *keysSyncResources.DeepCopy(),
 		SecurityContext: containerSecurityContext(),
 	}
 }
