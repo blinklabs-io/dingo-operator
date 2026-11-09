@@ -326,10 +326,11 @@ func SupportsTracing(dn *dingov1alpha1.DingoNode) bool {
 // MinSigningAgentMinor is the first 0.x release that reads the remote KES
 // agent settings (CARDANO_SHELLEY_KES_AGENT_ADDRESS and the TLS options).
 // Earlier releases know only the local-socket agent and ignore the address,
-// so a producer that drops its local kes.skey for one cannot start. The
-// release that ships dingo#6123 is not out yet; this is one minor above the
-// latest release, so every current release is refused. Set it to the release
-// that ships dingo#6123.
+// so a producer that drops its local kes.skey for one cannot start. No Dingo
+// release reads CARDANO_SHELLEY_KES_AGENT_ADDRESS or the TLS client options
+// yet, so this is one minor above the latest release and every published
+// release is refused. Set it to the first release that reads them once that
+// release is published.
 const MinSigningAgentMinor = 93
 
 // SupportsSigningAgent reports whether the selected image can sign through a
