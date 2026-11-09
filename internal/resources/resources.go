@@ -58,9 +58,10 @@ const (
 	// (config.json + genesis files) referenced by spec.configRef changes.
 	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
 
-	containerName   = "dingo"
-	keysInitName    = "prepare-block-producer-keys"
-	mithrilInitName = "mithril-sync"
+	containerName      = "dingo"
+	keysInitName       = "prepare-block-producer-keys"
+	mithrilInitName    = "mithril-sync"
+	dataStickyInitName = "data-volume-sticky-bit"
 
 	// DefaultDataVolumeName names the data volume claim template of new
 	// StatefulSets. It matches the dingo Helm chart, so claims are
@@ -589,6 +590,21 @@ func containerSecurityContext() *corev1.SecurityContext {
 		RunAsNonRoot:             new(true),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
+// dataStickySecurityContext runs as root with CAP_FOWNER alone, which lets
+// chmod set the sticky bit on a volume root another UID owns.
+func dataStickySecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: new(false),
+		ReadOnlyRootFilesystem:   new(true),
+		RunAsNonRoot:             new(false),
+		RunAsUser:                new(int64(0)),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{"FOWNER"},
 		},
 	}
 }
