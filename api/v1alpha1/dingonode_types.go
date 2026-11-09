@@ -371,7 +371,8 @@ type BlockProducerSpec struct {
 	// it connects. Leios vote signing can move to the agent later, once Dingo
 	// and Bursa support it; until then an optional vote key stays in the keys
 	// Secret. Not compatible with rotation.mode Auto, which generates the KES
-	// key in the operator.
+	// key in the operator. Requires a Dingo image that reads the remote agent
+	// settings; older canonical image tags are refused.
 	// +optional
 	SigningAgent *SigningAgentSpec `json:"signingAgent,omitempty"`
 }
@@ -397,8 +398,8 @@ type SigningAgentSpec struct {
 	// ClientCertSecretRef names a Secret in the DingoNode's namespace holding
 	// tls.crt and tls.key, the node's TLS client certificate and key for the
 	// agent. Both files are mounted read-only into the node. Requires TLS.
-	// Dingo reads them at startup, so a renewed certificate takes effect when
-	// the pod restarts.
+	// Dingo reads them at startup, so the operator rolls the pod when either
+	// changes.
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional

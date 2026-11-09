@@ -545,10 +545,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 		// mount, so hold the template rather than roll the forging pod onto
 		// one that cannot start.
 		if !keepTemplate {
-			problem, err := r.checkSigningAgentCert(ctx, dn)
+			problem, certSum, err := r.checkSigningAgentCert(ctx, dn)
 			if err != nil {
 				return err
 			}
+			opts.SigningAgentCertChecksum = certSum
 			if problem != "" {
 				prev, err := r.liveKeysChecksum(ctx, dn)
 				if err != nil {

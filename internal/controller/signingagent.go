@@ -131,19 +131,30 @@ func checkSigningAgentCertData(name string, data map[string][]byte) string {
 	return ""
 }
 
+// signingAgentCertChecksum returns a digest of a validated agent client
+// certificate pair. Only tls.crt and tls.key are hashed, the files Dingo
+// loads, so other keys in the Secret do not roll the pod.
+func signingAgentCertChecksum(data map[string][]byte) string {
+	return checksumData(map[string][]byte{
+		corev1.TLSCertKey:       data[corev1.TLSCertKey],
+		corev1.TLSPrivateKeyKey: data[corev1.TLSPrivateKeyKey],
+	})
+}
+
 // checkSigningAgentCert reads the agent client certificate Secret, when the
 // spec names one. It returns a description of what is wrong with the Secret,
-// or "" when it is usable or not needed, and an error only for a failed read
+// or "" when it is usable or not needed; the checksum of a usable pair, for
+// the pod template, or "" otherwise; and an error only for a failed read
 // other than not-found. The Secret is read with the same uncached reader, and
 // the same permission, as the keys Secret.
 func (r *DingoNodeReconciler) checkSigningAgentCert(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) (string, error) {
+) (problem, sum string, err error) {
 	bp := dn.Spec.BlockProducer
 	if bp == nil || bp.SigningAgent == nil ||
 		bp.SigningAgent.ClientCertSecretRef == "" || r.APIReader == nil {
-		return "", nil
+		return "", "", nil
 	}
 	name := bp.SigningAgent.ClientCertSecretRef
 	secret := &corev1.Secret{}
@@ -153,13 +164,16 @@ func (r *DingoNodeReconciler) checkSigningAgentCert(
 			return fmt.Sprintf(
 				"signing agent client certificate Secret %q not found",
 				name,
-			), nil
+			), "", nil
 		}
-		return "", fmt.Errorf(
+		return "", "", fmt.Errorf(
 			"read signing agent client certificate secret: %w", err,
 		)
 	}
-	return checkSigningAgentCertData(name, secret.Data), nil
+	if p := checkSigningAgentCertData(name, secret.Data); p != "" {
+		return p, "", nil
+	}
+	return "", signingAgentCertChecksum(secret.Data), nil
 }
 
 // rejectSigningAgentCert reports an agent client certificate Secret the pod

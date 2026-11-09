@@ -15,6 +15,7 @@
 package resources
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,6 +209,75 @@ func TestSigningAgentCertVolume(t *testing.T) {
 	spec = renderPod(withCert, RenderOptions{MountKeys: false})
 	assert.Nil(t, findVolume(spec))
 	assert.Nil(t, findMount(spec))
+}
+
+// A changed client certificate pair changes the pod template, so the pod
+// rolls and Dingo loads the renewed pair. Without the mount there is nothing
+// to roll for.
+func TestSigningAgentCertChecksumRollsTemplate(t *testing.T) {
+	t.Parallel()
+	withCert := agentNode(dingov1alpha1.SigningAgentSpec{
+		Address:             "kes-agent:7000",
+		ClientCertSecretRef: "agent-client",
+	})
+	render := func(
+		dn *dingov1alpha1.DingoNode,
+		mountKeys bool,
+		sum string,
+	) map[string]string {
+		return BuildStatefulSet(dn, RenderOptions{
+			Replicas:                 1,
+			MountKeys:                mountKeys,
+			KeysChecksum:             "keys",
+			SigningAgentCertChecksum: sum,
+		}).Spec.Template.Annotations
+	}
+	first := render(withCert, true, "cert-a")
+	second := render(withCert, true, "cert-b")
+	assert.Equal(t, "cert-a", first[SigningAgentCertChecksumAnnotation])
+	assert.NotEqual(t, first, second)
+	assert.Equal(
+		t, first[KeysChecksumAnnotation], second[KeysChecksumAnnotation],
+		"the certificate must not change the keys checksum",
+	)
+
+	noCert := agentNode(dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"})
+	assert.NotContains(
+		t, render(noCert, true, "cert-a"), SigningAgentCertChecksumAnnotation,
+	)
+	assert.NotContains(
+		t, render(withCert, false, "cert-a"), SigningAgentCertChecksumAnnotation,
+	)
+}
+
+func TestSupportsSigningAgent(t *testing.T) {
+	t.Parallel()
+	minTag := fmt.Sprintf("0.%d.0", MinSigningAgentMinor)
+	below := fmt.Sprintf("0.%d.9", MinSigningAgentMinor-1)
+	for _, tc := range []struct {
+		name  string
+		repo  string
+		tag   string
+		wants bool
+	}{
+		{name: "default tag lacks the remote agent"},
+		{name: "one minor below", tag: below},
+		{name: "first release with the remote agent", tag: minTag, wants: true},
+		{name: "v prefix", tag: "v" + minTag, wants: true},
+		{name: "major above zero", tag: "1.0.0", wants: true},
+		{name: "unparseable tag is trusted", tag: "main", wants: true},
+		{name: "custom repository is trusted", repo: "example/dingo", wants: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := agentNode(dingov1alpha1.SigningAgentSpec{
+				Address: "kes-agent:7000",
+			})
+			dn.Spec.Image.Repository = tc.repo
+			dn.Spec.Image.Tag = tc.tag
+			assert.Equal(t, tc.wants, SupportsSigningAgent(dn))
+		})
+	}
 }
 
 // A node without an agent renders exactly the template it did before the

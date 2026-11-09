@@ -54,6 +54,9 @@ const (
 	// it as created, so it names the pool the pod forges for after the spec
 	// and the keys Secret have moved on.
 	KeysPoolAnnotation = "dingo.blinklabs.io/keys-pool"
+	// SigningAgentCertChecksumAnnotation forces a rollout when the signing
+	// agent client certificate pair changes; Dingo loads it at startup.
+	SigningAgentCertChecksumAnnotation = "dingo.blinklabs.io/signing-agent-cert-checksum"
 	// ConfigChecksumAnnotation forces a rollout when the config bundle
 	// (config.json + genesis files) referenced by spec.configRef changes.
 	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
@@ -319,6 +322,23 @@ func SupportsTracing(dn *dingov1alpha1.DingoNode) bool {
 	return !ok || major > 0 || minor >= minTracingMinor
 }
 
+// MinSigningAgentMinor is the first 0.x release that reads the remote KES
+// agent settings (CARDANO_SHELLEY_KES_AGENT_ADDRESS and the TLS options).
+// Earlier releases know only the local-socket agent and ignore the address,
+// so a producer that drops its local kes.skey for one cannot start. The
+// release that ships dingo#6123 is not out yet; this is one minor above the
+// latest release, so every current release is refused. Set it to the release
+// that ships dingo#6123.
+const MinSigningAgentMinor = 93
+
+// SupportsSigningAgent reports whether the selected image can sign through a
+// remote agent, as spec.blockProducer.signingAgent configures. As for
+// SupportsTracing, an image whose version cannot be determined is trusted.
+func SupportsSigningAgent(dn *dingov1alpha1.DingoNode) bool {
+	major, minor, _, ok := canonicalImageVersion(dn)
+	return !ok || major > 0 || minor >= MinSigningAgentMinor
+}
+
 // DefaultDingoTag is the Dingo image tag used when the spec omits one. It should
 // track a version the operator has been tested against.
 //
@@ -379,6 +399,10 @@ type RenderOptions struct {
 	KeysPool string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
+	// SigningAgentCertChecksum triggers a rollout when the signing agent
+	// client certificate pair changes. It is rendered only where that Secret
+	// is mounted.
+	SigningAgentCertChecksum string
 	// Replicas is the desired StatefulSet replica count.
 	Replicas int32
 	// MountKeys mounts the block-producer key Secret. Keyless standby pods set
@@ -615,6 +639,10 @@ func BuildStatefulSet(
 	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
+	}
+	if opts.SigningAgentCertChecksum != "" &&
+		signingAgentCertSecret(dn, opts) != "" {
+		podAnnotations[SigningAgentCertChecksumAnnotation] = opts.SigningAgentCertChecksum
 	}
 
 	container := corev1.Container{

@@ -309,7 +309,14 @@ the pod onto it":
   is validated and rendered trimmed. The keys checksum still hashes the whole
   Secret, so editing a stray `kes.skey` rolls the pod. A client certificate
   Secret that is missing, holds only half the pair, or does not load as a
-  matching PEM pair holds the pod template like a refused bundle. Such a
+  matching PEM pair holds the pod template like a refused bundle. A valid
+  pair is hashed (`tls.crt` and `tls.key` only) into its own pod annotation,
+  `dingo.blinklabs.io/signing-agent-cert-checksum`, so a renewal rolls the pod
+  without touching the keys checksum that forger provenance compares against
+  the keys Secret; a held template carries the live value forward.
+  `validateSpec` refuses the agent on a canonical image older than
+  `resources.MinSigningAgentMinor`, which must track the first Dingo release
+  that reads `CARDANO_SHELLEY_KES_AGENT_ADDRESS`. An agent
   node's keys Secret needs no KES key, so across namespaces its claim on a
   pool counts as key-backed only when a stray `kes.skey` binds to the opcert
   (`holdsKESKey` does not look at the spec). Otherwise it holds other

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +62,7 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.Image.Tag = agentImageTag
 	dn.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{
 		Address:             "kes-agent.signing.svc:7000",
 		ServerSPKISHA256:    testSPKIPin,
@@ -147,6 +149,29 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, keysValid().Status)
 	assert.Equal(t, int64(1), getNode().Status.OpCert.OnDiskCounter)
 
+	// A renewed client certificate under the same Secret name rolls the pod,
+	// so Dingo loads it; the keys checksum is untouched.
+	certAnnotation := func() string {
+		return podTemplate(t, ctx, c, "bp", ns).
+			Annotations[resources.SigningAgentCertChecksumAnnotation]
+	}
+	oldCert := certAnnotation()
+	require.NotEmpty(t, oldCert)
+	renewedCrt, renewedKey := testClientCertPair(t)
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "agent-client", Namespace: ns},
+		certSecret,
+	))
+	certSecret.Data = map[string][]byte{
+		"tls.crt": renewedCrt,
+		"tls.key": renewedKey,
+	}
+	require.NoError(t, c.Update(ctx, certSecret))
+	reconcile(t, ctx, reconcilerFor(c), "bp", ns)
+	assert.NotEqual(t, oldCert, certAnnotation(),
+		"a renewed client certificate must roll the pod")
+	assert.Equal(t, second, keysAnnotation(t, ctx, c, "bp", ns))
+
 	// A kes.skey left in the Secret is accepted, reported and never wired.
 	require.NoError(t, c.Get(
 		ctx, types.NamespacedName{Name: "pool-keys", Namespace: ns},
@@ -162,4 +187,52 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 		podTemplate(t, ctx, c, "bp", ns), "CARDANO_SHELLEY_KES_KEY",
 	)
 	assert.False(t, hasKES)
+}
+
+// A forging producer that gains a signing agent on an image that predates the
+// remote agent is refused as InvalidSpec and keeps its local-key template:
+// the old image would ignore the address and fail to start without kes.skey.
+func TestBlockProducerSigningAgentOldImage(t *testing.T) {
+	c, ctx := startEnv(t)
+	const ns = "agent-old-ns"
+	createNamespace(t, ctx, c, ns)
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	data, err := keys.SecretData(0, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-keys", Namespace: ns},
+		Data:       data,
+	}))
+
+	dn := blockProducerNode(
+		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), "bp", ns)
+	tpl := podTemplate(t, ctx, c, "bp", ns)
+	_, hasKES := templateEnv(tpl, "CARDANO_SHELLEY_KES_KEY")
+	require.True(t, hasKES)
+
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "bp", Namespace: ns}, got,
+	))
+	got.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{
+		Address: "kes-agent.signing.svc:7000",
+	}
+	require.NoError(t, c.Update(ctx, got))
+	reconcile(t, ctx, reconcilerFor(c), "bp", ns)
+
+	assert.Equal(t, tpl, podTemplate(t, ctx, c, "bp", ns),
+		"an image without the remote agent must keep the local-key template")
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "bp", Namespace: ns}, got,
+	))
+	ready := meta.FindStatusCondition(got.Status.Conditions, condReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, "InvalidSpec", ready.Reason)
+	assert.Contains(t, ready.Message, "v"+agentImageTag)
 }

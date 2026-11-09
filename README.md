@@ -64,8 +64,16 @@ operators.
   as the keys Secret. While that Secret is missing, holds only half the pair,
   or does not load as a matching PEM pair, the pod template is held as for a
   refused keys bundle. Dingo loads the
-  client certificate at startup, so a renewed one takes effect when the pod
-  restarts.
+  client certificate at startup, so the operator rolls the pod when `tls.crt`
+  or `tls.key` changes, through a separate checksum annotation that leaves the
+  keys checksum alone.
+  The canonical Dingo image must be one that reads the remote agent settings;
+  the default image and older tags are refused as `InvalidSpec` before the
+  pod template changes. No released Dingo version qualifies yet, so the
+  operator requires a version newer than the latest release; set
+  `spec.image.tag` to a release with remote agent support once one ships.
+  Custom repositories and tags that are not a version are trusted, as for
+  `spec.tracing`.
   `plaintext` takes neither a pin nor a client certificate, and
   `rotation.mode: Auto` is refused, since it generates the KES key in the
   operator. The field is named for signing in general: Leios vote signing can

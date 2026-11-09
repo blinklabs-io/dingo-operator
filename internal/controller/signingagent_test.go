@@ -22,6 +22,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"maps"
 	"math/big"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,6 +40,10 @@ import (
 
 const testSPKIPin = "0123456789abcdef0123456789abcdef" +
 	"0123456789abcdef0123456789abcdef"
+
+// agentImageTag is the first Dingo release that reads the remote agent
+// settings, as the version gate defines it.
+var agentImageTag = fmt.Sprintf("0.%d.0", resources.MinSigningAgentMinor)
 
 func withoutKey(m map[string][]byte, k string) map[string][]byte {
 	out := maps.Clone(m)
@@ -217,6 +223,7 @@ func TestValidateSpecSigningAgent(t *testing.T) {
 			Spec: dingov1alpha1.DingoNodeSpec{
 				Role:          dingov1alpha1.RoleBlockProducer,
 				Network:       "preview",
+				Image:         dingov1alpha1.ImageSpec{Tag: agentImageTag},
 				Topology:      validTopology,
 				BlockProducer: bp,
 			},
@@ -383,6 +390,41 @@ func TestValidateSpecSigningAgent(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "CARDANO_SHELLEY_KES_KEY")
 	})
+}
+
+// An image that predates the remote agent ignores its address, so the spec is
+// refused, including on the default image.
+func TestValidateSpecSigningAgentImage(t *testing.T) {
+	t.Parallel()
+	node := func(tag string) *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "bp"},
+			Spec: dingov1alpha1.DingoNodeSpec{
+				Role:     dingov1alpha1.RoleBlockProducer,
+				Network:  "preview",
+				Image:    dingov1alpha1.ImageSpec{Tag: tag},
+				Topology: validTopology,
+				BlockProducer: &dingov1alpha1.BlockProducerSpec{
+					PoolID: strings.Repeat("ab", 28),
+					Keys:   dingov1alpha1.KeysSpec{SecretRef: "keys"},
+					SigningAgent: &dingov1alpha1.SigningAgentSpec{
+						Address: "kes-agent.signing.svc:7000",
+					},
+				},
+			},
+		}
+	}
+	want := "v" + agentImageTag
+	require.ErrorContains(t, validateSpec(node("")), want)
+	require.ErrorContains(t, validateSpec(node(resources.DefaultDingoTag)), want)
+	require.ErrorContains(t, validateSpec(node(
+		fmt.Sprintf("0.%d.9", resources.MinSigningAgentMinor-1),
+	)), want)
+	require.NoError(t, validateSpec(node(agentImageTag)))
+
+	local := node("")
+	local.Spec.BlockProducer.SigningAgent = nil
+	require.NoError(t, validateSpec(local))
 }
 
 // testClientCertPair returns a PEM self-signed client certificate and its key.
