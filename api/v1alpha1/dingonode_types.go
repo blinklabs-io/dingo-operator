@@ -283,6 +283,21 @@ type RotationSpec struct {
 	RenewBeforePeriods int32 `json:"renewBeforePeriods,omitempty"`
 	// +optional
 	ColdSigner ColdSignerSpec `json:"coldSigner,omitempty"`
+	// ReloadInPlace loads a new KES key and opcert into the running node
+	// instead of rolling the pod, when only those two files change. The
+	// operator validates the keys Secret as for a roll, then approves its KES
+	// key and opcert; a container beside Dingo stages the approved files into
+	// the node's key directory, and Dingo reloads them on its credential file
+	// watch. The rotation completes when Dingo reports the new opcert counter;
+	// otherwise the pod is rolled as without this setting. A change to the VRF
+	// key, the vote key, any other Secret entry or the pool always rolls the
+	// pod, as does an opcert that reuses the counter the node reports loaded,
+	// or one approved before the node has reported it, or one that replaces an
+	// unconfirmed approval without a higher counter. Needs a Dingo version
+	// that reloads its credential files in place; an older one is rolled after
+	// the confirmation timeout. Enabling or disabling it rolls the pod once.
+	// +optional
+	ReloadInPlace bool `json:"reloadInPlace,omitempty"`
 }
 
 // HASpec configures block-producer high availability.
@@ -677,6 +692,29 @@ type OpCertStatus struct {
 	OnChainCounterPoolID string `json:"onChainCounterPoolId,omitempty"`
 	// +optional
 	LastRotated *metav1.Time `json:"lastRotated,omitempty"`
+	// LoadedCounter is the issue number of the opcert the node reports it is
+	// forging with (Dingo's dingo_forge_opcert_counter). Unset means not
+	// observed; zero is a real counter.
+	// +optional
+	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
+	// InPlaceReload tracks the key bundle approved for an in-place reload
+	// (spec.blockProducer.rotation.reloadInPlace).
+	// +optional
+	InPlaceReload *InPlaceReloadStatus `json:"inPlaceReload,omitempty"`
+}
+
+// InPlaceReloadStatus records a key bundle approved for loading into the
+// running node without a roll.
+type InPlaceReloadStatus struct {
+	// Checksum is the keys checksum of the approved bundle.
+	Checksum string `json:"checksum"`
+	// Counter is the approved opcert's issue number.
+	Counter int64 `json:"counter"`
+	// RequestedAt is when the bundle was approved.
+	RequestedAt metav1.Time `json:"requestedAt"`
+	// Applied is set once the node reports Counter as its loaded opcert.
+	// +optional
+	Applied bool `json:"applied,omitempty"`
 }
 
 // TipStatus records the node's last observed tip slot and when it last
