@@ -111,11 +111,14 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   fails on that skip).
 - Commits: Conventional Commits, GPG-signed (required for all Blink repos
   except `skunkworks`). Only commit when the user asks.
-- securityContext defaults: managed Dingo pods always run non-root with
+- securityContext defaults: managed Dingo containers run non-root with
   numeric IDs because `runAsNonRoot` cannot verify the image's named `dingo`
-  user. The canonical `ghcr.io/blinklabs-io/dingo` image uses `100:101` for
-  `runAsUser:runAsGroup` and `fsGroup` through v0.69.x, including `/ipc`
-  ownership; v0.70.0 and later use `1000:1000` for both the process and `/ipc`.
+  user. The one exception is the `data-volume-sticky-bit` init container, which
+  runs as root with only `CAP_FOWNER` to set the sticky bit on the fsGroup
+  data volume root (see README "Data volume permissions"). The canonical
+  `ghcr.io/blinklabs-io/dingo` image uses `100:101` for `runAsUser:runAsGroup`
+  and `fsGroup` through v0.69.x, including `/ipc` ownership; v0.70.0 and later
+  use `1000:1000` for both the process and `/ipc`.
   The operator selects the matching default from the effective image tag, with
   the omitted tag resolving to `DefaultDingoTag` (currently v0.85.0). Custom
   repositories and unrecognized tags retain the conservative `100:101`

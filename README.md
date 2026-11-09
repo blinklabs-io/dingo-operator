@@ -310,6 +310,21 @@ ordinal on an existing StatefulSet initially requests that template size; the
 operator expands its claim on a subsequent reconciliation. Reconciliation polls
 every two minutes. Plan replica increases with this asynchronous delay in mind.
 
+### Data volume permissions
+
+Pods run with `securityContext.fsGroup`, so the kubelet makes the data volume
+root (`/data`) group-writable and setgid. Dingo refuses a group- or
+other-writable ancestor without the sticky bit, because another member of the
+group could rename entries under it. The first init container,
+`data-volume-sticky-bit`, therefore runs `chmod +t /data` when the bit is not
+already set. The kubelet's fsGroup permission change keeps the bit.
+
+The volume root is usually owned by root, so this container runs as UID 0 with
+only `CAP_FOWNER`: every other capability is dropped, the root filesystem is
+read-only and privilege escalation is disabled. The pod therefore needs a
+namespace that admits the `baseline` Pod Security Standard; `restricted` refuses
+a root container.
+
 ### Sizing and health
 
 Size for growth and bootstrap peak usage. Mithril bootstrap can temporarily hold
