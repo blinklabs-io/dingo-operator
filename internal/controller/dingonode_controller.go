@@ -466,6 +466,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// kept.
 	keepTemplate := false
 	holdMessage := templateHeldMessage
+	// The key bundle's rollout decision and the live keys checksum it was
+	// made against. Its reload status is recorded once the template is known
+	// not to be held from rolling.
+	var decided *keysRollout
+	decidedLive := ""
 	// Roll the block-producer pod when its mounted key Secret changes so an
 	// externally-delivered key/opcert swap takes effect. The Secret is read via
 	// the uncached APIReader (get-only, no informer/watch) to avoid holding the
@@ -517,8 +522,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 				opts.KeysStaticChecksum = rollout.static
 				opts.KeysPool = pool
 				opts.KeysCounter = strconv.FormatInt(state.Counter, 10)
-				dn.Status.OpCert.InPlaceReload = rollout.pending
-				dn.Status.OpCert.RolledCounter = rollout.rolled
+				decided, decidedLive = &rollout, live.checksum
 				if rollout.approve {
 					if err := r.upsertKeysApprovalConfigMap(
 						ctx, dn,
@@ -599,6 +603,15 @@ func (r *DingoNodeReconciler) reconcileResources(
 				holdMessage = signingAgentCertHeldMessage
 				r.rejectSigningAgentCert(ctx, dn, problem)
 			}
+		}
+		// A roll held above never reaches the pod, so the status keeps
+		// describing the running one: its rolled counter and any reload
+		// still pending in it. An in-place load carries the live checksum
+		// and is approved already, so it is recorded either way.
+		if decided != nil &&
+			(!keepTemplate || decided.checksum == decidedLive) {
+			dn.Status.OpCert.InPlaceReload = decided.pending
+			dn.Status.OpCert.RolledCounter = decided.rolled
 		}
 	}
 	// Roll the pod when the referenced config bundle (config.json + genesis)

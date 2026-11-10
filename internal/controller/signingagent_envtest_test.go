@@ -189,6 +189,80 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 	assert.False(t, hasKES)
 }
 
+// A roll held for an incomplete client certificate never reaches the pod, so
+// the reload status keeps describing the running pod: the rolled counter stays
+// the one the pod started with.
+func TestBlockProducerSigningAgentHeldRollKeepsRolledCounter(t *testing.T) {
+	c, ctx := startEnv(t)
+	const ns = "agent-held-ns"
+	createNamespace(t, ctx, c, ns)
+	nodeKey := types.NamespacedName{Name: "bp", Namespace: ns}
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	data, err := keys.SecretData(0, 0)
+	require.NoError(t, err)
+	delete(data, keyFileKES)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-keys", Namespace: ns},
+		Data:       data,
+	}))
+	clientCrt, clientKey := testClientCertPair(t)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-client", Namespace: ns},
+		Data: map[string][]byte{
+			"tls.crt": clientCrt,
+			"tls.key": clientKey,
+		},
+	}))
+	dn := blockProducerNode(
+		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	dn.Spec.Image.Tag = agentImageTag
+	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
+	dn.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{
+		Address:             "kes-agent.signing.svc:7000",
+		ServerSPKISHA256:    testSPKIPin,
+		ClientCertSecretRef: "agent-client",
+	}
+	require.NoError(t, c.Create(ctx, dn))
+	r := reconcilerFor(c)
+	reconcile(t, ctx, r, "bp", ns)
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(ctx, nodeKey, got))
+	require.NotNil(t, got.Status.OpCert.RolledCounter)
+	require.Equal(t, int64(0), *got.Status.OpCert.RolledCounter)
+	tpl := podTemplate(t, ctx, c, "bp", ns)
+
+	// Half a client certificate pair, and a bundle that would roll the pod
+	// (the node has not reported a counter).
+	certSecret := &corev1.Secret{}
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "agent-client", Namespace: ns},
+		certSecret,
+	))
+	delete(certSecret.Data, "tls.key")
+	require.NoError(t, c.Update(ctx, certSecret))
+	rotated, err := keys.SecretData(1, 0)
+	require.NoError(t, err)
+	delete(rotated, keyFileKES)
+	keysSecret := &corev1.Secret{}
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "pool-keys", Namespace: ns},
+		keysSecret,
+	))
+	keysSecret.Data = rotated
+	require.NoError(t, c.Update(ctx, keysSecret))
+
+	reconcile(t, ctx, r, "bp", ns)
+	require.Equal(t, tpl, podTemplate(t, ctx, c, "bp", ns),
+		"the roll is held")
+	require.NoError(t, c.Get(ctx, nodeKey, got))
+	require.NotNil(t, got.Status.OpCert.RolledCounter)
+	assert.Equal(t, int64(0), *got.Status.OpCert.RolledCounter,
+		"a held roll must not record the bundle it would have rolled onto")
+}
+
 // A forging producer that gains a signing agent on an image that predates the
 // remote agent is refused as InvalidSpec and keeps its local-key template:
 // the old image would ignore the address and fail to start without kes.skey.
