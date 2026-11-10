@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
@@ -22,11 +23,16 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestStaticKeysChecksum(t *testing.T) {
@@ -558,6 +564,125 @@ func TestKeysReloadAfterRoll(t *testing.T) {
 		HasOpCertCounter: true,
 	})
 	assert.Nil(t, dn.Status.OpCert.InPlaceReload)
+}
+
+// TestKeysReloadAfterRollLostStatus walks a roll whose status write is lost:
+// the StatefulSet rolls onto bundle A, counter 4, but rolledCounter and the
+// cleared reload are never persisted, so the status still holds the outgoing
+// pod's counter 3. Bundle B, also counter 4, then arrives. The rolled counter
+// is recovered from the live template, so B rolls the pod, and the new pod
+// reporting A's counter cannot mark B applied.
+func TestKeysReloadAfterRollLostStatus(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	// The template the StatefulSet rolled onto: bundle A with its counter.
+	live := liveKeys{
+		exists:   true,
+		checksum: "bundle-a",
+		static:   "static",
+		pool:     "pool",
+		counter:  new(int64(4)),
+	}
+	r := &DingoNodeReconciler{Recorder: events.NewFakeRecorder(1)}
+
+	t.Run("a reused counter rolls", func(t *testing.T) {
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(3))
+		b := decideKeysRollout(
+			true, live, "bundle-b", "static", "pool", 4,
+			dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+			dn.Status.OpCert.InPlaceReload, now,
+		)
+		assert.Equal(t, "bundle-b", b.checksum, "B rolls the pod")
+		assert.False(t, b.approve, "B is not approved for staging in place")
+		assert.Nil(t, b.pending)
+		dn.Status.OpCert.InPlaceReload = b.pending
+
+		// The new pod reports A's counter. Nothing may record B as loaded.
+		r.observeLoadedOpCert(dn, &forgestatus.Status{
+			OpCertCounter:    4,
+			HasOpCertCounter: true,
+		})
+		assert.Nil(t, dn.Status.OpCert.InPlaceReload)
+	})
+
+	t.Run("a higher counter loads in place", func(t *testing.T) {
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(3))
+		b := decideKeysRollout(
+			true, live, "bundle-b", "static", "pool", 5,
+			dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+			dn.Status.OpCert.InPlaceReload, now,
+		)
+		assert.Equal(t, "bundle-a", b.checksum, "the pod keeps running")
+		assert.True(t, b.approve)
+		require.NotNil(t, b.pending)
+		assert.Equal(t, int64(5), b.pending.Counter)
+	})
+
+	t.Run("the template counter outranks a stale status value", func(t *testing.T) {
+		// rolledCounter still holds the counter of an earlier roll.
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Status.OpCert.LoadedCounter = new(int64(3))
+		dn.Status.OpCert.RolledCounter = new(int64(2))
+		b := decideKeysRollout(
+			true, live, "bundle-b", "static", "pool", 4,
+			dn.Status.OpCert.LoadedCounter, dn.Status.OpCert.RolledCounter,
+			dn.Status.OpCert.InPlaceReload, now,
+		)
+		assert.Equal(t, "bundle-b", b.checksum, "B rolls the pod")
+		assert.Nil(t, b.pending)
+	})
+}
+
+// TestLiveKeysTemplateCounter covers reading the rolled counter from the live
+// pod template.
+func TestLiveKeysTemplateCounter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]string
+		want        *int64
+	}{
+		{
+			name: "recorded",
+			annotations: map[string]string{
+				resources.KeysCounterAnnotation: "4",
+			},
+			want: new(int64(4)),
+		},
+		{
+			name: "zero is a real counter",
+			annotations: map[string]string{
+				resources.KeysCounterAnnotation: "0",
+			},
+			want: new(int64(0)),
+		},
+		{name: "absent"},
+		{
+			name: "unparsable",
+			annotations: map[string]string{
+				resources.KeysCounterAnnotation: "four",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: "ns"},
+			}
+			sts.Spec.Template.Annotations = tc.annotations
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(sts).Build()
+			r := &DingoNodeReconciler{Client: c}
+			dn := &dingov1alpha1.DingoNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: "ns"},
+			}
+			live, err := r.liveKeysTemplate(context.Background(), dn)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, live.counter)
+		})
+	}
 }
 
 // TestKeysReloadAfterRollOutgoingScrape covers scrapes that still reach the

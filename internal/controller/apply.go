@@ -174,14 +174,17 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		if keepTemplate && !sts.CreationTimestamp.IsZero() {
 			renderOpts.MountVoteKey = setsVoteKey(sts.Spec.Template)
 		}
-		// The keys pool changes only with the keys checksum, which rolls the
-		// pod anyway. While the checksum stands, or the template is held, the
-		// live value is kept, including its absence on a template rendered
-		// before the annotation existed, so adding it restarts no producer.
+		// The keys pool and counter change only with the keys checksum, which
+		// rolls the pod anyway. While the checksum stands, or the template is
+		// held, the live values are kept, including their absence on a
+		// template rendered before the annotation existed, so adding it
+		// restarts no producer. An in-place reload carries the checksum, so it
+		// keeps the counter of the bundle the pod started with.
 		if live := sts.Spec.Template.Annotations; !sts.CreationTimestamp.IsZero() &&
 			(keepTemplate ||
 				live[resources.KeysChecksumAnnotation] == renderOpts.KeysChecksum) {
 			renderOpts.KeysPool = live[resources.KeysPoolAnnotation]
+			renderOpts.KeysCounter = live[resources.KeysCounterAnnotation]
 		}
 		desired := resources.BuildStatefulSet(dn, renderOpts)
 		sts.Labels = desired.Labels

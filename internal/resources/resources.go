@@ -381,6 +381,9 @@ type RenderOptions struct {
 	// KeysStaticChecksum is the checksum of the key material an in-place
 	// reload cannot change, recorded on templates that reload keys in place.
 	KeysStaticChecksum string
+	// KeysCounter is the opcert counter of the bundle behind KeysChecksum,
+	// recorded on templates that reload keys in place.
+	KeysCounter string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
 	// Replicas is the desired StatefulSet replica count.
@@ -630,6 +633,9 @@ func BuildStatefulSet(
 	}
 	if opts.KeysStaticChecksum != "" && reloadsKeysInPlace(dn, opts) {
 		podAnnotations[KeysStaticChecksumAnnotation] = opts.KeysStaticChecksum
+	}
+	if opts.KeysCounter != "" && reloadsKeysInPlace(dn, opts) {
+		podAnnotations[KeysCounterAnnotation] = opts.KeysCounter
 	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum

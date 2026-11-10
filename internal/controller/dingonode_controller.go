@@ -511,6 +511,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 				opts.KeysChecksum = rollout.checksum
 				opts.KeysStaticChecksum = rollout.static
 				opts.KeysPool = pool
+				opts.KeysCounter = strconv.FormatInt(state.Counter, 10)
 				dn.Status.OpCert.InPlaceReload = rollout.pending
 				dn.Status.OpCert.RolledCounter = rollout.rolled
 				if rollout.approve {

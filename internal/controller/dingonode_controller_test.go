@@ -872,6 +872,86 @@ func TestBlockProducerKeysPoolAnnotation(t *testing.T) {
 	assert.Equal(t, pool, keysPool(t, ctx, c, "bp", "pool-ns"))
 }
 
+// The keys counter is recorded with the keys checksum when the pod rolls onto
+// a bundle, and kept while an in-place reload carries the checksum. A template
+// rendered before the annotation existed keeps its absence, so upgrading the
+// operator restarts no producer.
+func TestBlockProducerKeysCounterAnnotation(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "counter-ns")
+	key := types.NamespacedName{Name: "pool-keys", Namespace: "counter-ns"}
+	nodeKey := types.NamespacedName{Name: "bp", Namespace: "counter-ns"}
+	stsKey := nodeKey
+	counter := func() string {
+		return podTemplate(t, ctx, c, "bp", "counter-ns").
+			Annotations[resources.KeysCounterAnnotation]
+	}
+	setSecret := func(data map[string][]byte) {
+		secret := &corev1.Secret{}
+		require.NoError(t, c.Get(ctx, key, secret))
+		secret.Data = data
+		require.NoError(t, c.Update(ctx, secret))
+	}
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	first, err := keys.SecretData(2, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data:       first,
+	}))
+	dn := blockProducerNode(
+		"bp", "counter-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
+	require.NoError(t, c.Create(ctx, dn))
+	r := reconcilerFor(c)
+	reconcile(t, ctx, r, "bp", "counter-ns")
+	assert.Equal(t, "2", counter(), "the first render records the counter")
+
+	// The node has not reported a counter, so a new bundle rolls the pod
+	// and records its counter.
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	rolled, err := keys.SecretData(5, 0)
+	require.NoError(t, err)
+	setSecret(rolled)
+	reconcile(t, ctx, r, "bp", "counter-ns")
+	assert.Equal(t, "5", counter(), "a roll records the new counter")
+
+	// The node reports it; the next bundle loads in place and the template,
+	// counter included, stays.
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(ctx, nodeKey, got))
+	got.Status.OpCert.LoadedCounter = new(int64(5))
+	require.NoError(t, c.Status().Update(ctx, got))
+	before := podTemplate(t, ctx, c, "bp", "counter-ns")
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	next, err := keys.SecretData(6, 0)
+	require.NoError(t, err)
+	setSecret(next)
+	reconcile(t, ctx, r, "bp", "counter-ns")
+	require.NoError(t, c.Get(ctx, nodeKey, got))
+	require.NotNil(t, got.Status.OpCert.InPlaceReload,
+		"the bundle is approved in place")
+	assert.Equal(t, before, podTemplate(t, ctx, c, "bp", "counter-ns"),
+		"an in-place reload leaves the template unchanged")
+
+	// A template from before the annotation, with the keys unchanged.
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	delete(sts.Spec.Template.Annotations, resources.KeysCounterAnnotation)
+	require.NoError(t, c.Update(ctx, sts))
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	legacy := sts.Spec.Template
+	generation := sts.Generation
+	reconcile(t, ctx, r, "bp", "counter-ns")
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	assert.Equal(t, legacy, sts.Spec.Template,
+		"unchanged keys must not roll a template without the counter")
+	assert.Equal(t, generation, sts.Generation)
+}
+
 // stubOnChain is a controllable onchain.Fetcher so the controller suite can
 // exercise the on-chain counter path without a Cardano node.
 type stubOnChain struct {

@@ -51,10 +51,10 @@ operators.
   rolled. A change to any other Secret entry (VRF key, vote key), a new pool,
   or an opcert that reuses the loaded counter (or one approved before the node
   has reported its counter, or one replacing an unconfirmed approval without a
-  higher counter) always rolls the pod. After a roll, until the node reports the
-  counter the pod started with (`status.opcert.rolledCounter`) or confirms a
-  later in-place reload, a bundle loads in place only with a counter above it
-  and the loaded one. It needs a
+  higher counter) always rolls the pod. A bundle loads in place only with a
+  counter above the loaded one and the one the pod started with, which the pod
+  template records (`dingo.blinklabs.io/keys-counter`, mirrored in
+  `status.opcert.rolledCounter` until the node reports it). It needs a
   Dingo version that reloads credential files in place.
   An optional `vote.skey` key in the Secret (Leios BLS12-381 vote signing key,
   text envelope or raw hex scalar; `bls.skey`, the dingo Helm chart's name, is

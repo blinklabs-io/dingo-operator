@@ -28,6 +28,12 @@ const (
 	// loads a new KES key and opcert into the running pod only while this
 	// still matches the keys Secret.
 	KeysStaticChecksumAnnotation = "dingo.blinklabs.io/keys-static-checksum"
+	// KeysCounterAnnotation records, on a pod template that reloads keys in
+	// place, the opcert counter of the bundle behind the keys checksum: the
+	// counter a pod started from the template reports before any in-place
+	// reload. It is written with the checksum, so it survives a lost status
+	// write after a roll.
+	KeysCounterAnnotation = "dingo.blinklabs.io/keys-counter"
 	// KeysApprovalKey is the key of the approval ConfigMap that holds the
 	// digest of the KES key and opcert the operator approved.
 	KeysApprovalKey = "approved"
