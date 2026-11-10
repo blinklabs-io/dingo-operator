@@ -293,7 +293,9 @@ type RotationSpec struct {
 	// key, the vote key, any other Secret entry or the pool always rolls the
 	// pod, as does an opcert that reuses the counter the node reports loaded,
 	// or one approved before the node has reported it, or one that replaces an
-	// unconfirmed approval without a higher counter. Needs a Dingo version
+	// unconfirmed approval without a higher counter, or one without a counter
+	// above the one the pod started with (status.opcert.rolledCounter, also
+	// recorded on the pod template). Needs a Dingo version
 	// that reloads its credential files in place; an older one is rolled after
 	// the confirmation timeout. Enabling or disabling it rolls the pod once.
 	// +optional
@@ -737,6 +739,14 @@ type OpCertStatus struct {
 	// observed; zero is a real counter.
 	// +optional
 	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
+	// RolledCounter is the issue number of the opcert in the bundle the pod
+	// last started with. It is cleared when the node reports that counter, or
+	// when an in-place reload with a higher counter is confirmed. The pod
+	// template records the same counter (dingo.blinklabs.io/keys-counter),
+	// which a bundle must exceed to load in place; this value stands in, while
+	// set, for a template rendered before that annotation existed.
+	// +optional
+	RolledCounter *int64 `json:"rolledCounter,omitempty"`
 	// InPlaceReload tracks the key bundle approved for an in-place reload
 	// (spec.blockProducer.rotation.reloadInPlace).
 	// +optional

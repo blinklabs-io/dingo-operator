@@ -250,6 +250,39 @@ func TestKeysSyncScriptExitsOnSIGTERM(t *testing.T) {
 	}
 }
 
+// The keys counter is recorded only on a template that reloads keys in place.
+func TestKeysCounterAnnotation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		enabled   bool
+		mountKeys bool
+		want      bool
+	}{
+		{name: "disabled", enabled: false, mountKeys: true},
+		{name: "enabled", enabled: true, mountKeys: true, want: true},
+		{name: "keyless pod", enabled: true, mountKeys: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := bpNode()
+			dn.Spec.BlockProducer.Rotation.ReloadInPlace = tc.enabled
+			tmpl := BuildStatefulSet(dn, RenderOptions{
+				Replicas:     1,
+				MountKeys:    tc.mountKeys,
+				KeysChecksum: "full",
+				KeysCounter:  "4",
+			}).Spec.Template
+			got, ok := tmpl.Annotations[KeysCounterAnnotation]
+			if !tc.want {
+				assert.False(t, ok)
+				return
+			}
+			assert.Equal(t, "4", got)
+		})
+	}
+}
+
 func opCertDigest(cert string) string {
 	sum := sha256.Sum256([]byte(cert))
 	return hex.EncodeToString(sum[:])
