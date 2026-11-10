@@ -137,6 +137,21 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				cs.Type,
 			)
 		}
+		// Before the Auto checks, so Auto with a signing agent is refused
+		// for that reason rather than for an incomplete cold signer.
+		if err := validateSigningAgent(bp); err != nil {
+			return err
+		}
+		// An image that predates the remote agent ignores its address and,
+		// with no local kes.skey, cannot start, so refuse it before the
+		// producer template changes.
+		if bp.SigningAgent != nil && !resources.SupportsSigningAgent(dn) {
+			return fmt.Errorf(
+				"spec.blockProducer.signingAgent requires a Dingo image of "+
+					"v0.%d.0 or later; set spec.image.tag",
+				resources.MinSigningAgentMinor,
+			)
+		}
 		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
 			if err := validateAutoRotation(&dn.Spec, bp); err != nil {
 				return err

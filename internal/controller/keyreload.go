@@ -63,11 +63,14 @@ func staticKeysChecksum(data map[string][]byte) string {
 
 // approvedKeysDigest returns the hex SHA-256 of a bundle's kes.skey followed by
 // its opcert, the digest the staging container compares the Secret volume with
-// before it stages them.
-func approvedKeysDigest(data map[string][]byte) string {
+// before it stages them. A node that signs through a remote agent stages only
+// the opcert, so agent leaves kes.skey out: one left in the Secret is ignored.
+func approvedKeysDigest(data map[string][]byte, agent bool) string {
 	cert, _, _ := opCertFile(data)
 	h := sha256.New()
-	h.Write(data[keyFileKES])
+	if !agent {
+		h.Write(data[keyFileKES])
+	}
 	h.Write(cert)
 	return hex.EncodeToString(h.Sum(nil))
 }

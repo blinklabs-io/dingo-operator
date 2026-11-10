@@ -77,6 +77,10 @@ type keyState struct {
 	Counter int64
 	// KESPeriod is the certificate's start KES period.
 	KESPeriod int64
+	// UnusedKESKey is set when a node that signs through a remote agent has a
+	// kes.skey in its keys Secret anyway. It is not validated, staged or
+	// passed to Dingo.
+	UnusedKESKey bool
 }
 
 // onChainCounterMaxAge bounds how old an observation of the on-chain opcert
@@ -123,8 +127,16 @@ func validateKeysSecret(
 		return nil, errors.New("block producer spec is nil")
 	}
 
+	// With a remote signing agent the agent holds the KES key: kes.skey is
+	// not required, and one left in the Secret is ignored rather than
+	// checked, since it is never staged.
+	agent := bp.SigningAgent != nil
+	required := []string{keyFileKES, keyFileVRF}
+	if agent {
+		required = []string{keyFileVRF}
+	}
 	var missing []string
-	for _, k := range []string{keyFileKES, keyFileVRF} {
+	for _, k := range required {
 		if len(secret.Data[k]) == 0 {
 			missing = append(missing, k)
 		}
@@ -144,11 +156,14 @@ func validateKeysSecret(
 
 	// A truncated or wrong-kind signing key is worth catching here rather than
 	// at node startup.
-	kesRaw, err := checkKeyEnvelope(
-		secret.Data[keyFileKES], keyFileKES, kesEnvelopeTypePrefix,
-	)
-	if err != nil {
-		return nil, err
+	var kesRaw []byte
+	if !agent {
+		kesRaw, err = checkKeyEnvelope(
+			secret.Data[keyFileKES], keyFileKES, kesEnvelopeTypePrefix,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 	vrfRaw, err := checkKeyEnvelope(
 		secret.Data[keyFileVRF], keyFileVRF, vrfEnvelopeTypePrefix,
@@ -190,8 +205,13 @@ func validateKeysSecret(
 	// still changes, so the operator would roll the one forging pod onto a
 	// bundle Dingo refuses at startup (ledger/forging/keys.go: "KES
 	// verification key mismatch").
-	if err := checkKESBinding(kesRaw, oc.KesVkey); err != nil {
-		return nil, err
+	//
+	// A node that signs through a remote agent has no local KES key to bind;
+	// Dingo checks the opcert against the agent's key when it connects.
+	if !agent {
+		if err := checkKESBinding(kesRaw, oc.KesVkey); err != nil {
+			return nil, err
+		}
 	}
 
 	counter, err := certField(oc.IssueNumber, "counter")
@@ -266,7 +286,11 @@ func validateKeysSecret(
 		}
 	}
 
-	return &keyState{Counter: counter, KESPeriod: startPeriod}, nil
+	return &keyState{
+		Counter:      counter,
+		KESPeriod:    startPeriod,
+		UnusedKESKey: agent && len(secret.Data[keyFileKES]) > 0,
+	}, nil
 }
 
 // opCertFile returns the operational certificate from a keys Secret and the

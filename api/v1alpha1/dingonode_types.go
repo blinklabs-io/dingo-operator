@@ -379,6 +379,46 @@ type BlockProducerSpec struct {
 	NodeToClient NodeToClientSpec `json:"nodeToClient,omitempty"`
 	// +optional
 	PodDisruptionBudget PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+	// SigningAgent signs through a remote Bursa KES agent instead of keys held
+	// by the node. Today that covers block headers (KES signatures): the keys
+	// Secret then needs only vrf.skey and the opcert, kes.skey is neither
+	// required nor staged, and Dingo checks the opcert against the agent when
+	// it connects. Leios vote signing can move to the agent later, once Dingo
+	// and Bursa support it; until then an optional vote key stays in the keys
+	// Secret. Not compatible with rotation.mode Auto, which generates the KES
+	// key in the operator. Requires a Dingo image that reads the remote agent
+	// settings; older canonical image tags are refused.
+	// +optional
+	SigningAgent *SigningAgentSpec `json:"signingAgent,omitempty"`
+}
+
+// SigningAgentSpec configures the link from a block producer to a remote
+// Bursa KES agent. The link is TLS 1.3 unless plaintext is set. The agent is
+// authenticated by serverSpkiSha256 when set, otherwise by x509 verification
+// of its certificate against the address's host name.
+type SigningAgentSpec struct {
+	// Address is the host:port of the agent's remote sign listener.
+	// +kubebuilder:validation:MinLength=1
+	Address string `json:"address"`
+	// ServerSPKISHA256 pins the agent's TLS server key: the hex SHA-256 of its
+	// certificate's SubjectPublicKeyInfo (64 hex characters), which the agent
+	// logs at startup as server_spki_sha256. Requires TLS.
+	// +optional
+	ServerSPKISHA256 string `json:"serverSpkiSha256,omitempty"`
+	// Plaintext runs the link over plain TCP, for setups where something else
+	// secures it, such as a service mesh. It takes neither serverSpkiSha256
+	// nor clientCertSecretRef.
+	// +optional
+	Plaintext bool `json:"plaintext,omitempty"`
+	// ClientCertSecretRef names a Secret in the DingoNode's namespace holding
+	// tls.crt and tls.key, the node's TLS client certificate and key for the
+	// agent. Both files are mounted read-only into the node. Requires TLS.
+	// Dingo reads them at startup, so the operator rolls the pod when either
+	// changes.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	ClientCertSecretRef string `json:"clientCertSecretRef,omitempty"`
 }
 
 // PodDisruptionBudgetSpec controls the block producer's PodDisruptionBudget.

@@ -300,6 +300,32 @@ the pod onto it":
   - The KES length check must precede the derivation: gouroboros
     `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
     check and panics on a short key.
+- With `spec.blockProducer.signingAgent` a remote Bursa KES agent signs
+  block headers. `kes.skey` is then not required; its envelope and its
+  binding to the opcert are not checked, and one left in the Secret is never
+  staged or wired (`KeysValid` notes it). Dingo checks the opcert against the
+  agent when it connects. Everything else above still runs, the optional vote
+  key included. The operator sets `CARDANO_SHELLEY_KES_AGENT_*` instead of
+  `CARDANO_SHELLEY_KES_KEY`, which Dingo refuses alongside an agent address,
+  and `validateSpec` mirrors Dingo's own refusals (address not host:port,
+  `plaintext` with a pin or client certificate, a pin that is not 64 hex
+  characters), refuses a port outside 1-65535, and refuses
+  `rotation.mode: Auto`, which generates the KES key in the operator. The pin
+  is validated and rendered trimmed. The keys checksum still hashes the whole
+  Secret, so editing a stray `kes.skey` rolls the pod. A client certificate
+  Secret that is missing, holds only half the pair, or does not load as a
+  matching PEM pair holds the pod template like a refused bundle. A valid
+  pair is hashed (`tls.crt` and `tls.key` only) into its own pod annotation,
+  `dingo.blinklabs.io/signing-agent-cert-checksum`, so a renewal rolls the pod
+  without touching the keys checksum that forger provenance compares against
+  the keys Secret; a held template carries the live value forward.
+  `validateSpec` refuses the agent on a canonical image older than
+  `resources.MinSigningAgentMinor`, which must track the first Dingo release
+  that reads `CARDANO_SHELLEY_KES_AGENT_ADDRESS`. An agent
+  node's keys Secret needs no KES key, so across namespaces its claim on a
+  pool counts as key-backed only when a stray `kes.skey` binds to the opcert
+  (`holdsKESKey` does not look at the spec). Otherwise it holds other
+  producers back without halting them.
 - The KES period checks — both of them — only run once
   `status.kes.currentPeriod > 0`. Zero means "not scraped yet", not "period
   0", and failing on it would refuse a healthy node's own valid keys on the

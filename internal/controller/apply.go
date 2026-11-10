@@ -173,6 +173,10 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		// missing Secret alone does not count as a template change.
 		if keepTemplate && !sts.CreationTimestamp.IsZero() {
 			renderOpts.MountVoteKey = setsVoteKey(sts.Spec.Template)
+			// The agent client certificate checksum likewise: the held
+			// render records the pair the live pod loaded.
+			renderOpts.SigningAgentCertChecksum = sts.Spec.Template.
+				Annotations[resources.SigningAgentCertChecksumAnnotation]
 		}
 		// The keys pool changes only with the keys checksum, which rolls the
 		// pod anyway. While the checksum stands, or the template is held, the
