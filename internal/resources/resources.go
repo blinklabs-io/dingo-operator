@@ -54,6 +54,9 @@ const (
 	// it as created, so it names the pool the pod forges for after the spec
 	// and the keys Secret have moved on.
 	KeysPoolAnnotation = "dingo.blinklabs.io/keys-pool"
+	// SigningAgentCertChecksumAnnotation forces a rollout when the signing
+	// agent client certificate pair changes; Dingo loads it at startup.
+	SigningAgentCertChecksumAnnotation = "dingo.blinklabs.io/signing-agent-cert-checksum"
 	// ConfigChecksumAnnotation forces a rollout when the config bundle
 	// (config.json + genesis files) referenced by spec.configRef changes.
 	ConfigChecksumAnnotation = "dingo.blinklabs.io/config-checksum"
@@ -320,6 +323,24 @@ func SupportsTracing(dn *dingov1alpha1.DingoNode) bool {
 	return !ok || major > 0 || minor >= minTracingMinor
 }
 
+// MinSigningAgentMinor is the first 0.x release that reads the remote KES
+// agent settings (CARDANO_SHELLEY_KES_AGENT_ADDRESS and the TLS options).
+// Earlier releases know only the local-socket agent and ignore the address,
+// so a producer that drops its local kes.skey for one cannot start. No Dingo
+// release reads CARDANO_SHELLEY_KES_AGENT_ADDRESS or the TLS client options
+// yet, so this is one minor above the latest release and every published
+// release is refused. Set it to the first release that reads them once that
+// release is published.
+const MinSigningAgentMinor = 93
+
+// SupportsSigningAgent reports whether the selected image can sign through a
+// remote agent, as spec.blockProducer.signingAgent configures. As for
+// SupportsTracing, an image whose version cannot be determined is trusted.
+func SupportsSigningAgent(dn *dingov1alpha1.DingoNode) bool {
+	major, minor, _, ok := canonicalImageVersion(dn)
+	return !ok || major > 0 || minor >= MinSigningAgentMinor
+}
+
 // DefaultDingoTag is the Dingo image tag used when the spec omits one. It should
 // track a version the operator has been tested against.
 //
@@ -386,6 +407,10 @@ type RenderOptions struct {
 	KeysCounter string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
+	// SigningAgentCertChecksum triggers a rollout when the signing agent
+	// client certificate pair changes. It is rendered only where that Secret
+	// is mounted.
+	SigningAgentCertChecksum string
 	// Replicas is the desired StatefulSet replica count.
 	Replicas int32
 	// MountKeys mounts the block-producer key Secret. Keyless standby pods set
@@ -482,10 +507,17 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 				Name:  "CARDANO_SHELLEY_VRF_KEY",
 				Value: keysMountPath + "/vrf.skey",
 			},
-			corev1.EnvVar{
-				Name:  "CARDANO_SHELLEY_KES_KEY",
+		)
+		// With a remote signing agent no kes.skey is staged, and Dingo
+		// refuses CARDANO_SHELLEY_KES_KEY alongside an agent address.
+		if bp.SigningAgent == nil {
+			env = append(env, corev1.EnvVar{
+				Name:  KESKeyEnv,
 				Value: keysMountPath + "/kes.skey",
-			},
+			})
+		}
+		env = append(
+			env,
 			corev1.EnvVar{
 				Name:  "CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE",
 				Value: keysMountPath + "/opcert.cert",
@@ -507,6 +539,9 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 				Value: strconv.FormatInt(bp.ForgeStaleGapThresholdSlots, 10),
 			},
 		)
+		if bp.SigningAgent != nil {
+			env = append(env, signingAgentEnv(bp.SigningAgent)...)
+		}
 	}
 	// The optional Leios vote key shares the key-mount gate, so a keyless
 	// standby never gets a vote signing key.
@@ -639,6 +674,10 @@ func BuildStatefulSet(
 	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
+	}
+	if opts.SigningAgentCertChecksum != "" &&
+		signingAgentCertSecret(dn, opts) != "" {
+		podAnnotations[SigningAgentCertChecksumAnnotation] = opts.SigningAgentCertChecksum
 	}
 
 	container := corev1.Container{
@@ -827,6 +866,13 @@ func volumeMounts(
 			ReadOnly:  true,
 		})
 	}
+	if signingAgentCertSecret(dn, opts) != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      signingAgentTLSVolume,
+			MountPath: signingAgentTLSPath,
+			ReadOnly:  true,
+		})
+	}
 	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {
 		mounts = append(
 			mounts,
@@ -901,6 +947,25 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 				},
 			},
 		)
+	}
+	// The client key is read by Dingo straight from the Secret volume, like
+	// the UTxORPC TLS key below. Its files are root-owned and Dingo runs as a
+	// non-root user that reads them through the pod fsGroup, so the group
+	// bit is needed; Dingo loads the pair with no file mode check.
+	if certSecret := signingAgentCertSecret(dn, opts); certSecret != "" {
+		vols = append(vols, corev1.Volume{
+			Name: signingAgentTLSVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: certSecret,
+					Items: []corev1.KeyToPath{
+						{Key: "tls.crt", Path: "tls.crt"},
+						{Key: "tls.key", Path: "tls.key"},
+					},
+					DefaultMode: new(int32(0o440)),
+				},
+			},
+		})
 	}
 	if reloadsKeysInPlace(dn, opts) {
 		vols = append(vols, keysApprovalVolume(dn))

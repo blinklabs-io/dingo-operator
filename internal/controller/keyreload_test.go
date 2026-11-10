@@ -92,9 +92,11 @@ func TestStaticKeysChecksum(t *testing.T) {
 }
 
 // The digest must be what the staging container computes with
-// `cat kes.skey <cert> | sha256sum`.
+// `cat kes.skey <cert> | sha256sum`, or `cat <cert> | sha256sum` on a node that
+// signs through a remote agent, which ignores a kes.skey left in the Secret.
 func TestApprovedKeysDigest(t *testing.T) {
-	want := sha256.Sum256([]byte("kes" + "cert"))
+	local := sha256.Sum256([]byte("kes" + "cert"))
+	agent := sha256.Sum256([]byte("cert"))
 	for _, name := range []string{"opcert.cert", "node.cert"} {
 		data := map[string][]byte{
 			"vrf.skey": []byte("vrf"),
@@ -103,9 +105,15 @@ func TestApprovedKeysDigest(t *testing.T) {
 		}
 		assert.Equal(
 			t,
-			hex.EncodeToString(want[:]),
-			approvedKeysDigest(data),
+			hex.EncodeToString(local[:]),
+			approvedKeysDigest(data, false),
 			name,
+		)
+		assert.Equal(
+			t,
+			hex.EncodeToString(agent[:]),
+			approvedKeysDigest(data, true),
+			name+" with a signing agent",
 		)
 	}
 }

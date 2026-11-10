@@ -1360,6 +1360,48 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
+                  signingAgent:
+                    description: |-
+                      SigningAgent signs through a remote Bursa KES agent instead of keys held
+                      by the node. Today that covers block headers (KES signatures): the keys
+                      Secret then needs only vrf.skey and the opcert, kes.skey is neither
+                      required nor staged, and Dingo checks the opcert against the agent when
+                      it connects. Leios vote signing can move to the agent later, once Dingo
+                      and Bursa support it; until then an optional vote key stays in the keys
+                      Secret. Not compatible with rotation.mode Auto, which generates the KES
+                      key in the operator. Requires a Dingo image that reads the remote agent
+                      settings; older canonical image tags are refused.
+                    properties:
+                      address:
+                        description: Address is the host:port of the agent's remote
+                          sign listener.
+                        minLength: 1
+                        type: string
+                      clientCertSecretRef:
+                        description: |-
+                          ClientCertSecretRef names a Secret in the DingoNode's namespace holding
+                          tls.crt and tls.key, the node's TLS client certificate and key for the
+                          agent. Both files are mounted read-only into the node. Requires TLS.
+                          Dingo reads them at startup, so the operator rolls the pod when either
+                          changes.
+                        maxLength: 253
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      plaintext:
+                        description: |-
+                          Plaintext runs the link over plain TCP, for setups where something else
+                          secures it, such as a service mesh. It takes neither serverSpkiSha256
+                          nor clientCertSecretRef.
+                        type: boolean
+                      serverSpkiSha256:
+                        description: |-
+                          ServerSPKISHA256 pins the agent's TLS server key: the hex SHA-256 of its
+                          certificate's SubjectPublicKeyInfo (64 hex characters), which the agent
+                          logs at startup as server_spki_sha256. Requires TLS.
+                        type: string
+                    required:
+                    - address
+                    type: object
                   slotsPerKESPeriod:
                     default: 129600
                     format: int64

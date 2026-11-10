@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -279,5 +280,159 @@ func TestKeysCounterAnnotation(t *testing.T) {
 			}
 			assert.Equal(t, "4", got)
 		})
+	}
+}
+
+func opCertDigest(cert string) string {
+	sum := sha256.Sum256([]byte(cert))
+	return hex.EncodeToString(sum[:])
+}
+
+// The staging container of a node that signs through an agent runs the
+// opcert-only script, and one with a local KES key keeps its script.
+func TestKeysSyncScriptFollowsSigningAgent(t *testing.T) {
+	t.Parallel()
+	syncCommand := func(dn *dingov1alpha1.DingoNode) []string {
+		dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
+		pod := renderPod(dn, RenderOptions{MountKeys: true})
+		for _, c := range pod.Containers {
+			if c.Name == keysSyncName {
+				return c.Command
+			}
+		}
+		t.Fatal("no staging container")
+		return nil
+	}
+	local := syncCommand(bpNode())
+	require.Len(t, local, 3)
+	assert.Equal(t, syncBlockProducerKeysScript, local[2])
+	agent := syncCommand(
+		agentNode(dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"}),
+	)
+	require.Len(t, agent, 3)
+	assert.Equal(t, syncSigningAgentKeysScript, agent[2])
+	assert.NotContains(t, agent[2], "kes.skey")
+}
+
+// In agent mode the staging container stages only an approved opcert, matched
+// against the digest of the opcert alone, and never copies a kes.skey left in
+// the Secret.
+func TestSigningAgentKeysSyncScript(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		certFile string
+		approved string
+		wantCert string
+	}{
+		{
+			name:     "approved opcert.cert",
+			certFile: "opcert.cert",
+			approved: opCertDigest("cert-new"),
+			wantCert: "cert-new",
+		},
+		{
+			name:     "approved node.cert",
+			certFile: "node.cert",
+			approved: opCertDigest("cert-new"),
+			wantCert: "cert-new",
+		},
+		{
+			// The local-key digest covers kes.skey too, so it never
+			// approves an opcert here.
+			name:     "local-key digest",
+			certFile: "opcert.cert",
+			approved: keysDigest("kes-new", "cert-new"),
+			wantCert: "cert-old",
+		},
+		{
+			name:     "nothing approved",
+			certFile: "opcert.cert",
+			wantCert: "cert-old",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src, dst, apr := t.TempDir(), t.TempDir(), t.TempDir()
+			write := func(dir, name, body string) {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(dir, name), []byte(body), 0o600,
+				))
+			}
+			write(src, "kes.skey", "kes-new")
+			write(src, tc.certFile, "cert-new")
+			write(dst, "opcert.cert", "cert-old")
+			if tc.approved != "" {
+				write(apr, KeysApprovalKey, tc.approved)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cmd := exec.CommandContext(
+				ctx, "/bin/sh", "-c", syncSigningAgentKeysScript,
+			)
+			cmd.Env = append(
+				os.Environ(),
+				"DINGO_KEYS_SOURCE="+src,
+				"DINGO_KEYS_DESTINATION="+dst,
+				"DINGO_KEYS_APPROVAL="+filepath.Join(apr, KeysApprovalKey),
+				"DINGO_KEYS_SYNC_INTERVAL=0.05",
+			)
+			require.NoError(t, cmd.Start())
+			t.Cleanup(func() {
+				cancel()
+				_ = cmd.Wait()
+			})
+
+			read := func(name string) string {
+				b, err := os.ReadFile(filepath.Join(dst, name))
+				if err != nil {
+					return ""
+				}
+				return string(b)
+			}
+			if tc.wantCert == "cert-new" {
+				require.Eventually(t, func() bool {
+					return read("opcert.cert") == tc.wantCert
+				}, 5*time.Second, 20*time.Millisecond)
+				info, err := os.Stat(filepath.Join(dst, "opcert.cert"))
+				require.NoError(t, err)
+				assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			} else {
+				time.Sleep(500 * time.Millisecond)
+				assert.Equal(t, tc.wantCert, read("opcert.cert"))
+				// Control: the loop is still running and stages the
+				// opcert once it is approved.
+				write(apr, KeysApprovalKey, opCertDigest("cert-new"))
+				require.Eventually(t, func() bool {
+					return read("opcert.cert") == "cert-new"
+				}, 5*time.Second, 20*time.Millisecond)
+			}
+			assert.NoFileExists(t, filepath.Join(dst, "kes.skey"))
+			assert.NoFileExists(t, filepath.Join(dst, "node.cert"))
+		})
+	}
+}
+
+func TestSigningAgentKeysSyncScriptExitsOnSIGTERM(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("/bin/sh", "-c", syncSigningAgentKeysScript)
+	cmd.Env = append(
+		os.Environ(),
+		"DINGO_KEYS_SOURCE="+t.TempDir(),
+		"DINGO_KEYS_DESTINATION="+t.TempDir(),
+		"DINGO_KEYS_APPROVAL="+filepath.Join(t.TempDir(), KeysApprovalKey),
+		"DINGO_KEYS_SYNC_INTERVAL=60",
+	)
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+	select {
+	case err := <-done:
+		require.NoError(t, err, "the script exits 0 on SIGTERM")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the script did not exit within 5s of SIGTERM")
 	}
 }

@@ -33,7 +33,8 @@ const (
 // ValidateKeyEnv rejects a spec.environment override of the vote key path on a
 // block producer. The operator stages the key at VoteKeyPath only; a different
 // path would silently leave the staged key unused, or point Dingo at a file
-// that does not exist.
+// that does not exist. On a block producer that signs through an agent it also
+// rejects overrides of the KES settings; see validateSigningAgentEnv.
 func ValidateKeyEnv(dn *dingov1alpha1.DingoNode) error {
 	if !IsBlockProducer(dn) {
 		return nil
@@ -45,5 +46,5 @@ func ValidateKeyEnv(dn *dingov1alpha1.DingoNode) error {
 			VoteKeyEnv, VoteKeyPath, VoteKeyFile,
 		)
 	}
-	return nil
+	return validateSigningAgentEnv(dn)
 }
