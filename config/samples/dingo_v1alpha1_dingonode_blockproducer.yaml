@@ -46,4 +46,3 @@ spec:
       #   profile: otg@preview  # optional; needed if the signer holds the key in several profiles
     ha:
       strategy: SingleActive
-      failover: Automatic
