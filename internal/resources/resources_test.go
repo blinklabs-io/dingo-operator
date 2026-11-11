@@ -124,12 +124,8 @@ func TestBuildEnv(t *testing.T) {
 		}
 	})
 
-	// Dingo v0.81.0 moved the Prometheus listener to loopback. Without this env
-	// var the PodMonitor and the operator's KES scrape both fail across the pod
-	// boundary, and the node reports RotationDue=Unknown forever rather than
-	// failing loudly. Relays are scraped too, so this is not block-producer only.
-	// Dingo v0.92.3 starts the node-to-client TCP listener only when a port is
-	// set (dingo #6178). The private Service, NetworkPolicy and on-chain
+	// Dingo v0.92.3 opens the node-to-client TCP listener only when a port is
+	// set. The container port, private Service, NetworkPolicy and on-chain
 	// counter query all expect it on PortNodeToClient.
 	t.Run("node-to-client port is always set", func(t *testing.T) {
 		for name, dn := range map[string]*dingov1alpha1.DingoNode{
@@ -143,6 +139,10 @@ func TestBuildEnv(t *testing.T) {
 		}
 	})
 
+	// Dingo v0.81.0 moved the Prometheus listener to loopback. Without this env
+	// var the PodMonitor and the operator's KES scrape both fail across the pod
+	// boundary, and the node reports RotationDue=Unknown forever rather than
+	// failing loudly. Relays are scraped too, so this is not block-producer only.
 	t.Run("metrics bind address is always set", func(t *testing.T) {
 		for name, dn := range map[string]*dingov1alpha1.DingoNode{
 			"block producer": bpNode(),
