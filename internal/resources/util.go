@@ -193,7 +193,9 @@ func initContainers(
 	// the resync marker behind (the glob skips dotfiles), so a later init run
 	// with the field still true -- a restart, key rotation or config roll --
 	// does not wipe again. An init run with the field false removes the marker,
-	// which re-arms the next time it is set true.
+	// which re-arms the next time it is set true. A failed wipe aborts under
+	// set -e before the marker is written, so the next run wipes again rather
+	// than adopting leftovers.
 	//
 	// dingo serve independently refuses to start on an incomplete sync, so a
 	// marker bug fails loudly at startup rather than forging on partial state.
@@ -208,7 +210,7 @@ if [ "${FORCE_RESYNC:-false}" = "true" ]; then
   else
     echo "force resync requested; removing existing database"
     rm -f "$DONE" "$STARTED"
-    rm -rf "${CARDANO_DATABASE_PATH:?}/"* || true
+    rm -rf "${CARDANO_DATABASE_PATH:?}/"*
     touch "$RESYNCED"
   fi
 else

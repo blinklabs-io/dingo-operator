@@ -169,7 +169,9 @@ type MithrilSpec struct {
 	VerifyCertificates *bool `json:"verifyCertificates,omitempty"`
 	// ForceResync deletes existing DB data before bootstrapping. Dangerous.
 	// The wipe runs once: while the field stays true, later pod restarts keep
-	// the re-synced data. Set it to false and back to true to wipe again.
+	// the re-synced data. To wipe again, set it to false, wait until a pod has
+	// restarted with it false, then set it to true; a quick false-then-true
+	// edit can be merged into one rollout and never re-arm.
 	// It only takes effect while mithril.enabled is true: the wipe runs in the
 	// Mithril init container, which is not rendered otherwise.
 	// +optional

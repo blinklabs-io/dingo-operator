@@ -238,7 +238,8 @@ cert-manager).
   them and is adopted as complete. `mithril.forceResync` wipes once per
   false-to-true change: the wipe leaves `.mithril-force-resync-done`, which stops
   later init runs from wiping again until an init run with the field false
-  removes it. It is inert with `mithril.enabled: false`, since the init
+  removes it, so re-arming needs a pod to start while the field is false. It is
+  inert with `mithril.enabled: false`, since the init
   container is not rendered. `dingo serve` independently refuses to start
   on an incomplete sync, so a marker bug fails loudly rather than forging on
   partial state.
