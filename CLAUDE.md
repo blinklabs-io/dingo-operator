@@ -235,7 +235,11 @@ cert-manager).
   per-immutable-file progress, so it continues rather than restarting. Re-running
   unconditionally is not an option, because catch-up against a complete database
   is core-storage-mode only. A volume holding a database and no markers predates
-  them and is adopted as complete. `dingo serve` independently refuses to start
+  them and is adopted as complete. `mithril.forceResync` wipes once per
+  false-to-true change: the wipe leaves `.mithril-force-resync-done`, which stops
+  later init runs from wiping again until an init run with the field false
+  removes it. It is inert with `mithril.enabled: false`, since the init
+  container is not rendered. `dingo serve` independently refuses to start
   on an incomplete sync, so a marker bug fails loudly rather than forging on
   partial state.
 - A Mithril bootstrap peaks at roughly twice the node's steady-state disk.

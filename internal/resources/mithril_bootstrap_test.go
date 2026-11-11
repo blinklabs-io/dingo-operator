@@ -216,6 +216,45 @@ func TestMithrilBootstrapForceResyncWipesAndRebootstraps(t *testing.T) {
 	)
 }
 
+// While forceResync stays true every pod restart reruns the init container;
+// only the first run may wipe.
+func TestMithrilBootstrapForceResyncWipesOnce(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+
+	out, err := runBootstrap(t, dataDir, true, false)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "force resync requested")
+
+	kept := filepath.Join(dataDir, "kept-file")
+	require.NoError(t, os.WriteFile(kept, []byte("x"), 0o600))
+
+	out, err = runBootstrap(t, dataDir, true, false)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "force resync already performed")
+	assert.NotContains(t, out, "removing existing database")
+	assert.True(t, exists(t, kept), "a restart must not wipe again")
+}
+
+// Setting forceResync back to false re-arms it for the next request.
+func TestMithrilBootstrapForceResyncRearmsAfterFalse(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+
+	out, err := runBootstrap(t, dataDir, true, false)
+	require.NoError(t, err, out)
+	out, err = runBootstrap(t, dataDir, false, false)
+	require.NoError(t, err, out)
+
+	stale := filepath.Join(dataDir, "stale-file")
+	require.NoError(t, os.WriteFile(stale, []byte("x"), 0o600))
+
+	out, err = runBootstrap(t, dataDir, true, false)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "removing existing database")
+	assert.False(t, exists(t, stale), "a new request must wipe again")
+}
+
 func TestMithrilBootstrapStorageMode(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
