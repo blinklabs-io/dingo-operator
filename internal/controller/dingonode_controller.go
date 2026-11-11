@@ -43,8 +43,11 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -381,8 +384,8 @@ func (r *DingoNodeReconciler) haltForger(
 // topology.relayRefs, so peers are dialed on the port the referenced DingoNode
 // serves rather than an assumed one. A ref with no DingoNode is left out and
 // keeps the default port: it may be created later, or be a node this operator
-// does not manage. A change to a peer's port reaches this node on its next
-// periodic reconcile, since the peer is not watched.
+// does not manage. A change to a peer's port, and the peer's creation or
+// deletion, enqueues this node (see dingoNodesForRelayRef).
 func (r *DingoNodeReconciler) relayRefPorts(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -1521,6 +1524,24 @@ func (r *DingoNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		// Referenced objects the operator does not own. Peer watches see only
+		// spec changes, creation and deletion: status is written every
+		// reconcile, and two nodes listing each other in relayRefs would
+		// otherwise reconcile each other on every status write.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForConfigMap),
+		).
+		Watches(
+			&dingov1alpha1.DingoNode{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForRelayRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&appsv1.StatefulSet{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForPeerStatefulSet),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Named("dingonode").
 		Complete(r)
 }

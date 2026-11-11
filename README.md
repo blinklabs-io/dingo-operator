@@ -477,8 +477,8 @@ match a node previously deployed with the dingo Helm chart: it becomes the
 container port, the port of every Service that publishes P2P, the NetworkPolicy
 port, the readiness-probe port of images without the health listener, and
 `CARDANO_PORT` (which is left unset at the default). A node that lists this one in `topology.relayRefs` dials the port
-configured on this `DingoNode`; a peer's port change is picked up on its next
-periodic reconcile. Publish the relay elsewhere with `relayService.hostPort`
+configured on this `DingoNode`; a peer's port change is applied as soon as the
+peer changes. Publish the relay elsewhere with `relayService.hostPort`
 (the container's host port) or `relayService.nodePort` on a NodePort or
 LoadBalancer Service.
 Core storage mode is rejected only when an API listener is enabled. Kupo uses
