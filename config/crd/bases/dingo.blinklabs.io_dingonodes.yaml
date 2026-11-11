@@ -1180,8 +1180,9 @@ spec:
                     properties:
                       failover:
                         default: Automatic
-                        description: FailoverMode controls whether standby promotion
-                          is automatic or manual.
+                        description: |-
+                          Failover selects standby promotion behavior. It has no effect while
+                          ActiveStandby is unsupported.
                         enum:
                         - Automatic
                         - Manual
@@ -2210,15 +2211,22 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               ha:
-                description: HAStatus reports the high-availability state of a block
-                  producer.
+                description: |-
+                  HAStatus reports the high-availability state of a block producer. Nothing
+                  writes it yet: it is reserved for ActiveStandby, which validation rejects.
                 properties:
                   activePod:
+                    description: ActivePod is reserved for ActiveStandby and is never
+                      set.
                     type: string
                   lastPromotion:
+                    description: LastPromotion is reserved for ActiveStandby and is
+                      never set.
                     format: date-time
                     type: string
                   standbyPods:
+                    description: StandbyPods is reserved for ActiveStandby and is
+                      never set.
                     items:
                       type: string
                     type: array
@@ -2274,6 +2282,8 @@ spec:
                     - requestedAt
                     type: object
                   lastRotated:
+                    description: LastRotated is declared but never written by the
+                      operator.
                     format: date-time
                     type: string
                   loadedCounter:

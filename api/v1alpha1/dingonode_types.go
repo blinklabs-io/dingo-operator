@@ -307,6 +307,8 @@ type HASpec struct {
 	// +kubebuilder:default=SingleActive
 	// +optional
 	Strategy HAStrategy `json:"strategy,omitempty"`
+	// Failover selects standby promotion behavior. It has no effect while
+	// ActiveStandby is unsupported.
 	// +kubebuilder:default=Automatic
 	// +optional
 	Failover FailoverMode `json:"failover,omitempty"`
@@ -732,6 +734,7 @@ type OpCertStatus struct {
 	// enforced until it ages out.
 	// +optional
 	OnChainCounterPoolID string `json:"onChainCounterPoolId,omitempty"`
+	// LastRotated is declared but never written by the operator.
 	// +optional
 	LastRotated *metav1.Time `json:"lastRotated,omitempty"`
 	// LoadedCounter is the issue number of the opcert the node reports it is
@@ -781,10 +784,14 @@ type TipStatus struct {
 	LastProgressAt *metav1.Time `json:"lastProgressAt,omitempty"`
 }
 
-// HAStatus reports the high-availability state of a block producer.
+// HAStatus reports the high-availability state of a block producer. Nothing
+// writes it yet: it is reserved for ActiveStandby, which validation rejects.
 type HAStatus struct {
-	ActivePod   string   `json:"activePod,omitempty"`
+	// ActivePod is reserved for ActiveStandby and is never set.
+	ActivePod string `json:"activePod,omitempty"`
+	// StandbyPods is reserved for ActiveStandby and is never set.
 	StandbyPods []string `json:"standbyPods,omitempty"`
+	// LastPromotion is reserved for ActiveStandby and is never set.
 	// +optional
 	LastPromotion *metav1.Time `json:"lastPromotion,omitempty"`
 }

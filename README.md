@@ -3,8 +3,7 @@
 A Kubernetes operator for [Dingo](https://github.com/blinklabs-io/dingo), the Go
 Cardano node. It manages the full lifecycle of Cardano relays and block
 producers — including KES/operational-certificate monitoring and rotation,
-Mithril bootstrap, topology (with external relays), and active/standby failover
-— aimed at secure, production mainnet block production for enterprise stake pool
+Mithril bootstrap, and topology (with external relays) — aimed at secure, production mainnet block production for enterprise stake pool
 operators.
 
 > Status: early development (`v1alpha1`). The API may change.
@@ -127,8 +126,9 @@ operators.
   NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
-- **Safe HA** — `SingleActive` (default) or `ActiveStandby` with fenced,
-  lease-based promotion so exactly one node ever forges. A block producer gets
+- **Safe HA** — `SingleActive` is the only supported strategy: exactly one
+  forger, with reschedule on failure. `ActiveStandby` is rejected by
+  validation until fenced failover is implemented. A block producer gets
   a PodDisruptionBudget that keeps its one pod available, so `kubectl drain` of
   its node does not complete. Set
   `spec.blockProducer.podDisruptionBudget.enabled: false` to let a drain evict

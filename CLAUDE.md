@@ -8,8 +8,8 @@ HA model, and roadmap live in the "Design & roadmap" section below.
 
 A Kubernetes operator (Kubebuilder / controller-runtime) that manages
 [Dingo](https://github.com/blinklabs-io/dingo) Cardano nodes — relays and block
-producers — including KES/opcert rotation, Mithril bootstrap, topology, and
-active/standby failover. Module: `github.com/blinklabs-io/dingo-operator`.
+producers — including KES/opcert rotation, Mithril bootstrap, and topology.
+Module: `github.com/blinklabs-io/dingo-operator`.
 
 ## Architecture map
 
@@ -89,7 +89,7 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   - Linting the suite needs two flags, not one. `test/e2e` is almost all
     `_test.go` behind the `e2e` build tag, and `.golangci.yml` sets
     `run.tests=false`, which skips `_test.go` regardless of tags — so the build
-    tag alone lints nothing. `make lint` and `.github/workflows/golangci-lint.yml`
+    tag alone lints nothing. `make lint` and the lint job in `.github/workflows/ci.yml`
     both pass `--build-tags e2e --tests`. `nilaway` and `modernize` accept
     `-tags` but ignore it; `GOFLAGS=-tags=e2e` is what works for those.
 
@@ -676,10 +676,12 @@ the opcert is loaded into the running node instead of rolling the pod
   NetworkPolicy → exactly one forger; rely on reschedule. With one replica the
   PDB blocks every voluntary eviction, so a drain never completes;
   `spec.blockProducer.podDisruptionBudget.enabled: false` removes it.
-- `ActiveStandby`: keyless hot standby; the operator holds a Lease and only the
-  holder is keyed. Promotion is fenced (old primary confirmed down/keyless)
-  so two nodes can never forge. `failover: Automatic | Manual` (default
-  Automatic).
+- `ActiveStandby` (not implemented): `validateSpec` rejects it. The intended
+  design is a keyless hot standby with the operator holding a Lease so only the
+  holder is keyed, and fenced promotion (old primary confirmed down/keyless).
+  The `failover` field and `status.ha` (`activePod`, `standbyPods`,
+  `lastPromotion`) are declared in `api/v1alpha1` but nothing reads or writes
+  them. `status.opcert.lastRotated` is likewise declared and never written.
 
 ### Delivery phases (all on one review branch)
 
@@ -689,8 +691,8 @@ the opcert is loaded into the running node instead of rolling the pod
   `MonitorOnly`/`Assisted` rotation, `SingleActive` HA.
 - P2 — full auto rotation: Bursa cold-signer, counter-safe issuance, `Auto`
   mode (pod-restart rollout). Implemented; see above.
-- P3 — `ActiveStandby` + credential hot-reload. Hot-reload of a KES rotation
-  is implemented as `rotation.reloadInPlace` (see above).
+- P3 — `ActiveStandby` (not implemented) + credential hot-reload. Hot-reload
+  of a KES rotation is implemented as `rotation.reloadInPlace` (see above).
 
 P3 depends on the upstream work below; P2's Bursa backend depends on bursa
 #1081.
