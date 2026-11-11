@@ -457,6 +457,13 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		// of failing loudly. Exposure stays bounded by the NetworkPolicy,
 		// which admits only clients labelled for metrics access.
 		{Name: "DINGO_METRICS_BIND_ADDR", Value: "0.0.0.0"},
+		// Dingo v0.92.3 starts the node-to-client TCP listener only when a
+		// port is set (dingo #6178). The container port, private Service,
+		// NetworkPolicy and on-chain counter query all expect it here.
+		{
+			Name:  "CARDANO_PRIVATE_PORT",
+			Value: strconv.Itoa(PortNodeToClient),
+		},
 	}
 	// Dingo listens on 3001 unless told otherwise; the default is left unset so
 	// existing pod templates do not change.
