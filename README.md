@@ -289,7 +289,7 @@ spec:
     poolId: <pool id, bech32 or hex>
     keys: { secretRef: producer-pool-keys }
     rotation: { mode: MonitorOnly, renewBeforePeriods: 8 }
-    ha: { strategy: SingleActive, failover: Automatic }
+    ha: { strategy: SingleActive }
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the design summary, rotation/HA models, delivery
