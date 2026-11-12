@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
@@ -228,10 +229,14 @@ func TestKeyBundleWatchAppliesDeliveredBundle(t *testing.T) {
 		}
 		return cond.Reason
 	}
-	const deadline = 30 * time.Second
 	require.Eventually(t, func() bool {
 		return keysReason() == "KeysSecretMissing"
-	}, deadline, 100*time.Millisecond)
+	}, 30*time.Second, 100*time.Millisecond)
+
+	// Let the reconciles queued by the DingoNode's creation, its status
+	// writes and its owned resources drain. Otherwise one of them could read
+	// the Secret below and pass this test without the watch.
+	waitControllerIdle(t, "dingonode", 2*time.Second, 30*time.Second)
 
 	// Deliver a bundle. It does not validate, which is fine: the point is that
 	// the controller looks at it now rather than on the requeue.
@@ -239,14 +244,63 @@ func TestKeyBundleWatchAppliesDeliveredBundle(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "keys", Namespace: ns},
 		Data:       map[string][]byte{"vrf.skey": []byte("not a key")},
 	}))
+	// Well inside requeueInterval, so only the Secret watch can explain it.
 	assert.Eventually(
 		t,
 		func() bool {
 			reason := keysReason()
 			return reason != "" && reason != "KeysSecretMissing"
 		},
-		deadline,
+		10*time.Second,
 		100*time.Millisecond,
 		"a delivered key bundle must be validated without waiting for the requeue",
 	)
+}
+
+// controllerActivity returns the named controller's completed reconciles and
+// its reconciles in progress, from controller-runtime's metrics registry.
+func controllerActivity(t *testing.T, name string) (done, active float64) {
+	t.Helper()
+	families, err := crmetrics.Registry.Gather()
+	require.NoError(t, err)
+	for _, mf := range families {
+		for _, m := range mf.GetMetric() {
+			named := false
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "controller" && l.GetValue() == name {
+					named = true
+				}
+			}
+			if !named {
+				continue
+			}
+			switch mf.GetName() {
+			case "controller_runtime_reconcile_total":
+				done += m.GetCounter().GetValue()
+			case "controller_runtime_active_workers":
+				active += m.GetGauge().GetValue()
+			}
+		}
+	}
+	return done, active
+}
+
+// waitControllerIdle waits until the named controller has run no reconcile
+// and has none in progress for the quiet period.
+func waitControllerIdle(
+	t *testing.T,
+	name string,
+	quiet, timeout time.Duration,
+) {
+	t.Helper()
+	last, _ := controllerActivity(t, name)
+	since := time.Now()
+	require.Eventually(t, func() bool {
+		done, active := controllerActivity(t, name)
+		if done != last || active != 0 {
+			last, since = done, time.Now()
+			return false
+		}
+		return time.Since(since) >= quiet
+	}, timeout, 100*time.Millisecond, "controller %s never went idle", name)
 }
