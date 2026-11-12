@@ -18,6 +18,8 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -53,6 +55,7 @@ func main() {
 		enableLeaderElection bool
 		secureMetrics        bool
 		tipStallThreshold    time.Duration
+		keyNamespaces        string
 	)
 	flag.StringVar(
 		&metricsAddr,
@@ -85,6 +88,15 @@ func main() {
 		"How long a node's tip slot may stay unchanged before "+
 			"LedgerPipelineHealthy reports TipNotAdvancing. 0 disables.",
 	)
+	flag.StringVar(
+		&keyNamespaces,
+		"key-namespaces",
+		"",
+		"Comma-separated namespaces of block-producer key Secrets. When "+
+			"set, the operator watches Secret metadata there (it needs list "+
+			"and watch on Secrets in each) so a delivered key bundle applies "+
+			"at once; unset, it applies on the periodic requeue.",
+	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -96,8 +108,10 @@ func main() {
 		version.GetVersionString(),
 	)
 
+	watchNamespaces := splitNamespaces(keyNamespaces)
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
+		Cache:  controller.KeyBundleCacheOptions(watchNamespaces),
 		Metrics: metricsserver.Options{
 			BindAddress:    metricsAddr,
 			FilterProvider: filters.WithAuthenticationAndAuthorization,
@@ -125,6 +139,7 @@ func main() {
 		PodMonitorCRD: podMonitorInstalled(mgr),
 
 		TipStallThreshold: tipStallThreshold,
+		WatchKeyBundles:   len(watchNamespaces) > 0,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(
@@ -171,4 +186,17 @@ func utilRuntimeMust(err error) {
 		setupLog.Error(err, "scheme setup failed")
 		os.Exit(1)
 	}
+}
+
+// splitNamespaces parses a comma-separated namespace list, dropping blanks and
+// duplicates.
+func splitNamespaces(list string) []string {
+	var out []string
+	for ns := range strings.SplitSeq(list, ",") {
+		ns = strings.TrimSpace(ns)
+		if ns != "" && !slices.Contains(out, ns) {
+			out = append(out, ns)
+		}
+	}
+	return out
 }

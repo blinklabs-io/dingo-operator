@@ -106,6 +106,11 @@ type DingoNodeReconciler struct {
 	TipStallThreshold time.Duration
 	// Now overrides the clock; nil uses time.Now.
 	Now func() time.Time
+	// WatchKeyBundles watches the metadata of the Secrets block producers
+	// read, so a delivered bundle applies at once rather than on the requeue.
+	// The manager's Secret cache must be scoped to the namespaces the operator
+	// may list (KeyBundleCacheOptions); leave it false otherwise.
+	WatchKeyBundles bool
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex
@@ -1545,7 +1550,7 @@ func desiredReplicas(dn *dingov1alpha1.DingoNode) int32 {
 
 // SetupWithManager registers the reconciler and its owned types.
 func (r *DingoNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&dingov1alpha1.DingoNode{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
@@ -1571,7 +1576,13 @@ func (r *DingoNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForPeerStatefulSet),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
-		Named("dingonode").
-		Complete(r)
+		)
+	if r.WatchKeyBundles {
+		// Metadata only: the key material itself is never cached.
+		b = b.WatchesMetadata(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForKeyBundle),
+		)
+	}
+	return b.Named("dingonode").Complete(r)
 }
