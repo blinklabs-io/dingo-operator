@@ -43,6 +43,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -88,17 +89,7 @@ func TestMain(m *testing.M) {
 // `go test ./...` without `make test`).
 func startEnv(t *testing.T) (client.Client, context.Context) {
 	t.Helper()
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS not set; run via `make test`")
-	}
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = env.Stop() })
+	cfg := startEnvConfig(t)
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -107,6 +98,26 @@ func startEnv(t *testing.T) (client.Client, context.Context) {
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	require.NoError(t, err)
 	return c, context.Background()
+}
+
+// startEnvConfig brings up an envtest control plane with the DingoNode CRD
+// installed and returns its REST config. It skips the test when
+// KUBEBUILDER_ASSETS is not configured.
+func startEnvConfig(t *testing.T) *rest.Config {
+	t.Helper()
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("KUBEBUILDER_ASSETS not set; run via `make test`")
+	}
+	env := &envtest.Environment{
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+		},
+		ErrorIfCRDPathMissing: true,
+	}
+	cfg, err := env.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = env.Stop() })
+	return cfg
 }
 
 func reconcilerFor(c client.Client) *DingoNodeReconciler {

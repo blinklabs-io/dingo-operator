@@ -43,9 +43,11 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -387,8 +389,9 @@ func (r *DingoNodeReconciler) haltForger(
 // topology.relayRefs, so peers are dialed on the port the referenced DingoNode
 // serves rather than an assumed one. A ref with no DingoNode is left out and
 // keeps the default port: it may be created later, or be a node this operator
-// does not manage. A change to a peer's port reaches this node on its next
-// periodic reconcile, since the peer is not watched.
+// does not manage. The peer's creation, deletion or spec change enqueues this
+// node (dingoNodesForRelayRef), as does a change to the peer's pod template,
+// which is when a new port is served (dingoNodesForPeerStatefulSet).
 func (r *DingoNodeReconciler) relayRefPorts(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -412,19 +415,17 @@ func (r *DingoNodeReconciler) relayRefPorts(
 	return ports, nil
 }
 
-// servedRelayPort returns the relay port the node's pods listen on. It is the
-// spec port except for a block producer whose pod template is held, where the
-// live template still carries the previous port. A failed read is returned
-// rather than answered with the spec port, which a held template does not
-// serve; only an absent StatefulSet means the spec port.
+// servedRelayPort returns the relay port the node's pods listen on: the port
+// of its live pod template. That differs from the spec port until the node's
+// own reconcile updates its StatefulSet, and for as long as a block
+// producer's template is held. A failed read is returned rather than answered
+// with the spec port, which the live template may not serve; only an absent
+// StatefulSet means the spec port.
 func (r *DingoNodeReconciler) servedRelayPort(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) (int32, error) {
 	port := resources.RelayPort(dn)
-	if !resources.IsBlockProducer(dn) {
-		return port, nil
-	}
 	sts := &appsv1.StatefulSet{}
 	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
 	if err := r.Get(ctx, key, sts); err != nil {
@@ -437,6 +438,25 @@ func (r *DingoNodeReconciler) servedRelayPort(
 		return live, nil
 	}
 	return port, nil
+}
+
+// liveConfigChecksum returns the config-bundle checksum the live pod template
+// carries. Only a missing StatefulSet yields an empty result; every other read
+// failure is returned, since an empty checksum removes the annotation and
+// rolls the pod.
+func (r *DingoNodeReconciler) liveConfigChecksum(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (string, error) {
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read statefulset for config checksum: %w", err)
+	}
+	return sts.Spec.Template.Annotations[resources.ConfigChecksumAnnotation], nil
 }
 
 // reconcileResources applies all child objects for the node.
@@ -631,7 +651,18 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 		if err := r.Get(ctx, key, cm); err == nil {
 			opts.ConfigChecksum = configChecksum(cm)
-		} else if !apierrors.IsNotFound(err) {
+		} else if apierrors.IsNotFound(err) {
+			// A briefly absent bundle (deleted and recreated) must not
+			// change the template: an empty checksum drops the annotation
+			// and rolls the pod onto a config volume that cannot mount, and
+			// the bundle's return rolls it again. Carry the live checksum
+			// forward; with no StatefulSet yet the first render has none.
+			live, err := r.liveConfigChecksum(ctx, dn)
+			if err != nil {
+				return err
+			}
+			opts.ConfigChecksum = live
+		} else {
 			return fmt.Errorf("read config bundle: %w", err)
 		}
 	}
@@ -1526,7 +1557,26 @@ func (r *DingoNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
-		Owns(&networkingv1.NetworkPolicy{})
+		Owns(&networkingv1.NetworkPolicy{}).
+		// Objects a DingoNode references: its configRef ConfigMap, and the
+		// relayRefs peers with the StatefulSets they control. Peer watches
+		// see only spec changes, creation and deletion: status is written
+		// every reconcile, and two nodes listing each other in relayRefs
+		// would otherwise reconcile each other on every status write.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForConfigMap),
+		).
+		Watches(
+			&dingov1alpha1.DingoNode{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForRelayRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&appsv1.StatefulSet{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForPeerStatefulSet),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		)
 	if r.WatchKeyBundles {
 		// Metadata only: the key material itself is never cached.
 		b = b.WatchesMetadata(
