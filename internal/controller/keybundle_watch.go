@@ -34,13 +34,13 @@ import (
 //
 // Only metadata is watched, so no key material enters the operator's cache.
 // The watch still needs list and watch on Secrets in the key namespaces, and
-// the cache is scoped to them because the operator holds no cluster-wide
-// Secret access. Without key namespaces nothing is watched and a delivered
-// bundle applies on the requeue, as before.
+// the cache is scoped to them because that is where the deployment grants
+// list and watch; the get grant may be cluster-wide. Without key namespaces
+// nothing is watched and a delivered bundle applies on the requeue, as before.
 
 // KeyBundleCacheOptions scopes the manager's Secret cache to the key
 // namespaces. Only Secret metadata is ever cached; the scope keeps the
-// informer's list and watch inside the namespaces the operator may read.
+// informer's list and watch inside the namespaces the operator may list.
 func KeyBundleCacheOptions(namespaces []string) cache.Options {
 	if len(namespaces) == 0 {
 		return cache.Options{}

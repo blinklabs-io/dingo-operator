@@ -252,7 +252,9 @@ The chart installs the `DingoNode` CRD, the operator Deployment, RBAC, and
 
 The operator reads block-producer Secrets (the keys Secret, a signing agent's
 client certificate, a Bursa signer's mTLS credentials) with an uncached `get`
-and holds no cluster-wide Secret access. By default a newly delivered key
+and keeps no cluster-wide Secret cache or informer. The chart grants that `get`
+cluster-wide by default, or only in the namespaces listed in
+`rbac.keySecretsNamespaces` when that is set. By default a newly delivered key
 bundle is therefore picked up on the next periodic reconcile, up to two
 minutes later. Pass `--key-namespaces` (comma-separated) to apply it at once:
 the operator then watches Secret metadata in those namespaces only, and enqueues
