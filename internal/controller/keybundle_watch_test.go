@@ -161,6 +161,8 @@ func TestKeyBundleCacheOptions(t *testing.T) {
 		assert.Len(t, by.Namespaces, 2)
 		assert.Contains(t, by.Namespaces, "keys-a")
 		assert.Contains(t, by.Namespaces, "keys-b")
+		assert.NotNil(t, by.Transform,
+			"cached Secret metadata must be stripped of annotations")
 	}
 }
 
@@ -240,9 +242,17 @@ func TestKeyBundleWatchAppliesDeliveredBundle(t *testing.T) {
 
 	// Deliver a bundle. It does not validate, which is fine: the point is that
 	// the controller looks at it now rather than on the requeue.
+	// Client-side kubectl apply leaves the whole submitted Secret, key data
+	// included, in this annotation.
 	require.NoError(t, c.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "keys", Namespace: ns},
-		Data:       map[string][]byte{"vrf.skey": []byte("not a key")},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "keys",
+			Namespace: ns,
+			Annotations: map[string]string{
+				lastAppliedAnnotation: `{"data":{"vrf.skey":"bm90IGEga2V5"}}`,
+			},
+		},
+		Data: map[string][]byte{"vrf.skey": []byte("not a key")},
 	}))
 	// Well inside requeueInterval, so only the Secret watch can explain it.
 	assert.Eventually(
@@ -255,6 +265,48 @@ func TestKeyBundleWatchAppliesDeliveredBundle(t *testing.T) {
 		100*time.Millisecond,
 		"a delivered key bundle must be validated without waiting for the requeue",
 	)
+
+	// The watch caches Secret metadata, which must not carry key material.
+	cached := &metav1.PartialObjectMetadata{}
+	cached.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+	require.NoError(t, mgr.GetCache().Get(
+		ctx,
+		types.NamespacedName{Name: "keys", Namespace: ns},
+		cached,
+	))
+	assert.Empty(t, cached.GetAnnotations(),
+		"cached Secret metadata must not keep annotations")
+	assert.Empty(t, cached.GetManagedFields(),
+		"cached Secret metadata must not keep managed fields")
+}
+
+const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
+// TestStripSecretMetadata keeps only what the key bundle mapper reads.
+func TestStripSecretMetadata(t *testing.T) {
+	obj := &metav1.PartialObjectMetadata{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "keys",
+			Namespace:   "ns",
+			Annotations: map[string]string{lastAppliedAnnotation: "{}"},
+			ManagedFields: []metav1.ManagedFieldsEntry{
+				{Manager: "kubectl"},
+			},
+		},
+	}
+	out, err := stripSecretMetadata(obj)
+	require.NoError(t, err)
+	stripped, ok := out.(*metav1.PartialObjectMetadata)
+	require.True(t, ok)
+	assert.Equal(t, "keys", stripped.GetName())
+	assert.Equal(t, "ns", stripped.GetNamespace())
+	assert.Empty(t, stripped.GetAnnotations())
+	assert.Empty(t, stripped.GetManagedFields())
+
+	notMeta := "tombstone"
+	out, err = stripSecretMetadata(notMeta)
+	require.NoError(t, err)
+	assert.Equal(t, notMeta, out)
 }
 
 // controllerActivity returns the named controller's completed reconciles and

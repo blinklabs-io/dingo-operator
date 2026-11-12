@@ -19,6 +19,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -32,15 +33,17 @@ import (
 // metadata in those namespaces and enqueues the DingoNodes that reference the
 // changed Secret; the reconcile then reads it through the APIReader as before.
 //
-// Only metadata is watched, so no key material enters the operator's cache.
-// The watch still needs list and watch on Secrets in the key namespaces, and
-// the cache is scoped to them because that is where the deployment grants
-// list and watch; the get grant may be cluster-wide. Without key namespaces
-// nothing is watched and a delivered bundle applies on the requeue, as before.
+// Only metadata is watched, and the cache drops its annotations and managed
+// fields, so no key material enters the operator's cache. The watch still
+// needs list and watch on Secrets in the key namespaces, and the cache is
+// scoped to them because that is where the deployment grants list and watch;
+// the get grant may be cluster-wide. Without key namespaces nothing is
+// watched and a delivered bundle applies on the requeue, as before.
 
 // KeyBundleCacheOptions scopes the manager's Secret cache to the key
-// namespaces. Only Secret metadata is ever cached; the scope keeps the
-// informer's list and watch inside the namespaces the operator may list.
+// namespaces. Only Secret metadata is ever cached, without its annotations
+// or managed fields; the scope keeps the informer's list and watch inside
+// the namespaces the operator may list.
 func KeyBundleCacheOptions(namespaces []string) cache.Options {
 	if len(namespaces) == 0 {
 		return cache.Options{}
@@ -51,9 +54,25 @@ func KeyBundleCacheOptions(namespaces []string) cache.Options {
 	}
 	return cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
-			&corev1.Secret{}: {Namespaces: scoped},
+			&corev1.Secret{}: {
+				Namespaces: scoped,
+				Transform:  stripSecretMetadata,
+			},
 		},
 	}
+}
+
+// stripSecretMetadata drops annotations and managed fields from Secret
+// metadata before it enters the cache. Client-side kubectl apply stores the
+// whole submitted Secret, key data included, in the last-applied
+// annotation, and managed fields can carry field values too. The mapper reads
+// only the name and namespace.
+func stripSecretMetadata(obj any) (any, error) {
+	if m, ok := obj.(metav1.Object); ok {
+		m.SetAnnotations(nil)
+		m.SetManagedFields(nil)
+	}
+	return obj, nil
 }
 
 // keyBundleRefs returns the Secrets a DingoNode reads during reconcile: the
