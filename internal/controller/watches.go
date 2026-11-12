@@ -26,11 +26,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// The mappers below enqueue the DingoNodes that reference an object the
-// operator does not own, so a change to it is applied at once instead of on
-// the next periodic reconcile. Each lists the DingoNodes in the object's
-// namespace and filters in Go rather than through a field index: a namespace
-// holds few DingoNodes, and the same code then works against the API server.
+// The mappers below enqueue the DingoNodes that reference an object other than
+// their own children: a configRef ConfigMap, a relayRefs peer, or the
+// StatefulSet such a peer controls. A change to it is then applied at once
+// instead of on the next periodic reconcile. Each lists the DingoNodes in the
+// object's namespace and filters in Go rather than through a field index: a
+// namespace holds few DingoNodes, and the same code then works against the API
+// server.
 // A failed list is logged and enqueues nothing; the periodic requeue still
 // applies the change.
 //
@@ -61,10 +63,10 @@ func (r *DingoNodeReconciler) dingoNodesForRelayRef(
 }
 
 // dingoNodesForPeerStatefulSet enqueues every DingoNode whose
-// topology.relayRefs names the DingoNode controlling the StatefulSet. A block
-// producer whose pod template is held serves the relay port of its live
-// template rather than its spec, so the port its peers dial changes when the
-// template is released, without any change to the DingoNode.
+// topology.relayRefs names the DingoNode controlling the StatefulSet. Peers
+// are dialed on the relay port of the live pod template, which moves after
+// the DingoNode's spec does: once its own reconcile updates the template, or,
+// for a block producer whose template is held, when the hold is released.
 func (r *DingoNodeReconciler) dingoNodesForPeerStatefulSet(
 	ctx context.Context,
 	obj client.Object,

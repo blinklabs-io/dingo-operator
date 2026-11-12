@@ -17,8 +17,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,17 +27,16 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
@@ -212,14 +209,15 @@ func startManager(t *testing.T) (client.Client, context.Context) {
 	}
 	require.NoError(t, r.SetupWithManager(mgr))
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
-		_ = mgr.Start(ctx)
+		done <- mgr.Start(ctx)
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("manager: %v", err)
+		}
 	})
 	c, err := client.New(cfg, client.Options{Scheme: watchScheme(t)})
 	require.NoError(t, err)
@@ -324,22 +322,106 @@ func TestRelayRefPortChangeAppliedWithoutRequeue(t *testing.T) {
 		"a relayRefs peer's port change must reach the dialer's topology")
 }
 
-// startEnvConfig brings up an envtest control plane with the DingoNode CRD
-// installed and returns its REST config. It skips the test when
-// KUBEBUILDER_ASSETS is not configured.
-func startEnvConfig(t *testing.T) *rest.Config {
-	t.Helper()
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS not set; run via `make test`")
-	}
-	env := &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "config", "crd", "bases"),
-		},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
+// A configRef ConfigMap that is briefly absent (deleted and recreated) must
+// not change the pod template: dropping the checksum would roll the pod onto
+// a template whose config volume cannot mount, and its return would roll it
+// again. The live checksum is carried forward until the ConfigMap is back.
+func TestConfigRefMissingKeepsLiveChecksum(t *testing.T) {
+	dn := watchNode("cfg-ns", "custom-node", "net-config")
+	dn.Spec.Network = "custom"
+	dn.Spec.NetworkMagic = new(int64(42))
+	dn.Spec.Mithril.Enabled = new(false)
+	stsKey := types.NamespacedName{Name: "custom-node", Namespace: "cfg-ns"}
+
+	t.Run("live checksum kept", func(t *testing.T) {
+		live := resources.BuildStatefulSet(dn, resources.RenderOptions{
+			Replicas:       1,
+			ConfigChecksum: "live-sum",
+		})
+		live.CreationTimestamp = metav1.Now()
+		c := fake.NewClientBuilder().WithScheme(watchScheme(t)).
+			WithObjects(live).Build()
+		require.NoError(
+			t,
+			reconcilerFor(c).reconcileResources(context.Background(), dn.DeepCopy()),
+		)
+		got := &appsv1.StatefulSet{}
+		require.NoError(t, c.Get(context.Background(), stsKey, got))
+		assert.Equal(
+			t,
+			"live-sum",
+			got.Spec.Template.Annotations[resources.ConfigChecksumAnnotation],
+		)
+	})
+
+	t.Run("first render has no checksum", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(watchScheme(t)).Build()
+		require.NoError(
+			t,
+			reconcilerFor(c).reconcileResources(context.Background(), dn.DeepCopy()),
+		)
+		got := &appsv1.StatefulSet{}
+		require.NoError(t, c.Get(context.Background(), stsKey, got))
+		assert.NotContains(
+			t,
+			got.Spec.Template.Annotations,
+			resources.ConfigChecksumAnnotation,
+		)
+	})
+
+	t.Run("statefulset read error fails the reconcile", func(t *testing.T) {
+		// Only reads after the missing ConfigMap fail, so the error comes
+		// from carrying its checksum forward rather than an earlier read.
+		sentinel := errors.New("statefulset read failed")
+		configRead := false
+		c := fake.NewClientBuilder().WithScheme(watchScheme(t)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(
+					ctx context.Context, cl client.WithWatch,
+					key client.ObjectKey, obj client.Object,
+					opts ...client.GetOption,
+				) error {
+					switch obj.(type) {
+					case *corev1.ConfigMap:
+						if key.Name == "net-config" {
+							configRead = true
+						}
+					case *appsv1.StatefulSet:
+						if configRead {
+							return sentinel
+						}
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+		err := reconcilerFor(c).reconcileResources(
+			context.Background(), dn.DeepCopy(),
+		)
+		require.ErrorIs(t, err, sentinel)
+		// The read fails before anything is applied.
+		svc := &corev1.Service{}
+		assert.True(t, apierrors.IsNotFound(c.Get(
+			context.Background(), stsKey, svc,
+		)), "no child object is applied after a failed read")
+	})
+}
+
+// A relay peer is dialed on the port its live pod template carries, not its
+// spec port: until the peer's StatefulSet is updated its pods do not serve
+// the new port. The StatefulSet watch moves the dialer once it is.
+func TestRelayRefPortFollowsLiveRelayTemplate(t *testing.T) {
+	peer := watchNode("a", "peer", "")
+	served := peer.DeepCopy()
+	served.Spec.RelayService.Port = 3001
+	live := resources.BuildStatefulSet(
+		served, resources.RenderOptions{Replicas: 1},
+	)
+	peer.Spec.RelayService.Port = 4711
+	dialer := watchNode("a", "dialer", "", "peer")
+	c := fake.NewClientBuilder().WithScheme(watchScheme(t)).
+		WithObjects(peer, dialer, live).Build()
+
+	ports, err := reconcilerFor(c).relayRefPorts(context.Background(), dialer)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = env.Stop() })
-	return cfg
+	assert.Equal(t, map[string]int32{"peer": 3001}, ports)
 }
