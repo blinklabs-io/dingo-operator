@@ -189,16 +189,32 @@ func initContainers(
 	// marker is at the latest artifact. Re-running unconditionally is not an
 	// option: catch-up against a complete database is core-storage-mode only.
 	//
+	// ForceResync is one-shot per false-to-true transition. The wipe leaves
+	// the resync marker behind (the glob skips dotfiles), so a later init run
+	// with the field still true -- a restart, key rotation or config roll --
+	// does not wipe again. An init run with the field false removes the marker,
+	// which re-arms the next time it is set true. A failed wipe aborts under
+	// set -e before the marker is written, so the next run wipes again rather
+	// than adopting leftovers.
+	//
 	// dingo serve independently refuses to start on an incomplete sync, so a
 	// marker bug fails loudly at startup rather than forging on partial state.
 	const script = `set -eu
 DB="${CARDANO_DATABASE_PATH}/metadata.sqlite"
 DONE="${CARDANO_DATABASE_PATH}/.mithril-bootstrap-complete"
 STARTED="${CARDANO_DATABASE_PATH}/.mithril-bootstrap-started"
+RESYNCED="${CARDANO_DATABASE_PATH}/.mithril-force-resync-done"
 if [ "${FORCE_RESYNC:-false}" = "true" ]; then
-  echo "force resync requested; removing existing database"
-  rm -f "$DONE" "$STARTED"
-  rm -rf "${CARDANO_DATABASE_PATH:?}/"* || true
+  if [ -f "$RESYNCED" ]; then
+    echo "force resync already performed; set mithril.forceResync to false to re-arm"
+  else
+    echo "force resync requested; removing existing database"
+    rm -f "$DONE" "$STARTED"
+    rm -rf "${CARDANO_DATABASE_PATH:?}/"*
+    touch "$RESYNCED"
+  fi
+else
+  rm -f "$RESYNCED"
 fi
 if [ -f "$DONE" ]; then
   echo "mithril bootstrap already complete; skipping"
