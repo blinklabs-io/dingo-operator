@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -103,6 +104,11 @@ type DingoNodeReconciler struct {
 	TipStallThreshold time.Duration
 	// Now overrides the clock; nil uses time.Now.
 	Now func() time.Time
+	// WatchKeyBundles watches the metadata of the Secrets block producers
+	// read, so a delivered bundle applies at once rather than on the requeue.
+	// The manager's Secret cache must be scoped to the namespaces the operator
+	// may list (KeyBundleCacheOptions); leave it false otherwise.
+	WatchKeyBundles bool
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex
@@ -1513,14 +1519,20 @@ func desiredReplicas(dn *dingov1alpha1.DingoNode) int32 {
 
 // SetupWithManager registers the reconciler and its owned types.
 func (r *DingoNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&dingov1alpha1.DingoNode{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
-		Owns(&networkingv1.NetworkPolicy{}).
-		Named("dingonode").
-		Complete(r)
+		Owns(&networkingv1.NetworkPolicy{})
+	if r.WatchKeyBundles {
+		// Metadata only: the key material itself is never cached.
+		b = b.WatchesMetadata(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.dingoNodesForKeyBundle),
+		)
+	}
+	return b.Named("dingonode").Complete(r)
 }
