@@ -411,7 +411,7 @@ func TestConfigRefMissingKeepsLiveChecksum(t *testing.T) {
 // the new port. The StatefulSet watch moves the dialer once it is.
 func TestRelayRefPortFollowsLiveRelayTemplate(t *testing.T) {
 	peer := watchNode("a", "peer", "")
-	served := peer.DeepCopy()
+	served := watchNode("a", "peer", "")
 	served.Spec.RelayService.Port = 3001
 	live := resources.BuildStatefulSet(
 		served, resources.RenderOptions{Replicas: 1},
