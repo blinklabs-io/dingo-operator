@@ -397,9 +397,10 @@ type BlockProducerSpec struct {
 	// and Bursa support it; until then an optional vote key stays in the keys
 	// Secret. With rotation.mode Auto the operator does not generate the KES
 	// key: it drives the agent's control role to generate it inside the agent
-	// and to install the opcert issued for it, which needs TLS, serverSpkiSha256
-	// and controlClientCertSecretRef. Requires a Dingo image that reads the
-	// remote agent settings; older canonical image tags are refused.
+	// and to install the opcert issued for it, which needs TLS, serverSpkiSha256,
+	// controlClientCertSecretRef and rotation.reloadInPlace. Requires a Dingo
+	// image that reads the remote agent settings; older canonical image tags are
+	// refused.
 	// +optional
 	SigningAgent *SigningAgentSpec `json:"signingAgent,omitempty"`
 }
