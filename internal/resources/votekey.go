@@ -39,6 +39,9 @@ func ValidateKeyEnv(dn *dingov1alpha1.DingoNode) error {
 	if !IsBlockProducer(dn) {
 		return nil
 	}
+	if err := validatePoolsEnv(dn); err != nil {
+		return err
+	}
 	if v, ok := dn.Spec.Environment[VoteKeyEnv]; ok && v != VoteKeyPath {
 		return fmt.Errorf(
 			"%s is managed by the operator and must be %s or unset; "+

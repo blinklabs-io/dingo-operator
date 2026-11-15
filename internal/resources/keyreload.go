@@ -156,8 +156,12 @@ func ReloadsKeysInPlace(dn *dingov1alpha1.DingoNode) bool {
 
 // reloadsKeysInPlace reports whether this render stages keys and reloads them
 // in place.
+//
+// A pool-list node always does: a new opcert in one pool's Secret must not
+// roll the pod that forges for the others.
 func reloadsKeysInPlace(dn *dingov1alpha1.DingoNode, opts RenderOptions) bool {
-	return mountsBlockProducerKeys(dn, opts) && ReloadsKeysInPlace(dn)
+	return mountsBlockProducerKeys(dn, opts) &&
+		(ReloadsKeysInPlace(dn) || UsesPoolList(dn))
 }
 
 // KeysApprovalConfigMapName returns the ConfigMap holding the approved key
@@ -199,21 +203,33 @@ var keysSyncResources = corev1.ResourceRequirements{
 }
 
 // keysSyncContainer stages approved key changes into the running pod.
-func keysSyncContainer(dn *dingov1alpha1.DingoNode) corev1.Container {
+func keysSyncContainer(
+	dn *dingov1alpha1.DingoNode,
+	opts RenderOptions,
+) corev1.Container {
+	script := syncKeysScript(dn)
+	mounts := []corev1.VolumeMount{
+		{Name: keysSourceName, MountPath: keysSourcePath, ReadOnly: true},
+		{Name: keysVolumeName, MountPath: keysMountPath},
+	}
+	if rendersPools(dn, opts) {
+		script = syncPoolListKeysScript
+		mounts = append(
+			poolSourceMounts(opts),
+			corev1.VolumeMount{Name: keysVolumeName, MountPath: keysMountPath},
+		)
+	}
+	mounts = append(mounts, corev1.VolumeMount{
+		Name:      keysApprovalVolumeName,
+		MountPath: keysApprovalPath,
+		ReadOnly:  true,
+	})
 	return corev1.Container{
 		Name:            keysSyncName,
 		Image:           imageRef(dn),
 		ImagePullPolicy: pullPolicy(dn),
-		Command:         []string{"/bin/sh", "-c", syncKeysScript(dn)},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: keysSourceName, MountPath: keysSourcePath, ReadOnly: true},
-			{Name: keysVolumeName, MountPath: keysMountPath},
-			{
-				Name:      keysApprovalVolumeName,
-				MountPath: keysApprovalPath,
-				ReadOnly:  true,
-			},
-		},
+		Command:         []string{"/bin/sh", "-c", script},
+		VolumeMounts:    mounts,
 		Resources:       *keysSyncResources.DeepCopy(),
 		SecurityContext: containerSecurityContext(),
 	}
@@ -245,5 +261,5 @@ func podContainers(
 	if !reloadsKeysInPlace(dn, opts) {
 		return []corev1.Container{node}
 	}
-	return []corev1.Container{node, keysSyncContainer(dn)}
+	return []corev1.Container{node, keysSyncContainer(dn, opts)}
 }

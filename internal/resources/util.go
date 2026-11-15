@@ -147,6 +147,28 @@ func initContainers(
 		Resources:       dn.Spec.Resources,
 	}}
 	if mountsBlockProducerKeys(dn, opts) {
+		script := keysScript(dn)
+		mounts := []corev1.VolumeMount{
+			{
+				Name:      keysSourceName,
+				MountPath: keysSourcePath,
+				ReadOnly:  true,
+			},
+			{
+				Name:      keysVolumeName,
+				MountPath: keysMountPath,
+			},
+		}
+		if rendersPools(dn, opts) {
+			script = preparePoolListKeysScript
+			mounts = append(
+				poolSourceMounts(opts),
+				corev1.VolumeMount{
+					Name:      keysVolumeName,
+					MountPath: keysMountPath,
+				},
+			)
+		}
 		containers = append(containers, corev1.Container{
 			Name:            keysInitName,
 			Image:           imageRef(dn),
@@ -154,19 +176,9 @@ func initContainers(
 			Command: []string{
 				"/bin/sh",
 				"-c",
-				keysScript(dn),
+				script,
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      keysSourceName,
-					MountPath: keysSourcePath,
-					ReadOnly:  true,
-				},
-				{
-					Name:      keysVolumeName,
-					MountPath: keysMountPath,
-				},
-			},
+			VolumeMounts:    mounts,
 			SecurityContext: containerSecurityContext(),
 			Resources:       dn.Spec.Resources,
 		})
