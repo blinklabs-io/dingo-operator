@@ -331,7 +331,14 @@ the pod onto it":
   validation of the candidate Secret, `install-key` (which promotes the key, so
   everything that can reject runs first), then the Secret write. A node that
   already reports the Secret's new counter when it is judged keeps its
-  template (`liveKeys.agent` in `decideKeysLoad`). Each command is its own session because the agent drops a
+  template (`liveKeys.agent` in `decideKeysLoad`). Dingo admits the agent
+  only when its opcert is byte-equal to the key file's (or takes a newer one
+  for the same cold key), so before a changed bundle is rolled out or
+  approved, `agentBundleProblem` asks `info`: a bundle whose opcert is not the
+  served one, at a counter at or above it, is refused like an invalid bundle,
+  and one that cannot be checked is held (`OpCertUnverified`, not Degraded).
+  A bundle confirmed in place is not checked again. Adoption writes the
+  served opcert bytes unchanged (`opcert.EncodeEnvelope`). Each command is its own session because the agent drops a
   connection idle over 10 seconds. The pin pins the control link; evidence in
   the attestation response is not verified. The pin is validated and rendered
   trimmed. The keys checksum still hashes the whole

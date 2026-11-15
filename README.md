@@ -117,7 +117,11 @@ operators.
   the agent serves, even after the chain has recorded that counter. Auto requires
   `rotation.reloadInPlace`. The node takes the new opcert from the agent, and
   a node that already reports the new counter when the Secret is judged is not
-  rolled onto it.
+  rolled onto it. Dingo starts only when the opcert in the keys Secret is the
+  one the agent serves, or an older one for the same pool, so under Auto a
+  delivered bundle with any other opcert is refused (`KeysValid` False,
+  `OpCertRejected`) and the pod keeps running on what it loaded. While the
+  agent does not answer, a new bundle is held with reason `OpCertUnverified`.
 
   ```yaml
   blockProducer:

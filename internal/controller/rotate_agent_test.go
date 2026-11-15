@@ -24,6 +24,7 @@ import (
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/blinklabs-io/dingo-operator/internal/test/fakeagent"
@@ -658,4 +659,34 @@ func TestAutoRotateThroughAgentPendingAdoptionBacksOff(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "AgentInfoFailed", cond.Reason)
+}
+
+// The opcert the agent serves is written as served, not re-encoded: Dingo
+// admits the agent only when the key file's opcert is byte-equal to it.
+func TestServedOpCertSecretKeepsServedBytes(t *testing.T) {
+	t.Parallel()
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	staged, err := keys.IssueOpCert(3, 0)
+	require.NoError(t, err)
+	next, err := keys.IssueOpCert(4, 0)
+	require.NoError(t, err)
+	canonical, err := opcert.Payload(next)
+	require.NoError(t, err)
+	// The same opcert with the KES vkey's length written in two bytes.
+	require.Equal(t, []byte{0x82, 0x84, 0x58, 0x20}, canonical[:4])
+	served := append([]byte{0x82, 0x84, 0x59, 0x00, 0x20}, canonical[4:]...)
+	secret := &corev1.Secret{Data: map[string][]byte{keyFileOpCert: staged}}
+
+	oc, got, err := servedOpCertSecret(&kesagent.Active{
+		KESVKey:     keys.KESVKey,
+		IssueNumber: 4,
+		OpCert:      served,
+	}, secret, keyFileOpCert)
+
+	require.NoError(t, err)
+	require.NotNil(t, oc, "the served opcert verifies")
+	payload, err := opcert.Payload(got.Data[keyFileOpCert])
+	require.NoError(t, err)
+	assert.Equal(t, served, payload)
 }

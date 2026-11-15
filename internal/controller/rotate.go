@@ -455,7 +455,9 @@ func servedOpCertSecret(
 		!bytes.Equal(oc.KesVkey, active.KESVKey) {
 		return nil, nil, nil //nolint:nilerr // an unverifiable opcert is not adopted
 	}
-	envelope, err := opcert.Encode(oc, coldVkey)
+	// The served bytes, not a re-encoding: Dingo admits the agent only when
+	// its opcert is byte-equal to the key file's.
+	envelope, err := opcert.EncodeEnvelope(active.OpCert)
 	if err != nil {
 		return nil, nil, err
 	}

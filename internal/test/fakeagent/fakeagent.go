@@ -182,6 +182,16 @@ func (a *Agent) SetInfoError(name, msg string) {
 	a.profile(name).InfoError = msg
 }
 
+// SetActiveOpCert makes a profile serve opCert, as an install-key run outside
+// the operator would. Its issue number becomes the active one.
+func (a *Agent) SetActiveOpCert(name string, issue uint64, opCert []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p := a.profile(name)
+	p.ActiveIssue = issue
+	p.ActiveOpCert = append([]byte(nil), opCert...)
+}
+
 // Staged returns the verification key staged for a profile, or nil.
 func (a *Agent) Staged(name string) []byte {
 	a.mu.Lock()

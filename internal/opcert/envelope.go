@@ -48,11 +48,44 @@ func Encode(oc *ledger.OpCert, coldVkey []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return EncodeEnvelope(payload)
+}
+
+// EncodeEnvelope wraps the bare CBOR of an operational certificate in a
+// cardano-cli text envelope, keeping its bytes as they are. Dingo admits an
+// agent only when the agent's opcert is byte-equal to the one in its key file,
+// so an opcert the agent serves is written without being re-encoded.
+func EncodeEnvelope(payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return nil, errors.New("opcert cbor is empty")
+	}
 	return json.MarshalIndent(envelope{
 		Type:        EnvelopeType,
 		Description: envelopeDescription,
 		CborHex:     hex.EncodeToString(payload),
 	}, "", "    ")
+}
+
+// Payload returns the bare CBOR an operational-certificate envelope wraps,
+// as Dingo reads it from its key file.
+func Payload(data []byte) ([]byte, error) {
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("parse opcert envelope: %w", err)
+	}
+	if env.Type != EnvelopeType {
+		return nil, fmt.Errorf(
+			"expected type %q, got %q", EnvelopeType, env.Type,
+		)
+	}
+	payload, err := hex.DecodeString(env.CborHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode opcert cborHex: %w", err)
+	}
+	if len(payload) == 0 {
+		return nil, errors.New("opcert cborHex is empty")
+	}
+	return payload, nil
 }
 
 // EncodeCBOR renders an operational certificate as the bare CBOR the envelope
@@ -86,21 +119,9 @@ func EncodeCBOR(oc *ledger.OpCert, coldVkey []byte) ([]byte, error) {
 // and the cold verification key that signed it. It does not verify the
 // signature; callers pass both results to ledger.VerifyOpCertSignature.
 func Parse(data []byte) (*ledger.OpCert, []byte, error) {
-	var env envelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, nil, fmt.Errorf("parse opcert envelope: %w", err)
-	}
-	if env.Type != EnvelopeType {
-		return nil, nil, fmt.Errorf(
-			"expected type %q, got %q", EnvelopeType, env.Type,
-		)
-	}
-	payload, err := hex.DecodeString(env.CborHex)
+	payload, err := Payload(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("decode opcert cborHex: %w", err)
-	}
-	if len(payload) == 0 {
-		return nil, nil, errors.New("opcert cborHex is empty")
+		return nil, nil, err
 	}
 	return ParseCBOR(payload)
 }

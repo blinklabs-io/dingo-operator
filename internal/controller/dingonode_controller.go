@@ -510,7 +510,17 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 		if err := r.APIReader.Get(ctx, key, secret); err == nil {
 			state, verr := validateKeysSecret(secret, dn)
-			if verr != nil {
+			var unverified error
+			if verr == nil {
+				// A bundle the agent does not serve is refused like an
+				// invalid one: rolling onto it would stop the node signing.
+				var aerr error
+				verr, unverified, aerr = r.agentBundleProblem(ctx, dn, secret)
+				if aerr != nil {
+					return aerr
+				}
+			}
+			if verr != nil || unverified != nil {
 				// Refuse the delivered bundle: keep the live pod template so
 				// nothing rolls. Any template change would replace the pod,
 				// and the replacement would stage the rejected Secret; that
@@ -525,7 +535,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 				opts.KeysChecksum = live.checksum
 				opts.KeysStaticChecksum = live.static
 				keepTemplate = true
-				r.rejectKeys(ctx, dn, verr)
+				if verr != nil {
+					r.rejectKeys(ctx, dn, verr)
+				} else {
+					r.holdUnverifiedKeys(ctx, dn, unverified)
+				}
 			} else {
 				// validateKeysSecret bound the opcert to poolId, so either
 				// names the pool these keys forge for.
