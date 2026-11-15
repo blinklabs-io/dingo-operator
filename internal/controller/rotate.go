@@ -505,27 +505,40 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 	}
 
 	// The node runs a later opcert than the Secret holds: from here on the
-	// repair is pending, and a failure is reported.
+	// repair is pending, and a failure is reported and retried after
+	// issueRetryInterval, sharing the backoff of a rotation attempt.
+	nodeKey := client.ObjectKeyFromObject(dn)
+	if last, ok := r.lastIssueFailure(nodeKey); ok &&
+		time.Since(last.at) < issueRetryInterval {
+		setIssueCondition(
+			dn, metav1.ConditionFalse, last.reason, last.message,
+		)
+		return false
+	}
+	fail := func(reason, message string) {
+		r.recordIssueFailure(nodeKey, reason, message)
+		r.refuseIssue(ctx, dn, reason, message)
+	}
 	cfg, problem, err := r.agentControlConfig(ctx, dn)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "ControlCertUnavailable", err.Error())
+		fail("ControlCertUnavailable", err.Error())
 		return false
 	}
 	if problem != "" {
-		r.refuseIssue(ctx, dn, "ControlCertInvalid", problem)
+		fail("ControlCertInvalid", problem)
 		return false
 	}
 	active, err := kesagent.ActiveKey(ctx, cfg)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "AgentInfoFailed", err.Error())
+		fail("AgentInfoFailed", err.Error())
 		return false
 	}
 	// Both are non-negative: checked above and by observedOnChainCounter.
 	if active.IssueNumber != uint64(*loaded) || //nolint:gosec
 		active.IssueNumber < uint64(chain) || //nolint:gosec
 		active.IssueNumber > uint64(chain)+1 { //nolint:gosec
-		r.refuseIssue(
-			ctx, dn, "AgentServesUnexpectedOpCert",
+		fail(
+			"AgentServesUnexpectedOpCert",
 			fmt.Sprintf(
 				"the node reports counter %d, the agent serves %d and the "+
 					"chain holds %d",
@@ -539,22 +552,22 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 		err = errors.New("the opcert the agent serves does not verify")
 	}
 	if err != nil {
-		r.refuseIssue(ctx, dn, "AgentServesUnexpectedOpCert", err.Error())
+		fail("AgentServesUnexpectedOpCert", err.Error())
 		return false
 	}
 	state, err := validateKeysSecret(candidate, dn)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "IssuedBundleRejected", err.Error())
+		fail("IssuedBundleRejected", err.Error())
 		return false
 	}
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
 	if err := r.Update(ctx, candidate); err != nil {
-		r.refuseIssue(ctx, dn, "SecretUpdateFailed", err.Error())
+		fail("SecretUpdateFailed", err.Error())
 		return false
 	}
 
-	r.forgetIssueFailure(client.ObjectKeyFromObject(dn))
+	r.forgetIssueFailure(nodeKey)
 	msg := fmt.Sprintf(
 		"adopted the opcert the agent serves, counter %d, kes start period %d",
 		state.Counter, state.KESPeriod,

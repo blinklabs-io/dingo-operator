@@ -639,3 +639,23 @@ func TestAutoRotateThroughAgentNotDueLeavesAgentAlone(t *testing.T) {
 	assert.Equal(t, before.Data, f.secret(t).Data)
 	assert.Equal(t, 0, f.issuer.calls)
 }
+
+// A pending repair whose info fails waits issueRetryInterval like any failed
+// attempt, instead of asking the agent on every reconcile.
+func TestAutoRotateThroughAgentPendingAdoptionBacksOff(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	failInstallThenReload(t, f)
+	f.r.forgetIssueFailure(client.ObjectKeyFromObject(f.dn))
+	f.agent.SetInfoError("pool-a", "connection reset")
+	cmdsBefore := len(f.agent.Commands())
+
+	f.r.autoRotate(context.Background(), f.dn)
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Len(t, f.agent.Commands()[cmdsBefore:], 1, "one info per retry interval")
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "AgentInfoFailed", cond.Reason)
+}
