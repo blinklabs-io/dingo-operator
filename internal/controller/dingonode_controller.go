@@ -510,7 +510,19 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 		if err := r.APIReader.Get(ctx, key, secret); err == nil {
 			state, verr := validateKeysSecret(secret, dn)
-			if verr != nil {
+			var rejected, unverified error
+			if verr == nil {
+				// A bundle the agent does not serve is refused like an
+				// invalid one: rolling onto it would stop the node signing.
+				var aerr error
+				rejected, unverified, aerr = r.agentBundleProblem(
+					ctx, dn, secret,
+				)
+				if aerr != nil {
+					return aerr
+				}
+			}
+			if verr != nil || rejected != nil || unverified != nil {
 				// Refuse the delivered bundle: keep the live pod template so
 				// nothing rolls. Any template change would replace the pod,
 				// and the replacement would stage the rejected Secret; that
@@ -525,7 +537,14 @@ func (r *DingoNodeReconciler) reconcileResources(
 				opts.KeysChecksum = live.checksum
 				opts.KeysStaticChecksum = live.static
 				keepTemplate = true
-				r.rejectKeys(ctx, dn, verr)
+				switch {
+				case verr != nil:
+					r.rejectKeys(ctx, dn, verr)
+				case rejected != nil:
+					r.rejectKeys(ctx, dn, rejected)
+				case unverified != nil:
+					r.holdUnverifiedKeys(ctx, dn, unverified)
+				}
 			} else {
 				// validateKeysSecret bound the opcert to poolId, so either
 				// names the pool these keys forge for.
@@ -537,6 +556,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 				if err != nil {
 					return err
 				}
+				live.agent = resources.UsesSigningAgent(dn)
 				rollout := decideKeysRollout(
 					resources.ReloadsKeysInPlace(dn), live,
 					keysChecksum(secret), staticKeysChecksum(secret.Data),

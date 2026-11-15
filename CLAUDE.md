@@ -314,9 +314,34 @@ the pod onto it":
   `CARDANO_SHELLEY_KES_KEY`, which Dingo refuses alongside an agent address,
   and `validateSpec` mirrors Dingo's own refusals (address not host:port,
   `plaintext` with a pin or client certificate, a pin that is not 64 hex
-  characters), refuses a port outside 1-65535, and refuses
-  `rotation.mode: Auto`, which generates the KES key in the operator. The pin
-  is validated and rendered trimmed. The keys checksum still hashes the whole
+  characters), refuses a port outside 1-65535, and with
+  `rotation.mode: Auto` requires TLS, the pin, `controlClientCertSecretRef`
+  and `rotation.reloadInPlace` (`validateAgentControl`), refusing those control
+  settings under any other mode. Auto then rotates through the agent's control
+  role (`issueThroughAgent`, client in `internal/kesagent`): `info`, whose
+  served opcert is written to the Secret instead of issuing another when it is
+  the next counter signed by the pool's cold key (`adoptServedOpCert`, which
+  repairs a write lost after `install-key`; an `info` that does not answer
+  fails the attempt). Because a reloadInPlace node takes the served opcert and
+  stops reporting `RotationDue`, that repair also runs ahead of the
+  `RotationDue` guard (`adoptPendingInstall`) whenever the node's
+  `LoadedCounter` is above the Secret's counter: the served opcert must match
+  `LoadedCounter` and equal the on-chain counter or one above it; with nothing
+  pending the agent is not called. Otherwise `gen-staged-key`, the cold signer's opcert,
+  validation of the candidate Secret, `install-key` (which promotes the key, so
+  everything that can reject runs first), then the Secret write. A node that
+  already reports the Secret's new counter when it is judged keeps its
+  template (`liveKeys.agent` in `decideKeysLoad`). Dingo admits the agent
+  only when its opcert is byte-equal to the key file's (or takes a newer one
+  for the same cold key), so before a changed bundle is rolled out or
+  approved, `agentBundleProblem` asks `info`: a bundle whose opcert is not the
+  served one, at a counter at or above it, is refused like an invalid bundle,
+  and one that cannot be checked is held (`OpCertUnverified`, not Degraded).
+  A bundle confirmed in place is not checked again. Adoption writes the
+  served opcert bytes unchanged (`opcert.EncodeEnvelope`). Each command is its own session because the agent drops a
+  connection idle over 10 seconds. The pin pins the control link; evidence in
+  the attestation response is not verified. The pin is validated and rendered
+  trimmed. The keys checksum still hashes the whole
   Secret, so editing a stray `kes.skey` rolls the pod. A client certificate
   Secret that is missing, holds only half the pair, or does not load as a
   matching PEM pair holds the pod template like a refused bundle. A valid

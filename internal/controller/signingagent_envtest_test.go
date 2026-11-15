@@ -310,3 +310,71 @@ func TestBlockProducerSigningAgentOldImage(t *testing.T) {
 	assert.Equal(t, "InvalidSpec", ready.Reason)
 	assert.Contains(t, ready.Message, "v"+agentImageTag)
 }
+
+// An agent-backed node already reporting the counter of the opcert an Auto
+// rotation wrote is not rolled onto the new Secret: the node took the opcert
+// from the agent, and only the opcert in the Secret differs.
+func TestBlockProducerSigningAgentAdoptedOpCertDoesNotRoll(t *testing.T) {
+	c, ctx := startEnv(t)
+	const ns = "agent-adopted-ns"
+	createNamespace(t, ctx, c, ns)
+	nodeKey := types.NamespacedName{Name: "bp", Namespace: ns}
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	data, err := keys.SecretData(3, 0)
+	require.NoError(t, err)
+	delete(data, keyFileKES)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-keys", Namespace: ns},
+		Data:       data,
+	}))
+	clientCrt, clientKey := testClientCertPair(t)
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-client", Namespace: ns},
+		Data: map[string][]byte{
+			"tls.crt": clientCrt,
+			"tls.key": clientKey,
+		},
+	}))
+	dn := blockProducerNode(
+		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
+	)
+	dn.Spec.Image.Tag = agentImageTag
+	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
+	dn.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{
+		Address:             "kes-agent.signing.svc:7000",
+		ServerSPKISHA256:    testSPKIPin,
+		ClientCertSecretRef: "agent-client",
+	}
+	require.NoError(t, c.Create(ctx, dn))
+	r := reconcilerFor(c)
+	reconcile(t, ctx, r, "bp", ns)
+	tpl := podTemplate(t, ctx, c, "bp", ns)
+
+	// The agent now serves counter 4 and the node reports it before the
+	// operator judges the Secret that carries it.
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(ctx, nodeKey, got))
+	got.Status.OpCert.LoadedCounter = new(int64(4))
+	require.NoError(t, c.Status().Update(ctx, got))
+	rotated, err := keys.SecretData(4, 0)
+	require.NoError(t, err)
+	delete(rotated, keyFileKES)
+	keysSecret := &corev1.Secret{}
+	require.NoError(t, c.Get(
+		ctx, types.NamespacedName{Name: "pool-keys", Namespace: ns},
+		keysSecret,
+	))
+	keysSecret.Data = rotated
+	require.NoError(t, c.Update(ctx, keysSecret))
+
+	reconcile(t, ctx, r, "bp", ns)
+
+	assert.Equal(t, tpl, podTemplate(t, ctx, c, "bp", ns),
+		"the pod template does not move")
+	require.NoError(t, c.Get(ctx, nodeKey, got))
+	require.NotNil(t, got.Status.OpCert.InPlaceReload)
+	assert.Equal(t, int64(4), got.Status.OpCert.InPlaceReload.Counter)
+	assert.True(t, got.Status.OpCert.InPlaceReload.Applied)
+}

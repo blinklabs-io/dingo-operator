@@ -395,9 +395,12 @@ type BlockProducerSpec struct {
 	// required nor staged, and Dingo checks the opcert against the agent when
 	// it connects. Leios vote signing can move to the agent later, once Dingo
 	// and Bursa support it; until then an optional vote key stays in the keys
-	// Secret. Not compatible with rotation.mode Auto, which generates the KES
-	// key in the operator. Requires a Dingo image that reads the remote agent
-	// settings; older canonical image tags are refused.
+	// Secret. With rotation.mode Auto the operator does not generate the KES
+	// key: it drives the agent's control role to generate it inside the agent
+	// and to install the opcert issued for it, which needs TLS, serverSpkiSha256,
+	// controlClientCertSecretRef and rotation.reloadInPlace. Requires a Dingo
+	// image that reads the remote agent settings; older canonical image tags are
+	// refused.
 	// +optional
 	SigningAgent *SigningAgentSpec `json:"signingAgent,omitempty"`
 }
@@ -429,6 +432,25 @@ type SigningAgentSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
 	ClientCertSecretRef string `json:"clientCertSecretRef,omitempty"`
+	// ControlClientCertSecretRef names a Secret in the DingoNode's namespace
+	// holding tls.crt and tls.key, the TLS client certificate the operator
+	// presents to the agent's control role on the same address. The agent
+	// admits only a client whose certificate key is pinned in
+	// control_client_spki_sha256 on the pool's profile. Only the operator
+	// reads it; it is never mounted into the node, so it may differ from
+	// clientCertSecretRef. Required by rotation.mode Auto, which needs TLS,
+	// serverSpkiSha256 and rotation.reloadInPlace as well, and refused
+	// otherwise.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	ControlClientCertSecretRef string `json:"controlClientCertSecretRef,omitempty"`
+	// ControlProfile names the agent profile that holds this pool's KES key,
+	// for the operator's control commands. It may be omitted when the agent
+	// has one profile. Refused unless rotation.mode is Auto.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	ControlProfile string `json:"controlProfile,omitempty"`
 }
 
 // PodDisruptionBudgetSpec controls the block producer's PodDisruptionBudget.

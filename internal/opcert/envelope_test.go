@@ -15,6 +15,7 @@
 package opcert_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"testing"
@@ -99,4 +100,36 @@ func TestParseRejectsMalformed(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+// EncodeCBOR is the byte layout a KES agent's install-key takes:
+// [[kes_vkey, issue_number, kes_period, cold_signature], cold_vkey].
+func TestEncodeCBORLayout(t *testing.T) {
+	t.Parallel()
+	oc := &ledger.OpCert{
+		KesVkey:       bytes.Repeat([]byte{1}, 32),
+		IssueNumber:   7,
+		KesPeriod:     300,
+		ColdSignature: bytes.Repeat([]byte{2}, 64),
+	}
+	cold := bytes.Repeat([]byte{3}, 32)
+
+	got, err := opcert.EncodeCBOR(oc, cold)
+	require.NoError(t, err)
+
+	want := []byte{0x82, 0x84, 0x58, 0x20}
+	want = append(want, oc.KesVkey...)
+	want = append(want, 0x07, 0x19, 0x01, 0x2c, 0x58, 0x40)
+	want = append(want, oc.ColdSignature...)
+	want = append(want, 0x58, 0x20)
+	want = append(want, cold...)
+	assert.Equal(t, want, got)
+
+	back, backCold, err := opcert.ParseCBOR(got)
+	require.NoError(t, err)
+	assert.Equal(t, oc, back)
+	assert.Equal(t, cold, backCold)
+
+	_, err = opcert.EncodeCBOR(oc, cold[:31])
+	require.Error(t, err)
 }

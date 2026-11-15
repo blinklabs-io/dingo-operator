@@ -891,3 +891,86 @@ func TestDecideKeysRolloutRolledCounter(t *testing.T) {
 		})
 	}
 }
+
+// A node that signs through an agent takes the agent's newer opcert at
+// admission, so it may report the counter of the Secret an Auto rotation just
+// wrote before the operator judges that Secret. That opcert-only change is
+// staged, not rolled.
+func TestDecideKeysRolloutAgentAdoptedCounter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	live := func(agent bool) liveKeys {
+		return liveKeys{
+			exists: true, checksum: "old", static: "static", pool: "pool",
+			counter: new(int64(3)), agent: agent,
+		}
+	}
+	tests := []struct {
+		name       string
+		live       liveKeys
+		static     string
+		loaded     *int64
+		wantRolls  bool
+		wantNoPend bool
+	}{
+		{
+			name:   "agent node already reporting the counter is staged",
+			live:   live(true),
+			static: "static",
+			loaded: new(int64(4)),
+		},
+		{
+			name:      "a node without an agent rolls",
+			live:      live(false),
+			static:    "static",
+			loaded:    new(int64(4)),
+			wantRolls: true,
+		},
+		{
+			name:      "other key material rolls",
+			live:      live(true),
+			static:    "other",
+			loaded:    new(int64(4)),
+			wantRolls: true,
+		},
+		{
+			name:      "an unobserved counter rolls",
+			live:      live(true),
+			static:    "static",
+			wantRolls: true,
+		},
+		{
+			name: "a counter the template already started with rolls",
+			live: func() liveKeys {
+				l := live(true)
+				l.counter = new(int64(4))
+				return l
+			}(),
+			static:    "static",
+			loaded:    new(int64(4)),
+			wantRolls: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := decideKeysRollout(
+				true, tc.live, "new", tc.static, "pool", 4, tc.loaded,
+				nil, nil, now,
+			)
+			if tc.wantRolls {
+				assert.Equal(t, "new", got.checksum, "the pod rolls")
+				assert.False(t, got.approve)
+				assert.Nil(t, got.pending)
+				return
+			}
+			assert.Equal(t, "old", got.checksum, "the pod keeps running")
+			assert.True(t, got.approve)
+			require.NotNil(t, got.pending)
+			assert.Equal(t, "new", got.pending.Checksum)
+			assert.Equal(t, int64(4), got.pending.Counter)
+			assert.True(t, got.pending.Applied)
+			assert.False(t, got.timedOut)
+		})
+	}
+}

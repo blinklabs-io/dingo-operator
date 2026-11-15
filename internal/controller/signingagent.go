@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -51,16 +52,6 @@ func validateSigningAgent(bp *dingov1alpha1.BlockProducerSpec) error {
 	sa := bp.SigningAgent
 	if sa == nil {
 		return nil
-	}
-	// Auto generates the KES key in the operator and writes it to the keys
-	// Secret, which a node signing through an agent never uses.
-	if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
-		return errors.New(
-			"spec.blockProducer.signingAgent cannot be combined with " +
-				"rotation.mode Auto: Auto generates the KES key in the " +
-				"operator, while the signing agent holds it; use Assisted " +
-				"or MonitorOnly",
-		)
 	}
 	host, port, err := net.SplitHostPort(sa.Address)
 	if err != nil || host == "" || port == "" {
@@ -92,6 +83,55 @@ func validateSigningAgent(bp *dingov1alpha1.BlockProducerSpec) error {
 				2*sha256.Size,
 			)
 		}
+	}
+	return validateAgentControl(bp, pin)
+}
+
+// validateAgentControl checks the control role settings. Auto rotation drives
+// the agent's control role, which the agent offers only over mutually
+// authenticated TLS to a client whose key is pinned on the pool's profile, so
+// it needs a control client certificate and TLS; the server key is pinned for
+// the control link as for the node's. Elsewhere the settings do nothing, so
+// they are refused rather than ignored.
+func validateAgentControl(
+	bp *dingov1alpha1.BlockProducerSpec,
+	pin string,
+) error {
+	sa := bp.SigningAgent
+	if bp.Rotation.Mode != dingov1alpha1.RotationModeAuto {
+		if sa.ControlClientCertSecretRef != "" || sa.ControlProfile != "" {
+			return errors.New(
+				"spec.blockProducer.signingAgent.controlClientCertSecretRef " +
+					"and controlProfile apply only with rotation.mode Auto",
+			)
+		}
+		return nil
+	}
+	switch {
+	case sa.ControlClientCertSecretRef == "":
+		return errors.New(
+			"spec.blockProducer.signingAgent with rotation.mode Auto " +
+				"requires controlClientCertSecretRef: the operator rotates " +
+				"the key through the agent's control role; otherwise use " +
+				"Assisted or MonitorOnly",
+		)
+	case sa.Plaintext:
+		return errors.New(
+			"spec.blockProducer.signingAgent with rotation.mode Auto " +
+				"cannot be plaintext: the control role needs TLS",
+		)
+	case pin == "":
+		return errors.New(
+			"spec.blockProducer.signingAgent with rotation.mode Auto " +
+				"requires serverSpkiSha256 to pin the control connection",
+		)
+	case !bp.Rotation.ReloadInPlace:
+		return errors.New(
+			"spec.blockProducer.signingAgent with rotation.mode Auto " +
+				"requires rotation.reloadInPlace: the node takes the " +
+				"rotated opcert from the agent, and a pod roll would " +
+				"interrupt forging",
+		)
 	}
 	return nil
 }
@@ -174,6 +214,44 @@ func (r *DingoNodeReconciler) checkSigningAgentCert(
 		return p, "", nil
 	}
 	return "", signingAgentCertChecksum(secret.Data), nil
+}
+
+// agentControlConfig reads the control client certificate Secret and returns
+// the settings for the agent's control role. problem describes a Secret that
+// is missing or unusable; err is a failed read other than not-found.
+func (r *DingoNodeReconciler) agentControlConfig(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (cfg kesagent.Config, problem string, err error) {
+	sa := dn.Spec.BlockProducer.SigningAgent
+	if r.APIReader == nil {
+		return cfg, "", errors.New(
+			"no reader for the control client certificate",
+		)
+	}
+	name := sa.ControlClientCertSecretRef
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Name: name, Namespace: dn.Namespace}
+	if err := r.APIReader.Get(ctx, key, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return cfg, fmt.Sprintf(
+				"control client certificate Secret %q not found", name,
+			), nil
+		}
+		return cfg, "", fmt.Errorf(
+			"read control client certificate secret: %w", err,
+		)
+	}
+	if p := checkSigningAgentCertData(name, secret.Data); p != "" {
+		return cfg, p, nil
+	}
+	return kesagent.Config{
+		Address:          sa.Address,
+		ServerSPKISHA256: sa.ServerSPKISHA256,
+		ClientCert:       secret.Data[corev1.TLSCertKey],
+		ClientKey:        secret.Data[corev1.TLSPrivateKeyKey],
+		Profile:          sa.ControlProfile,
+	}, "", nil
 }
 
 // rejectSigningAgentCert reports an agent client certificate Secret the pod

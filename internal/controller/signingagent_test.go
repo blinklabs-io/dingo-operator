@@ -202,6 +202,24 @@ func TestValidateKeysSecretSigningAgent(t *testing.T) {
 	}
 }
 
+// autoWithAgent makes bp a complete Auto-rotation setup that signs through a
+// pinned agent whose control role the operator can reach.
+func autoWithAgent(bp *dingov1alpha1.BlockProducerSpec, poolID string) {
+	bp.NodeToClient.Enabled = true
+	bp.Rotation = dingov1alpha1.RotationSpec{
+		Mode: dingov1alpha1.RotationModeAuto,
+		ColdSigner: dingov1alpha1.ColdSignerSpec{
+			Type:          dingov1alpha1.ColdSignerBursa,
+			Endpoint:      "https://signer:8443",
+			MTLSSecretRef: "signer-mtls",
+			ColdKeyHash:   poolID,
+		},
+	}
+	bp.SigningAgent.ServerSPKISHA256 = testSPKIPin
+	bp.SigningAgent.ControlClientCertSecretRef = "agent-control"
+	bp.Rotation.ReloadInPlace = true
+}
+
 func TestValidateSpecSigningAgent(t *testing.T) {
 	t.Parallel()
 	poolID := strings.Repeat("ab", 28)
@@ -275,7 +293,8 @@ func TestValidateSpecSigningAgent(t *testing.T) {
 		{
 			name: "Auto rotation refused",
 			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
-				// A complete Auto setup, so the refusal is the agent's.
+				// A complete Auto setup but for the control role, which an agent
+				// needs for Auto.
 				bp.NodeToClient.Enabled = true
 				bp.Rotation = dingov1alpha1.RotationSpec{
 					Mode: dingov1alpha1.RotationModeAuto,
@@ -288,6 +307,67 @@ func TestValidateSpecSigningAgent(t *testing.T) {
 				}
 			},
 			wantErr: "rotation.mode Auto",
+		},
+		{
+			name: "Auto rotation with the control role",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				autoWithAgent(bp, poolID)
+			},
+		},
+		{
+			name: "Auto rotation with a control profile",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				autoWithAgent(bp, poolID)
+				bp.SigningAgent.ControlProfile = "pool-a"
+			},
+		},
+		{
+			name: "Auto rotation without reloadInPlace",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				autoWithAgent(bp, poolID)
+				bp.Rotation.ReloadInPlace = false
+			},
+			wantErr: "reloadInPlace",
+		},
+		{
+			name: "Auto rotation without a server pin",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				autoWithAgent(bp, poolID)
+				bp.SigningAgent.ServerSPKISHA256 = ""
+			},
+			wantErr: "serverSpkiSha256",
+		},
+		{
+			name: "Auto rotation over plaintext",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				autoWithAgent(bp, poolID)
+				bp.SigningAgent.ServerSPKISHA256 = ""
+				bp.SigningAgent.Plaintext = true
+			},
+			wantErr: "cannot be plaintext",
+		},
+		{
+			name: "Auto rotation without a control certificate",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				autoWithAgent(bp, poolID)
+				bp.SigningAgent.ControlClientCertSecretRef = ""
+			},
+			wantErr: "controlClientCertSecretRef",
+		},
+		{
+			name: "control certificate without Auto",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.SigningAgent.ControlClientCertSecretRef = "agent-control"
+			},
+			wantErr: "apply only with rotation.mode Auto",
+		},
+		{
+			name: "control profile without Auto",
+			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
+				bp.Rotation.Mode = dingov1alpha1.RotationModeAssisted
+				bp.SigningAgent.ControlProfile = "pool-a"
+			},
+			wantErr: "apply only with rotation.mode Auto",
 		},
 		{
 			name: "address without a port",
