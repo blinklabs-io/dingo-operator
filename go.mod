@@ -3,7 +3,7 @@ module github.com/blinklabs-io/dingo-operator
 go 1.26.10
 
 require (
-	github.com/blinklabs-io/gouroboros v0.217.0
+	github.com/blinklabs-io/gouroboros v0.219.0
 	github.com/consensys/gnark-crypto v0.22.0
 	github.com/go-logr/logr v1.4.4
 	github.com/stretchr/testify v1.12.1
@@ -23,7 +23,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.25.0 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
-	github.com/blinklabs-io/plutigo v0.11.1 // indirect
+	github.com/blinklabs-io/plutigo v0.12.0 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.5.1 // indirect
 	github.com/btcsuite/btcd/btcutil v1.2.0 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.2.0 // indirect
