@@ -21,6 +21,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
@@ -30,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -536,4 +538,104 @@ func TestAutoRotateThroughAgentDoesNotAdoptExpiringOpCert(t *testing.T) {
 	assert.Equal(t, uint64(4), inSecret.IssueNumber)
 	assert.Equal(t, uint64(160), inSecret.KesPeriod)
 	assert.Equal(t, newKey, inSecret.KesVkey)
+}
+
+// failInstallThenReload runs a rotation whose Secret write fails after
+// install-key, then moves the node to what a reloadInPlace node reports once it
+// has loaded the agent's new opcert: counter 4 in a fresh KES window, so
+// RotationDue is False. It returns the Secret as the failed write left it.
+func failInstallThenReload(t *testing.T, f *agentRotateFixture) *corev1.Secret {
+	t.Helper()
+	f.deniedSecretUpdates(t, true)
+	f.r.autoRotate(context.Background(), f.dn)
+	_, issue := f.agent.Active("pool-a")
+	require.Equal(t, uint64(4), issue)
+	stale := f.secret(t)
+
+	f.allowSecretUpdates(t)
+	f.dn.Status.KES = dingov1alpha1.KESStatus{
+		CurrentPeriod:    160,
+		OpCertKESPeriod:  160,
+		ExpiryPeriod:     222,
+		RemainingPeriods: 62,
+	}
+	f.dn.Status.OpCert.LoadedCounter = new(int64(4))
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse,
+		Reason: "KESWindowHealthy",
+	})
+	return stale
+}
+
+// assertAdoptedServed checks the Secret now carries the opcert the agent
+// serves, and that adopting it issued and staged nothing.
+func assertAdoptedServed(t *testing.T, f *agentRotateFixture, cmdsBefore int) {
+	t.Helper()
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls, "no second opcert is issued")
+	for _, c := range f.agent.Commands()[cmdsBefore:] {
+		assert.Equal(t, "info", c.Command, "no second key is staged or installed")
+	}
+	after := f.secret(t)
+	state, err := validateKeysSecret(after, f.dn)
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), state.Counter)
+	inSecret, _, err := opcert.Parse(after.Data[keyFileOpCert])
+	require.NoError(t, err)
+	served, _, err := opcert.ParseCBOR(f.agent.ActiveOpCert("pool-a"))
+	require.NoError(t, err)
+	assert.Equal(t, served.KesVkey, inSecret.KesVkey)
+	assert.Equal(t, served.ColdSignature, inSecret.ColdSignature)
+	assert.NotContains(t, after.Data, keyFileKES)
+}
+
+// A lost Secret write is repaired even after the node has reloaded the new
+// opcert in place and stopped reporting the rotation as due.
+func TestAutoRotateThroughAgentAdoptsWhenNoLongerDue(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	failInstallThenReload(t, f)
+	f.r.forgetIssueFailure(client.ObjectKeyFromObject(f.dn))
+	cmdsBefore := len(f.agent.Commands())
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assertAdoptedServed(t, f, cmdsBefore)
+}
+
+// Once the node forges with the new opcert the chain counter reaches it, and
+// the Secret's opcert is below the chain: it is still repaired.
+func TestAutoRotateThroughAgentAdoptsAfterChainAdvances(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	failInstallThenReload(t, f)
+	f.r.forgetIssueFailure(client.ObjectKeyFromObject(f.dn))
+	observedOnChain(f.dn, 4, time.Minute)
+	cmdsBefore := len(f.agent.Commands())
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assertAdoptedServed(t, f, cmdsBefore)
+}
+
+// A healthy node whose Secret matches what it loaded is left alone: the agent
+// is not asked and no condition is set.
+func TestAutoRotateThroughAgentNotDueLeavesAgentAlone(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	f.dn.Status.OpCert.LoadedCounter = new(int64(3))
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse,
+		Reason: "KESWindowHealthy",
+	})
+	before := f.secret(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Empty(t, f.agent.Commands())
+	assert.Nil(t, f.issued(t))
+	assert.Equal(t, before.Data, f.secret(t).Data)
+	assert.Equal(t, 0, f.issuer.calls)
 }

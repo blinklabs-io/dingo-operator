@@ -111,7 +111,10 @@ operators.
   Secret write, is repaired on the retry: the operator reads the agent's
   `info` and, when the agent serves the next counter signed by the pool's cold
   key, writes that opcert instead of issuing another; when `info` does not
-  answer, the attempt fails and is retried rather than issuing. Auto requires
+  answer, the attempt fails and is retried rather than issuing. The repair
+  does not wait for the rotation to be due again: once the node reports
+  forging with a counter above the Secret's, the operator writes the opcert
+  the agent serves, even after the chain has recorded that counter. Auto requires
   `rotation.reloadInPlace`. The node takes the new opcert from the agent, and
   a node that already reports the new counter when the Secret is judged is not
   rolled onto it.

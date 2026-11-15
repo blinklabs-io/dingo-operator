@@ -322,7 +322,12 @@ the pod onto it":
   served opcert is written to the Secret instead of issuing another when it is
   the next counter signed by the pool's cold key (`adoptServedOpCert`, which
   repairs a write lost after `install-key`; an `info` that does not answer
-  fails the attempt), otherwise `gen-staged-key`, the cold signer's opcert,
+  fails the attempt). Because a reloadInPlace node takes the served opcert and
+  stops reporting `RotationDue`, that repair also runs ahead of the
+  `RotationDue` guard (`adoptPendingInstall`) whenever the node's
+  `LoadedCounter` is above the Secret's counter: the served opcert must match
+  `LoadedCounter` and equal the on-chain counter or one above it; with nothing
+  pending the agent is not called. Otherwise `gen-staged-key`, the cold signer's opcert,
   validation of the candidate Secret, `install-key` (which promotes the key, so
   everything that can reject runs first), then the Secret write. A node that
   already reports the Secret's new counter when it is judged keeps its

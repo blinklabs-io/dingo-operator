@@ -89,8 +89,16 @@ func (r *DingoNodeReconciler) autoRotate(
 	dn *dingov1alpha1.DingoNode,
 ) {
 	bp := dn.Spec.BlockProducer
-	if bp == nil || bp.Rotation.Mode != dingov1alpha1.RotationModeAuto ||
-		!meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
+	if bp == nil || bp.Rotation.Mode != dingov1alpha1.RotationModeAuto {
+		return
+	}
+	// A node that reloads in place takes the agent's new opcert and stops
+	// reporting the rotation as due, so a lost Secret write is repaired here
+	// rather than behind RotationDue.
+	if r.adoptPendingInstall(ctx, dn) {
+		return
+	}
+	if !meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
 		return
 	}
 	floor, ok := observedOnChainCounter(dn, time.Now())
@@ -410,19 +418,9 @@ func (r *DingoNodeReconciler) adoptServedOpCert(
 	if active.IssueNumber != chainCounter+1 {
 		return nil, nil
 	}
-	oc, coldVkey, err := opcert.ParseCBOR(active.OpCert)
-	if err != nil {
-		return nil, nil //nolint:nilerr // an unreadable opcert is not adopted
-	}
-	_, known, err := opcert.Parse(secret.Data[certFile])
-	if err != nil {
-		return nil, nil //nolint:nilerr // autoRotate parsed it already
-	}
-	sigErr := ledger.VerifyOpCertSignature(oc, coldVkey)
-	if sigErr != nil || !bytes.Equal(coldVkey, known) ||
-		oc.IssueNumber != active.IssueNumber ||
-		!bytes.Equal(oc.KesVkey, active.KESVKey) {
-		return nil, nil //nolint:nilerr // an unverifiable opcert is not adopted
+	oc, candidate, err := servedOpCertSecret(active, secret, certFile)
+	if oc == nil || err != nil {
+		return nil, err
 	}
 	start, err := certField(oc.KesPeriod, "kes period")
 	if err != nil {
@@ -431,16 +429,145 @@ func (r *DingoNodeReconciler) adoptServedOpCert(
 	if start+maxEvolutions-int64(kesPeriod) <= renewBefore { //nolint:gosec
 		return nil, nil
 	}
+	return candidate, nil
+}
+
+// servedOpCertSecret returns the opcert the agent serves and the keys Secret
+// carrying it, when the cold key the Secret's opcert names signed it for the
+// key the agent commits to. It returns nil, nil, nil for any opcert that does
+// not verify, and an error only when encoding fails.
+func servedOpCertSecret(
+	active *kesagent.Active,
+	secret *corev1.Secret,
+	certFile string,
+) (*ledger.OpCert, *corev1.Secret, error) {
+	oc, coldVkey, err := opcert.ParseCBOR(active.OpCert)
+	if err != nil {
+		return nil, nil, nil //nolint:nilerr // an unreadable opcert is not adopted
+	}
+	_, known, err := opcert.Parse(secret.Data[certFile])
+	if err != nil {
+		return nil, nil, nil //nolint:nilerr // autoRotate parsed it already
+	}
+	sigErr := ledger.VerifyOpCertSignature(oc, coldVkey)
+	if sigErr != nil || !bytes.Equal(coldVkey, known) ||
+		oc.IssueNumber != active.IssueNumber ||
+		!bytes.Equal(oc.KesVkey, active.KESVKey) {
+		return nil, nil, nil //nolint:nilerr // an unverifiable opcert is not adopted
+	}
 	envelope, err := opcert.Encode(oc, coldVkey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	candidate := secret.DeepCopy()
 	candidate.Data[certFile] = envelope
 	if len(candidate.Data[keyFileNodeCert]) > 0 {
 		candidate.Data[keyFileNodeCert] = envelope
 	}
-	return candidate, nil
+	return oc, candidate, nil
+}
+
+// adoptPendingInstall writes the opcert the agent serves into the keys Secret
+// when the node reports forging with a later counter than the Secret holds,
+// which is what a rotation leaves when install-key succeeded and the Secret
+// write did not. A restart would otherwise load the Secret's older opcert. The
+// served opcert must be the one the node reports, and the next for the pool or
+// already on chain. It reports whether it wrote the Secret.
+//
+// Nothing here is due, so a node with nothing pending, or whose state is not
+// yet known, is left without a condition and the agent is not asked.
+func (r *DingoNodeReconciler) adoptPendingInstall(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) bool {
+	bp := dn.Spec.BlockProducer
+	loaded := dn.Status.OpCert.LoadedCounter
+	if bp.SigningAgent == nil || loaded == nil || *loaded < 0 ||
+		r.APIReader == nil {
+		return false
+	}
+	chain, ok := observedOnChainCounter(dn, time.Now())
+	if !ok {
+		return false
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Name: bp.Keys.SecretRef, Namespace: dn.Namespace}
+	if err := r.APIReader.Get(ctx, key, secret); err != nil {
+		return false
+	}
+	certData, certFile, err := opCertFile(secret.Data)
+	if err != nil || certData == nil {
+		return false
+	}
+	staged, _, err := opcert.Parse(certData)
+	if err != nil || uint64(*loaded) <= staged.IssueNumber { //nolint:gosec
+		return false
+	}
+
+	// The node runs a later opcert than the Secret holds: from here on the
+	// repair is pending, and a failure is reported.
+	cfg, problem, err := r.agentControlConfig(ctx, dn)
+	if err != nil {
+		r.refuseIssue(ctx, dn, "ControlCertUnavailable", err.Error())
+		return false
+	}
+	if problem != "" {
+		r.refuseIssue(ctx, dn, "ControlCertInvalid", problem)
+		return false
+	}
+	active, err := kesagent.ActiveKey(ctx, cfg)
+	if err != nil {
+		r.refuseIssue(ctx, dn, "AgentInfoFailed", err.Error())
+		return false
+	}
+	// Both are non-negative: checked above and by observedOnChainCounter.
+	if active.IssueNumber != uint64(*loaded) || //nolint:gosec
+		active.IssueNumber < uint64(chain) || //nolint:gosec
+		active.IssueNumber > uint64(chain)+1 { //nolint:gosec
+		r.refuseIssue(
+			ctx, dn, "AgentServesUnexpectedOpCert",
+			fmt.Sprintf(
+				"the node reports counter %d, the agent serves %d and the "+
+					"chain holds %d",
+				*loaded, active.IssueNumber, chain,
+			),
+		)
+		return false
+	}
+	_, candidate, err := servedOpCertSecret(active, secret, certFile)
+	if err == nil && candidate == nil {
+		err = errors.New("the opcert the agent serves does not verify")
+	}
+	if err != nil {
+		r.refuseIssue(ctx, dn, "AgentServesUnexpectedOpCert", err.Error())
+		return false
+	}
+	state, err := validateKeysSecret(candidate, dn)
+	if err != nil {
+		r.refuseIssue(ctx, dn, "IssuedBundleRejected", err.Error())
+		return false
+	}
+	// The update carries the resourceVersion read above, so a concurrent edit
+	// of the Secret fails the write instead of being overwritten.
+	if err := r.Update(ctx, candidate); err != nil {
+		r.refuseIssue(ctx, dn, "SecretUpdateFailed", err.Error())
+		return false
+	}
+
+	r.forgetIssueFailure(client.ObjectKeyFromObject(dn))
+	msg := fmt.Sprintf(
+		"adopted the opcert the agent serves, counter %d, kes start period %d",
+		state.Counter, state.KESPeriod,
+	)
+	log.FromContext(ctx).Info(msg, "secret", bp.Keys.SecretRef)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(
+			dn, nil, corev1.EventTypeNormal, "OpCertIssued", "RotateKeys",
+			"%s", msg,
+		)
+	}
+	setIssueCondition(dn, metav1.ConditionTrue, "OpCertIssued", msg)
+	return true
 }
 
 // issuerFor returns the node's configured cold signer, reading its client
