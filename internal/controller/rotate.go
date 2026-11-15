@@ -550,11 +550,15 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 		return false
 	}
 	_, candidate, err := servedOpCertSecret(active, secret, certFile)
-	if err == nil && candidate == nil {
-		err = errors.New("the opcert the agent serves does not verify")
-	}
 	if err != nil {
 		fail("AgentServesUnexpectedOpCert", err.Error())
+		return false
+	}
+	if candidate == nil {
+		fail(
+			"AgentServesUnexpectedOpCert",
+			"the opcert the agent serves does not verify",
+		)
 		return false
 	}
 	state, err := validateKeysSecret(candidate, dn)

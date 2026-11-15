@@ -686,6 +686,7 @@ func TestServedOpCertSecretKeepsServedBytes(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, oc, "the served opcert verifies")
+	require.NotNil(t, got)
 	payload, err := opcert.Payload(got.Data[keyFileOpCert])
 	require.NoError(t, err)
 	assert.Equal(t, served, payload)
