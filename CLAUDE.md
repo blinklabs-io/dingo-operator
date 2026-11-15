@@ -314,9 +314,17 @@ the pod onto it":
   `CARDANO_SHELLEY_KES_KEY`, which Dingo refuses alongside an agent address,
   and `validateSpec` mirrors Dingo's own refusals (address not host:port,
   `plaintext` with a pin or client certificate, a pin that is not 64 hex
-  characters), refuses a port outside 1-65535, and refuses
-  `rotation.mode: Auto`, which generates the KES key in the operator. The pin
-  is validated and rendered trimmed. The keys checksum still hashes the whole
+  characters), refuses a port outside 1-65535, and with
+  `rotation.mode: Auto` requires TLS, the pin and `controlClientCertSecretRef`
+  (`validateAgentControl`), refusing those control settings under any other
+  mode. Auto then rotates through the agent's control role
+  (`issueThroughAgent`, client in `internal/kesagent`): `gen-staged-key`, the
+  cold signer's opcert, validation of the candidate Secret, `install-key`
+  (which promotes the key, so everything that can reject runs first), then the
+  Secret write. Each command is its own session because the agent drops a
+  connection idle over 10 seconds. The pin pins the control link; evidence in
+  the attestation response is not verified. The pin is validated and rendered
+  trimmed. The keys checksum still hashes the whole
   Secret, so editing a stray `kes.skey` rolls the pod. A client certificate
   Secret that is missing, holds only half the pair, or does not load as a
   matching PEM pair holds the pod template like a refused bundle. A valid

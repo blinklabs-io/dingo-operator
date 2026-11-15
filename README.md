@@ -89,10 +89,26 @@ operators.
   `spec.image.tag` to a release with remote agent support once one ships.
   Custom repositories and tags that are not a version are trusted, as for
   `spec.tracing`.
-  `plaintext` takes neither a pin nor a client certificate, and
-  `rotation.mode: Auto` is refused, since it generates the KES key in the
-  operator. The field is named for signing in general: Leios vote signing can
-  move to the agent once Dingo and Bursa support it.
+  `plaintext` takes neither a pin nor a client certificate. The field is named
+  for signing in general: Leios vote signing can move to the agent once Dingo
+  and Bursa support it.
+
+  `rotation.mode: Auto` rotates the key through the agent's control role on
+  the same address. When rotation is due the operator runs `gen-staged-key`
+  for the pool's profile (`controlProfile`, which may be omitted when the agent
+  has one profile), has the cold signer issue the opcert for the returned
+  verification key at the on-chain counter plus one, runs `install-key`, and
+  writes the public opcert back to the keys Secret. No KES private key is
+  created or stored by the operator. The agent admits only a client whose key
+  is pinned in `control_client_spki_sha256` on that profile, so Auto needs
+  `controlClientCertSecretRef` (a Secret with `tls.crt` and `tls.key`, read by
+  the operator and never mounted into the node), TLS and `serverSpkiSha256`,
+  which pins the control connection too. The agent must hold an active key for
+  the profile before the operator can control it. A step that fails before
+  `install-key` leaves the previous key serving and the Secret unchanged, and
+  retries after ten minutes as Auto does without an agent, reported in the
+  `OpCertIssued` condition. As for any new opcert, the node loads it in place
+  only with `rotation.reloadInPlace`; otherwise the pod rolls onto it.
 
   ```yaml
   blockProducer:
@@ -103,6 +119,9 @@ operators.
       address: kes-agent.signing.svc:7000
       serverSpkiSha256: <64 hex characters>
       clientCertSecretRef: kes-agent-client
+      # only with rotation.mode: Auto
+      # controlClientCertSecretRef: kes-agent-control
+      # controlProfile: pool-a
   ```
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
   Prometheus endpoint, including blockfetch delay and fetch duration, ledger
@@ -251,7 +270,8 @@ The chart installs the `DingoNode` CRD, the operator Deployment, RBAC, and
 [blinklabs-io/helm-charts](https://github.com/blinklabs-io/helm-charts).
 
 The operator reads block-producer Secrets (the keys Secret, a signing agent's
-client certificate, a Bursa signer's mTLS credentials) with an uncached `get`
+client certificate and control client certificate, a Bursa signer's mTLS
+credentials) with an uncached `get`
 and keeps no cluster-wide Secret cache or informer. The chart grants that `get`
 cluster-wide by default, or only in the namespaces listed in
 `rbac.keySecretsNamespaces` when that is set. By default a newly delivered key

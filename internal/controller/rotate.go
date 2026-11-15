@@ -25,6 +25,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/coldsigner"
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/kes"
@@ -182,25 +183,51 @@ func (r *DingoNodeReconciler) autoRotate(
 		return
 	}
 	// Both are positive: onChainFloor and the period check above.
-	kesEnv, cert, err := issueBundle(
-		ctx, issuer, uint64(floor), uint64(st.CurrentPeriod), //nolint:gosec
+	chainCounter := uint64(floor)         //nolint:gosec
+	kesPeriod := uint64(st.CurrentPeriod) //nolint:gosec
+	var (
+		candidate *corev1.Secret
+		install   func() error
 	)
-	if err != nil {
-		fail("IssueFailed", err.Error())
-		return
-	}
-
-	candidate := secret.DeepCopy()
-	candidate.Data[keyFileKES] = kesEnv
-	candidate.Data[certFile] = cert
-	if len(candidate.Data[keyFileNodeCert]) > 0 {
-		// opCertFile accepted both names only because they were identical.
-		candidate.Data[keyFileNodeCert] = cert
+	if bp.SigningAgent != nil {
+		var reason string
+		candidate, install, reason, err = r.issueThroughAgent(
+			ctx, dn, issuer, secret, certFile, chainCounter, kesPeriod,
+		)
+		if err != nil {
+			fail(reason, err.Error())
+			return
+		}
+	} else {
+		kesEnv, cert, err := issueBundle(
+			ctx, issuer, chainCounter, kesPeriod,
+		)
+		if err != nil {
+			fail("IssueFailed", err.Error())
+			return
+		}
+		candidate = secret.DeepCopy()
+		candidate.Data[keyFileKES] = kesEnv
+		candidate.Data[certFile] = cert
+		if len(candidate.Data[keyFileNodeCert]) > 0 {
+			// opCertFile accepted both names only because they were identical.
+			candidate.Data[keyFileNodeCert] = cert
+		}
 	}
 	state, err := validateKeysSecret(candidate, dn)
 	if err != nil {
 		fail("IssuedBundleRejected", err.Error())
 		return
+	}
+	// install promotes the new key in the agent, so the write below is the
+	// only step left that can fail. If it does, the agent serves the new
+	// opcert while the Secret holds the old one, and the next attempt issues
+	// the same counter again.
+	if install != nil {
+		if err := install(); err != nil {
+			fail("AgentInstallFailed", err.Error())
+			return
+		}
 	}
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
@@ -224,6 +251,31 @@ func (r *DingoNodeReconciler) autoRotate(
 	setIssueCondition(dn, metav1.ConditionTrue, "OpCertIssued", msg)
 }
 
+// issueOpCert has issuer sign an opcert for kesVkey and verifies it.
+func issueOpCert(
+	ctx context.Context,
+	issuer coldsigner.Issuer,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+) (*ledger.OpCert, []byte, error) {
+	res, err := issuer.SignOpCertFromChain(
+		ctx, kesVkey, chainCounter, kesPeriod,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	oc := &ledger.OpCert{
+		KesVkey:       kesVkey,
+		IssueNumber:   res.IssueCounter,
+		KesPeriod:     kesPeriod,
+		ColdSignature: res.Signature,
+	}
+	if err := ledger.VerifyOpCertSignature(oc, res.ColdVkey); err != nil {
+		return nil, nil, fmt.Errorf("verify issued opcert: %w", err)
+	}
+	return oc, res.ColdVkey, nil
+}
+
 // issueBundle generates a KES key and has issuer sign an opcert for it. It
 // returns the kes.skey and opcert envelopes.
 func issueBundle(
@@ -242,20 +294,13 @@ func issueBundle(
 	}
 	defer sk.Zeroize()
 
-	res, err := issuer.SignOpCertFromChain(ctx, vkey, chainCounter, kesPeriod)
+	oc, coldVkey, err := issueOpCert(
+		ctx, issuer, vkey, chainCounter, kesPeriod,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
-	oc := &ledger.OpCert{
-		KesVkey:       vkey,
-		IssueNumber:   res.IssueCounter,
-		KesPeriod:     kesPeriod,
-		ColdSignature: res.Signature,
-	}
-	if err := ledger.VerifyOpCertSignature(oc, res.ColdVkey); err != nil {
-		return nil, nil, fmt.Errorf("verify issued opcert: %w", err)
-	}
-	cert, err := opcert.Encode(oc, res.ColdVkey)
+	cert, err := opcert.Encode(oc, coldVkey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -272,6 +317,57 @@ func issueBundle(
 		return nil, nil, err
 	}
 	return kesEnv, cert, nil
+}
+
+// issueThroughAgent rotates a key held by a signing agent. The agent generates
+// the key and returns only its verification key; the cold signer issues the
+// opcert for it, and the returned install promotes the key in the agent by
+// installing that opcert. The returned candidate is the keys Secret with the
+// public opcert replaced and no KES private key. The agent is touched only by
+// the staging command here: everything that can reject the new opcert runs
+// before install, since install makes the new key the serving one.
+//
+// The reason names the failed step for the OpCertIssued condition.
+func (r *DingoNodeReconciler) issueThroughAgent(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	issuer coldsigner.Issuer,
+	secret *corev1.Secret,
+	certFile string,
+	chainCounter, kesPeriod uint64,
+) (candidate *corev1.Secret, install func() error, reason string, err error) {
+	cfg, problem, err := r.agentControlConfig(ctx, dn)
+	if err != nil {
+		return nil, nil, "ControlCertUnavailable", err
+	}
+	if problem != "" {
+		return nil, nil, "ControlCertInvalid", errors.New(problem)
+	}
+	vkey, err := kesagent.GenStagedKey(ctx, cfg)
+	if err != nil {
+		return nil, nil, "AgentGenStagedKeyFailed", err
+	}
+	oc, coldVkey, err := issueOpCert(ctx, issuer, vkey, chainCounter, kesPeriod)
+	if err != nil {
+		return nil, nil, "IssueFailed", err
+	}
+	envelope, err := opcert.Encode(oc, coldVkey)
+	if err != nil {
+		return nil, nil, "IssueFailed", err
+	}
+	raw, err := opcert.EncodeCBOR(oc, coldVkey)
+	if err != nil {
+		return nil, nil, "IssueFailed", err
+	}
+	candidate = secret.DeepCopy()
+	candidate.Data[certFile] = envelope
+	if len(candidate.Data[keyFileNodeCert]) > 0 {
+		candidate.Data[keyFileNodeCert] = envelope
+	}
+	install = func() error {
+		return kesagent.InstallKey(ctx, cfg, raw, vkey, oc.IssueNumber)
+	}
+	return candidate, install, "", nil
 }
 
 // issuerFor returns the node's configured cold signer, reading its client

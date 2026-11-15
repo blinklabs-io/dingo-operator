@@ -44,6 +44,21 @@ type envelope struct {
 
 // Encode renders an operational certificate as a cardano-cli text envelope.
 func Encode(oc *ledger.OpCert, coldVkey []byte) ([]byte, error) {
+	payload, err := EncodeCBOR(oc, coldVkey)
+	if err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(envelope{
+		Type:        EnvelopeType,
+		Description: envelopeDescription,
+		CborHex:     hex.EncodeToString(payload),
+	}, "", "    ")
+}
+
+// EncodeCBOR renders an operational certificate as the bare CBOR the envelope
+// wraps: [[kes_vkey, issue_number, kes_period, cold_signature], cold_vkey].
+// It is the form a KES agent's install-key takes.
+func EncodeCBOR(oc *ledger.OpCert, coldVkey []byte) ([]byte, error) {
 	if oc == nil {
 		return nil, errors.New("opcert is nil")
 	}
@@ -64,11 +79,7 @@ func Encode(oc *ledger.OpCert, coldVkey []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode opcert cbor: %w", err)
 	}
-	return json.MarshalIndent(envelope{
-		Type:        EnvelopeType,
-		Description: envelopeDescription,
-		CborHex:     hex.EncodeToString(payload),
-	}, "", "    ")
+	return payload, nil
 }
 
 // Parse decodes a cardano-cli operational-certificate envelope into an OpCert
@@ -91,7 +102,12 @@ func Parse(data []byte) (*ledger.OpCert, []byte, error) {
 	if len(payload) == 0 {
 		return nil, nil, errors.New("opcert cborHex is empty")
 	}
+	return ParseCBOR(payload)
+}
 
+// ParseCBOR decodes the bare CBOR of an operational certificate, as EncodeCBOR
+// writes it. Like Parse it does not verify the signature.
+func ParseCBOR(payload []byte) (*ledger.OpCert, []byte, error) {
 	var outer []any
 	if _, err := cbor.Decode(payload, &outer); err != nil {
 		return nil, nil, fmt.Errorf("decode opcert cbor: %w", err)
