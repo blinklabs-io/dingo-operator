@@ -171,6 +171,9 @@ type onChainAttempt struct {
 	poolID     string
 	// ok reports whether counter/observedAt/poolID are set.
 	ok bool
+	// counters holds, by pool ID, the counters a pool list's attempt read.
+	// poolID is then the sorted list of the pools asked about.
+	counters map[string]int64
 }
 
 // +kubebuilder:rbac:groups=dingo.blinklabs.io,resources=dingonodes,verbs=get;list;watch;create;update;patch;delete
@@ -501,8 +504,15 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// externally-delivered key/opcert swap takes effect. The Secret is read via
 	// the uncached APIReader (get-only, no informer/watch) to avoid holding the
 	// cluster-wide Secret cache this operator must not have.
+	if resources.UsesPoolList(dn) && r.APIReader != nil {
+		keep, msg, err := r.reconcilePoolKeys(ctx, dn, &opts)
+		if err != nil {
+			return err
+		}
+		keepTemplate, holdMessage = keep, msg
+	}
 	if bp := dn.Spec.BlockProducer; resources.IsBlockProducer(dn) &&
-		r.APIReader != nil && bp != nil {
+		!resources.UsesPoolList(dn) && r.APIReader != nil && bp != nil {
 		secret := &corev1.Secret{}
 		key := types.NamespacedName{
 			Name:      bp.Keys.SecretRef,
@@ -1086,6 +1096,10 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// Block producers have one replica in v1; keep KES status tied to that
 	// replica's keys rather than an aggregate pipeline observation.
 	st := statuses[0]
+	if resources.UsesPoolList(dn) {
+		r.observePools(dn, st)
+		return
+	}
 	r.observeLoadedOpCert(dn, st)
 	if !st.HasKESData {
 		setRotationDueUnknown(
@@ -1292,6 +1306,11 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 				"binds node-to-client to loopback and the on-chain counter "+
 				"cannot be read; opcert counters are validated against "+
 				"status.opcert.onDiskCounter only")
+		return
+	}
+
+	if resources.UsesPoolList(dn) {
+		r.refreshPoolOnChainCounters(ctx, dn)
 		return
 	}
 

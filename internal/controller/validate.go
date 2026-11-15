@@ -22,12 +22,15 @@ import (
 	"maps"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/topology"
+	ouroboros "github.com/blinklabs-io/gouroboros"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -105,29 +108,36 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		if bp == nil {
 			return errors.New("role blockProducer requires spec.blockProducer")
 		}
-		if bp.Keys.SecretRef == "" {
-			return errors.New(
-				"role blockProducer requires spec.blockProducer.keys.secretRef",
-			)
-		}
-		// The pool ID binds the delivered opcert to its pool and keys the
-		// on-chain counter lookup; both refuse an empty one.
-		if bp.PoolID == "" {
-			return errors.New(
-				"role blockProducer requires spec.blockProducer.poolId",
-			)
-		}
-		// Only the native Secret backend is implemented. Reject the reserved
-		// ExternalSecret/CSI values rather than accepting them and silently
-		// mounting a plain Secret (or failing the pod when the referent is
-		// absent).
-		if st := bp.Keys.SourceType; st != "" &&
-			st != dingov1alpha1.KeySourceSecret {
-			return fmt.Errorf(
-				"keys.sourceType %q is not supported in this operator "+
-					"version; only Secret is implemented",
-				st,
-			)
+		if len(bp.Pools) > 0 {
+			if err := validatePools(dn, bp); err != nil {
+				return err
+			}
+		} else {
+			if bp.Keys.SecretRef == "" {
+				return errors.New(
+					"role blockProducer requires " +
+						"spec.blockProducer.keys.secretRef",
+				)
+			}
+			// The pool ID binds the delivered opcert to its pool and keys the
+			// on-chain counter lookup; both refuse an empty one.
+			if bp.PoolID == "" {
+				return errors.New(
+					"role blockProducer requires spec.blockProducer.poolId",
+				)
+			}
+			// Only the native Secret backend is implemented. Reject the
+			// reserved ExternalSecret/CSI values rather than accepting them
+			// and silently mounting a plain Secret (or failing the pod when
+			// the referent is absent).
+			if st := bp.Keys.SourceType; st != "" &&
+				st != dingov1alpha1.KeySourceSecret {
+				return fmt.Errorf(
+					"keys.sourceType %q is not supported in this operator "+
+						"version; only Secret is implemented",
+					st,
+				)
+			}
 		}
 		if cs := bp.Rotation.ColdSigner; cs.Profile != "" &&
 			cs.Type != dingov1alpha1.ColdSignerBursa && cs.Type != "" {
@@ -219,6 +229,108 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 	return resources.ValidateAPIs(dn)
 }
 
+// validatePools checks spec.blockProducer.pools: what Dingo refuses for a pool
+// list (an agent address shared by pools with one profile, more than one pool
+// with Leios) and what the operator does not do for one (Auto rotation).
+func validatePools(
+	dn *dingov1alpha1.DingoNode,
+	bp *dingov1alpha1.BlockProducerSpec,
+) error {
+	if bp.PoolID != "" || bp.Keys.SecretRef != "" {
+		return errors.New(
+			"spec.blockProducer.pools cannot be combined with " +
+				"spec.blockProducer.poolId or keys: list every pool, " +
+				"the single one included, in pools",
+		)
+	}
+	if bp.SigningAgent == nil {
+		return errors.New(
+			"spec.blockProducer.pools requires " +
+				"spec.blockProducer.signingAgent: a pool list holds no " +
+				"local KES keys",
+		)
+	}
+	if !resources.SupportsPoolList(dn) {
+		return fmt.Errorf(
+			"spec.blockProducer.pools requires a Dingo image of v0.%d.0 or "+
+				"later; set spec.image.tag",
+			resources.MinPoolListMinor,
+		)
+	}
+	if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
+		return errors.New(
+			"rotation mode Auto is not supported with " +
+				"spec.blockProducer.pools: rotating through the signing " +
+				"agent per pool comes later; use Assisted or MonitorOnly",
+		)
+	}
+	pools := make(map[string]string, len(bp.Pools))
+	profiles := make(map[string]string, len(bp.Pools))
+	for i, p := range bp.Pools {
+		field := fmt.Sprintf("spec.blockProducer.pools[%d]", i)
+		if p.Keys.SecretRef == "" {
+			return fmt.Errorf("%s requires keys.secretRef", field)
+		}
+		if p.AgentProfile == "" {
+			return fmt.Errorf("%s requires agentProfile", field)
+		}
+		if st := p.Keys.SourceType; st != "" &&
+			st != dingov1alpha1.KeySourceSecret {
+			return fmt.Errorf(
+				"%s: keys.sourceType %q is not supported in this operator "+
+					"version; only Secret is implemented",
+				field, st,
+			)
+		}
+		id, err := parsePoolID(p.PoolID)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if prev, dup := pools[id.String()]; dup {
+			return fmt.Errorf(
+				"%s lists pool %s, already listed by %s",
+				field, id.String(), prev,
+			)
+		}
+		pools[id.String()] = field
+		if prev, dup := profiles[p.AgentProfile]; dup {
+			return fmt.Errorf(
+				"%s uses agentProfile %q, already used by %s; pools that "+
+					"share the signing agent need distinct profiles",
+				field, p.AgentProfile, prev,
+			)
+		}
+		profiles[p.AgentProfile] = field
+	}
+	if len(bp.Pools) > 1 && leiosForging(dn) {
+		return errors.New(
+			"spec.blockProducer.pools lists more than one pool, which " +
+				"Leios (runMode leios or the Musashi network) does not " +
+				"support in Dingo",
+		)
+	}
+	return nil
+}
+
+// leiosForging reports whether the node's effective environment selects the
+// Leios run mode or the Musashi prototype network, with which Dingo refuses
+// more than one pool.
+func leiosForging(dn *dingov1alpha1.DingoNode) bool {
+	env := map[string]string{}
+	for _, e := range resources.BuildEnv(dn, resources.RenderOptions{}) {
+		env[e.Name] = e.Value
+	}
+	if strings.EqualFold(env["DINGO_RUN_MODE"], "leios") {
+		return true
+	}
+	if env["CARDANO_NETWORK"] == ouroboros.NetworkCardanoMusashi.Name {
+		return true
+	}
+	musashi := ouroboros.NetworkCardanoMusashi.NetworkMagic
+	return env["CARDANO_NETWORK_MAGIC"] ==
+		strconv.FormatUint(uint64(musashi), 10)
+}
+
 // reasonDuplicateForger is the condition reason for a block producer refused
 // because another one already stages the same pool or keys.
 const reasonDuplicateForger = "DuplicateForger"
@@ -237,7 +349,8 @@ func forgerConflict(
 	if !resources.IsBlockProducer(dn) || dn.Spec.BlockProducer == nil {
 		return nil
 	}
-	pool := normalizedPoolID(dn.Spec.BlockProducer.PoolID)
+	pools := specPools(dn.Spec.BlockProducer)
+	secrets := specSecrets(dn.Spec.BlockProducer)
 	network := networkKey(dn)
 	for i := range all {
 		o := &all[i]
@@ -252,25 +365,54 @@ func forgerConflict(
 			validateSpec(o) != nil {
 			continue
 		}
-		if pool != "" &&
-			pool == normalizedPoolID(o.Spec.BlockProducer.PoolID) &&
-			sameNetwork(network, networkKey(o)) {
-			return heldf(
-				"block producer %s/%s already forges for pool %s; only one "+
-					"DingoNode may stage a pool's keys",
-				o.Namespace, o.Name, pool,
-			)
+		theirPools := specPools(o.Spec.BlockProducer)
+		if sameNetwork(network, networkKey(o)) {
+			for _, pool := range pools {
+				if slices.Contains(theirPools, pool) {
+					return heldf(
+						"block producer %s/%s already forges for pool %s; "+
+							"only one DingoNode may stage a pool's keys",
+						o.Namespace, o.Name, pool,
+					)
+				}
+			}
 		}
-		if o.Spec.BlockProducer.Keys.SecretRef ==
-			dn.Spec.BlockProducer.Keys.SecretRef {
-			return heldf(
-				"block producer %s/%s already stages keys Secret %q; only "+
-					"one DingoNode may use a keys Secret",
-				o.Namespace, o.Name, dn.Spec.BlockProducer.Keys.SecretRef,
-			)
+		theirSecrets := specSecrets(o.Spec.BlockProducer)
+		for _, secret := range secrets {
+			if slices.Contains(theirSecrets, secret) {
+				return heldf(
+					"block producer %s/%s already stages keys Secret %q; "+
+						"only one DingoNode may use a keys Secret",
+					o.Namespace, o.Name, secret,
+				)
+			}
 		}
 	}
 	return nil
+}
+
+// specPools returns the normalized pool IDs a block producer's spec names: its
+// poolId, or every pool of its pool list.
+func specPools(bp *dingov1alpha1.BlockProducerSpec) []string {
+	if len(bp.Pools) > 0 {
+		return poolIDs(bp)
+	}
+	if p := normalizedPoolID(bp.PoolID); p != "" {
+		return []string{p}
+	}
+	return nil
+}
+
+// specSecrets returns the keys Secrets a block producer's spec names.
+func specSecrets(bp *dingov1alpha1.BlockProducerSpec) []string {
+	if len(bp.Pools) > 0 {
+		secrets := make([]string, 0, len(bp.Pools))
+		for _, p := range bp.Pools {
+			secrets = append(secrets, p.Keys.SecretRef)
+		}
+		return secrets
+	}
+	return []string{bp.Keys.SecretRef}
 }
 
 // forgerOutranks reports whether a keeps the keys over b: the older object, or

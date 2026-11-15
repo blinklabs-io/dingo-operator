@@ -126,11 +126,48 @@ func validateKeysSecret(
 	if bp == nil {
 		return nil, errors.New("block producer spec is nil")
 	}
+	floor, _ := onChainFloor(dn, time.Now())
+	return validateBundle(secret, bundleChecks{
+		poolID:           bp.PoolID,
+		poolIDField:      "spec.blockProducer.poolId",
+		agent:            bp.SigningAgent != nil,
+		onChainFloor:     floor,
+		onDisk:           dn.Status.OpCert.OnDiskCounter,
+		kesPeriod:        dn.Status.KES.CurrentPeriod,
+		maxKESEvolutions: bp.MaxKESEvolutions,
+	})
+}
 
+// bundleChecks is what a key bundle is validated against: the pool it must
+// belong to and the counters and KES period it is judged by, which are the
+// node's for a single pool and the pool's own for a pool list.
+type bundleChecks struct {
+	// poolID is the pool the opcert's cold key must hash to, and poolIDField
+	// the spec field it came from, for the error.
+	poolID      string
+	poolIDField string
+	// agent is set when a remote agent holds the KES key.
+	agent bool
+	// onChainFloor is the fresh on-chain counter for the pool; 0 means there
+	// is none to enforce.
+	onChainFloor int64
+	// onDisk is the last opcert counter accepted for the pool.
+	onDisk int64
+	// kesPeriod is the pool's current KES period as scraped; 0 means not
+	// scraped yet.
+	kesPeriod        int64
+	maxKESEvolutions int64
+}
+
+// validateBundle is validateKeysSecret for one pool's bundle.
+func validateBundle(
+	secret *corev1.Secret,
+	c bundleChecks,
+) (*keyState, error) {
 	// With a remote signing agent the agent holds the KES key: kes.skey is
 	// not required, and one left in the Secret is ignored rather than
 	// checked, since it is never staged.
-	agent := bp.SigningAgent != nil
+	agent := c.agent
 	required := []string{keyFileKES, keyFileVRF}
 	if agent {
 		required = []string{keyFileVRF}
@@ -195,7 +232,7 @@ func validateKeysSecret(
 
 	// Bind the certificate to this pool: a self-consistent opcert signed by
 	// some other cold key would otherwise pass every check above.
-	if err := checkPoolID(bp.PoolID, coldVkey); err != nil {
+	if err := checkPoolID(c.poolID, c.poolIDField, coldVkey); err != nil {
 		return nil, err
 	}
 
@@ -225,7 +262,7 @@ func validateKeysSecret(
 
 	// The chain's own floor first: it is authoritative, and its message is the
 	// more useful one when both bounds are violated.
-	if floor, ok := onChainFloor(dn, time.Now()); ok && counter < floor {
+	if floor := c.onChainFloor; floor > 0 && counter < floor {
 		return nil, fmt.Errorf(
 			"opcert counter %d is below the on-chain counter %d observed from "+
 				"the node; the chain has already accepted a higher "+
@@ -236,7 +273,7 @@ func validateKeysSecret(
 		)
 	}
 
-	if last := dn.Status.OpCert.OnDiskCounter; last > 0 && counter < last {
+	if last := c.onDisk; last > 0 && counter < last {
 		// status.opcert.onDiskCounter is published on acceptance, before the
 		// pod has come up on the new bundle, so an admin backing out a roll
 		// that never completed lands here. Say how to get out: the floor is
@@ -253,8 +290,8 @@ func validateKeysSecret(
 	// Skip the period checks until the node has reported a KES period at least
 	// once: a zero value means "not yet scraped", not "period 0", and failing
 	// on it would reject a healthy node's own valid keys on the first reconcile.
-	if cur := dn.Status.KES.CurrentPeriod; cur > 0 {
-		end := startPeriod + bp.MaxKESEvolutions
+	if cur := c.kesPeriod; cur > 0 {
+		end := startPeriod + c.maxKESEvolutions
 		// Expiry is unconditional. An opcert whose KES window has already
 		// closed cannot be made to work by rolling the pod onto it; the node
 		// would refuse to start and the one forging pod would CrashLoop.
@@ -276,12 +313,12 @@ func validateKeysSecret(
 		// keys it can no longer renew, which is worse than what the bound
 		// protects against. A counter above the last accepted one is
 		// unambiguous evidence of a deliberate forward rotation, so trust it.
-		if counter <= dn.Status.OpCert.OnDiskCounter && cur < startPeriod {
+		if counter <= c.onDisk && cur < startPeriod {
 			return nil, fmt.Errorf(
 				"opcert kes start period %d is in the future (current period "+
 					"%d) and its counter %d does not advance past the last "+
 					"accepted counter %d",
-				startPeriod, cur, counter, dn.Status.OpCert.OnDiskCounter,
+				startPeriod, cur, counter, c.onDisk,
 			)
 		}
 	}
@@ -562,7 +599,7 @@ func checkKESBinding(raw, certKESVkey []byte) error {
 // checkPoolID compares the configured pool ID against blake2b-224 of the cold
 // verification key that signed the certificate. spec.blockProducer.poolId
 // accepts either bech32 ("pool1...") or hex.
-func checkPoolID(poolID string, coldVkey []byte) error {
+func checkPoolID(poolID, field string, coldVkey []byte) error {
 	want, err := parsePoolID(poolID)
 	if err != nil {
 		return err
@@ -570,9 +607,8 @@ func checkPoolID(poolID string, coldVkey []byte) error {
 	got := common.Blake2b224Hash(coldVkey)
 	if got != want {
 		return fmt.Errorf(
-			"opcert cold key hashes to pool id %s, but spec.blockProducer."+
-				"poolId is %s",
-			got.String(), want.String(),
+			"opcert cold key hashes to pool id %s, but %s is %s",
+			got.String(), field, want.String(),
 		)
 	}
 	return nil
