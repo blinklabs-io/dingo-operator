@@ -194,6 +194,7 @@ func (r *DingoNodeReconciler) autoRotate(
 		var reason string
 		candidate, install, reason, err = r.issueThroughAgent(
 			ctx, dn, issuer, secret, certFile, chainCounter, kesPeriod,
+			maxEvolutions, renewBefore,
 		)
 		if err != nil {
 			fail(reason, err.Error())
@@ -336,6 +337,7 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	secret *corev1.Secret,
 	certFile string,
 	chainCounter, kesPeriod uint64,
+	maxEvolutions, renewBefore int64,
 ) (candidate *corev1.Secret, install func() error, reason string, err error) {
 	cfg, problem, err := r.agentControlConfig(ctx, dn)
 	if err != nil {
@@ -350,6 +352,7 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	// answer from info that cannot be ruled out, so the attempt fails.
 	adopted, err := r.adoptServedOpCert(
 		ctx, cfg, secret, certFile, chainCounter,
+		kesPeriod, maxEvolutions, renewBefore,
 	)
 	if err != nil {
 		return nil, nil, "AgentInfoFailed", err
@@ -388,14 +391,17 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 // serves, when that opcert is the next one for the pool: its issue number is
 // chainCounter+1 and the cold key the Secret's opcert names signed it for the
 // key it commits to. It returns nil, nil when the agent serves anything else,
-// so the caller rotates as usual, and an error only when info fails. The
-// agent is only read.
+// so the caller rotates as usual, and an error only when info fails. An opcert
+// with no more than renewBefore periods left at kesPeriod is not adopted
+// either: it would stay due, so a fresh one is issued instead. The agent is
+// only read.
 func (r *DingoNodeReconciler) adoptServedOpCert(
 	ctx context.Context,
 	cfg kesagent.Config,
 	secret *corev1.Secret,
 	certFile string,
-	chainCounter uint64,
+	chainCounter, kesPeriod uint64,
+	maxEvolutions, renewBefore int64,
 ) (*corev1.Secret, error) {
 	active, err := kesagent.ActiveKey(ctx, cfg)
 	if err != nil {
@@ -417,6 +423,13 @@ func (r *DingoNodeReconciler) adoptServedOpCert(
 		oc.IssueNumber != active.IssueNumber ||
 		!bytes.Equal(oc.KesVkey, active.KESVKey) {
 		return nil, nil //nolint:nilerr // an unverifiable opcert is not adopted
+	}
+	start, err := certField(oc.KesPeriod, "kes period")
+	if err != nil {
+		return nil, nil //nolint:nilerr // an unreadable opcert is not adopted
+	}
+	if start+maxEvolutions-int64(kesPeriod) <= renewBefore { //nolint:gosec
+		return nil, nil
 	}
 	envelope, err := opcert.Encode(oc, coldVkey)
 	if err != nil {

@@ -51,6 +51,22 @@ func newAgentRotateFixture(
 	mutate func(*fakeagent.Profile),
 ) *agentRotateFixture {
 	t.Helper()
+	return newAgentRotateFixtureKeys(
+		t, func(_ *devnet.PoolKeys, p *fakeagent.Profile) {
+			if mutate != nil {
+				mutate(p)
+			}
+		},
+	)
+}
+
+// newAgentRotateFixtureKeys is newAgentRotateFixture with the pool's keys
+// passed to mutate, for a profile that needs an opcert the pool signed.
+func newAgentRotateFixtureKeys(
+	t *testing.T,
+	mutate func(*devnet.PoolKeys, *fakeagent.Profile),
+) *agentRotateFixture {
+	t.Helper()
 	f := newRotateFixture(t)
 	ctx := context.Background()
 
@@ -67,7 +83,7 @@ func newAgentRotateFixture(
 		ActiveIssue: 3,
 	}
 	if mutate != nil {
-		mutate(&p)
+		mutate(f.keys, &p)
 	}
 	agent := fakeagent.New(t, p)
 	require.NoError(t, f.c.Create(ctx, &corev1.Secret{
@@ -473,4 +489,51 @@ func TestAutoRotateThroughAgentDoesNotAdoptOtherColdKey(t *testing.T) {
 	assert.NotEqual(t, oc.ColdSignature, inSecret.ColdSignature)
 	key, _ := f.agent.Active("pool-a")
 	assert.Equal(t, inSecret.KesVkey, key)
+}
+
+// An agent serving the next counter's opcert inside its renewal window is not
+// adopted: a pool that forged no block since the last rotation still has the
+// chain at counter 3, and adopting the same near-expiry opcert on every retry
+// would never rotate. A fresh opcert at counter 4 for a new key is issued.
+func TestAutoRotateThroughAgentDoesNotAdoptExpiringOpCert(t *testing.T) {
+	t.Parallel()
+	var served []byte
+	f := newAgentRotateFixtureKeys(
+		t, func(k *devnet.PoolKeys, p *fakeagent.Profile) {
+			// Starts at period 100: 100+62-160 = 2 periods left, inside the
+			// renewal window of 8.
+			env, err := k.IssueOpCert(4, 100)
+			require.NoError(t, err)
+			oc, cold, err := opcert.Parse(env)
+			require.NoError(t, err)
+			served, err = opcert.EncodeCBOR(oc, cold)
+			require.NoError(t, err)
+			p.ActiveIssue = 4
+			p.ActiveOpCert = served
+		},
+	)
+	oldKey, _ := f.agent.Active("pool-a")
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls, "a fresh opcert is issued")
+	cmds := []string{}
+	for _, c := range f.agent.Commands() {
+		cmds = append(cmds, c.Command)
+	}
+	assert.Equal(t, []string{"info", "gen-staged-key", "install-key"}, cmds)
+
+	newKey, issue := f.agent.Active("pool-a")
+	assert.NotEqual(t, oldKey, newKey, "a new key is generated")
+	assert.Equal(t, uint64(4), issue)
+	assert.NotEqual(t, served, f.agent.ActiveOpCert("pool-a"))
+
+	inSecret, _, err := opcert.Parse(f.secret(t).Data[keyFileOpCert])
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), inSecret.IssueNumber)
+	assert.Equal(t, uint64(160), inSecret.KesPeriod)
+	assert.Equal(t, newKey, inSecret.KesVkey)
 }
