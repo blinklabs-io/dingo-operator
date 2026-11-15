@@ -44,6 +44,7 @@ const (
 	roleControl        = "control"
 	cmdGenStagedKey    = "gen-staged-key"
 	cmdInstallKey      = "install-key"
+	cmdInfo            = "info"
 
 	nonceSize = 32
 	// maxFrameLen is the agent's cap on one frame payload.
@@ -87,6 +88,7 @@ type agentInfo struct {
 	HasActiveKey      bool   `json:"has_active_key"`
 	ActiveKESVKey     []byte `json:"active_kes_vkey"`
 	ActiveIssueNumber uint64 `json:"active_issue_number"`
+	ActiveOpCert      []byte `json:"active_opcert"`
 }
 
 type reply struct {
@@ -156,6 +158,34 @@ func InstallKey(
 		)
 	}
 	return nil
+}
+
+// Active is the key an agent profile serves.
+type Active struct {
+	// KESVKey is the verification key of the serving KES key.
+	KESVKey []byte
+	// IssueNumber is the issue number of the serving opcert.
+	IssueNumber uint64
+	// OpCert is the serving operational certificate, CBOR.
+	OpCert []byte
+}
+
+// ActiveKey returns the key the profile serves, from the agent's info
+// command. It is how a rotation interrupted after install-key finds the
+// opcert the agent already serves.
+func ActiveKey(ctx context.Context, cfg Config) (*Active, error) {
+	r, err := cfg.do(ctx, command{Command: cmdInfo, Profile: cfg.Profile})
+	if err != nil {
+		return nil, err
+	}
+	if r.Info == nil || !r.Info.HasActiveKey {
+		return nil, errors.New("agent reports no active key")
+	}
+	return &Active{
+		KESVKey:     r.Info.ActiveKESVKey,
+		IssueNumber: r.Info.ActiveIssueNumber,
+		OpCert:      r.Info.ActiveOpCert,
+	}, nil
 }
 
 // do opens a control session, sends cmd and returns an accepted reply.
@@ -300,10 +330,10 @@ func writeFrame(w io.Writer, v any) error {
 	if len(payload) > maxFrameLen {
 		return fmt.Errorf("frame of %d bytes exceeds the limit", len(payload))
 	}
+	// The length is bounded by maxFrameLen above.
 	buf := binary.BigEndian.AppendUint32(
-		nil,
-		uint32(len(payload)),
-	) //nolint:gosec // bounded above
+		nil, uint32(len(payload)), //nolint:gosec // bounded above
+	)
 	_, err = w.Write(append(buf, payload...))
 	return err
 }

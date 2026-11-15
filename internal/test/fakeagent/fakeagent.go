@@ -64,6 +64,8 @@ type Profile struct {
 	// ActiveVKey and ActiveIssue are the key the profile serves at start.
 	ActiveVKey  []byte
 	ActiveIssue uint64
+	// ActiveOpCert is the CBOR opcert of the active key, as info reports it.
+	ActiveOpCert []byte
 	// InstallError, when set, makes install-key refuse with this text.
 	InstallError string
 }
@@ -163,6 +165,13 @@ func (a *Agent) Active(name string) ([]byte, uint64) {
 	return append([]byte(nil), p.ActiveVKey...), p.ActiveIssue
 }
 
+// ActiveOpCert returns the CBOR opcert a profile serves, or nil.
+func (a *Agent) ActiveOpCert(name string) []byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]byte(nil), a.profile(name).ActiveOpCert...)
+}
+
 // Staged returns the verification key staged for a profile, or nil.
 func (a *Agent) Staged(name string) []byte {
 	a.mu.Lock()
@@ -192,6 +201,7 @@ type wireInfo struct {
 	HasActiveKey      bool   `json:"has_active_key"`
 	ActiveKESVKey     []byte `json:"active_kes_vkey"`
 	ActiveIssueNumber uint64 `json:"active_issue_number"`
+	ActiveOpCert      []byte `json:"active_opcert"`
 	StagedKESVKey     []byte `json:"staged_kes_vkey"`
 }
 
@@ -333,6 +343,7 @@ func (a *Agent) dispatch(
 		return &wireInfo{
 			Profile: p.Name, HasActiveKey: len(p.ActiveVKey) > 0,
 			ActiveKESVKey: p.ActiveVKey, ActiveIssueNumber: p.ActiveIssue,
+			ActiveOpCert:  p.ActiveOpCert,
 			StagedKESVKey: p.staged,
 		}
 	}
@@ -367,6 +378,7 @@ func (a *Agent) dispatch(
 			return fail("kesagent: opcert does not commit to the staged key")
 		}
 		p.ActiveVKey, p.ActiveIssue, p.staged = p.staged, oc.IssueNumber, nil
+		p.ActiveOpCert = append([]byte(nil), cert...)
 		return wireReply{Ok: true, Info: info()}
 	default:
 		return wireReply{Ok: true, Info: info()}
@@ -429,9 +441,8 @@ func write(w io.Writer, v any) error {
 		return err
 	}
 	hdr := binary.BigEndian.AppendUint32(
-		nil,
-		uint32(len(payload)),
-	) //nolint:gosec // small test frames
+		nil, uint32(len(payload)), //nolint:gosec // small test frames
+	)
 	_, err = w.Write(append(hdr, payload...))
 	return err
 }

@@ -437,8 +437,9 @@ type SigningAgentSpec struct {
 	// admits only a client whose certificate key is pinned in
 	// control_client_spki_sha256 on the pool's profile. Only the operator
 	// reads it; it is never mounted into the node, so it may differ from
-	// clientCertSecretRef. Required by rotation.mode Auto, which needs TLS
-	// and serverSpkiSha256 as well, and refused otherwise.
+	// clientCertSecretRef. Required by rotation.mode Auto, which needs TLS,
+	// serverSpkiSha256 and rotation.reloadInPlace as well, and refused
+	// otherwise.
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional

@@ -86,6 +86,7 @@ func TestWireShapesMatchBursaFrames(t *testing.T) {
 	assert.True(t, info.Info.HasActiveKey)
 	assert.Equal(t, uint64(3), info.Info.ActiveIssueNumber)
 	assert.Len(t, info.Info.ActiveKESVKey, kesVKeySize)
+	assert.NotEmpty(t, info.Info.ActiveOpCert)
 }
 
 type rig struct {
@@ -152,6 +153,25 @@ func TestGenerateThenInstall(t *testing.T) {
 	assert.Equal(t, "gen-staged-key", cmds[0].Command)
 	assert.Equal(t, "install-key", cmds[1].Command)
 	assert.Equal(t, "pool-a", cmds[1].Profile)
+}
+
+// info reports the serving opcert once install-key has promoted a key.
+func TestActiveKeyReportsInstalledOpCert(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, nil)
+	vkey, err := GenStagedKey(t.Context(), r.cfg)
+	require.NoError(t, err)
+	raw := r.opcert(t, vkey, 8)
+	require.NoError(t, InstallKey(t.Context(), r.cfg, raw, vkey, 8))
+
+	got, err := ActiveKey(t.Context(), r.cfg)
+	require.NoError(t, err)
+	assert.Equal(t, vkey, got.KESVKey)
+	assert.Equal(t, uint64(8), got.IssueNumber)
+	assert.Equal(t, raw, got.OpCert)
+	cmds := r.agent.Commands()
+	assert.Equal(t, "info", cmds[len(cmds)-1].Command)
+	assert.Equal(t, "pool-a", cmds[len(cmds)-1].Profile)
 }
 
 func TestRefusals(t *testing.T) {

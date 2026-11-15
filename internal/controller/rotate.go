@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -343,6 +344,14 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	if problem != "" {
 		return nil, nil, "ControlCertInvalid", errors.New(problem)
 	}
+	// A rotation that failed after install-key left the agent serving the
+	// opcert it issued. Publish that one: issuing another at the same counter
+	// would not be offered to a node that already took the first.
+	if adopted, err := r.adoptServedOpCert(
+		ctx, cfg, secret, certFile, chainCounter,
+	); err == nil && adopted != nil {
+		return adopted, nil, "", nil
+	}
 	vkey, err := kesagent.GenStagedKey(ctx, cfg)
 	if err != nil {
 		return nil, nil, "AgentGenStagedKeyFailed", err
@@ -368,6 +377,48 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 		return kesagent.InstallKey(ctx, cfg, raw, vkey, oc.IssueNumber)
 	}
 	return candidate, install, "", nil
+}
+
+// adoptServedOpCert returns the keys Secret carrying the opcert the agent
+// serves, when that opcert is the next one for the pool: its issue number is
+// chainCounter+1 and the cold key the Secret's opcert names signed it for the
+// key it commits to. It returns nil, nil when the agent serves anything else,
+// so the caller rotates as usual. The agent is only read.
+func (r *DingoNodeReconciler) adoptServedOpCert(
+	ctx context.Context,
+	cfg kesagent.Config,
+	secret *corev1.Secret,
+	certFile string,
+	chainCounter uint64,
+) (*corev1.Secret, error) {
+	active, err := kesagent.ActiveKey(ctx, cfg)
+	if err != nil || active.IssueNumber != chainCounter+1 {
+		return nil, err
+	}
+	oc, coldVkey, err := opcert.ParseCBOR(active.OpCert)
+	if err != nil {
+		return nil, err
+	}
+	_, known, err := opcert.Parse(secret.Data[certFile])
+	if err != nil {
+		return nil, err
+	}
+	sigErr := ledger.VerifyOpCertSignature(oc, coldVkey)
+	if sigErr != nil || !bytes.Equal(coldVkey, known) ||
+		oc.IssueNumber != active.IssueNumber ||
+		!bytes.Equal(oc.KesVkey, active.KESVKey) {
+		return nil, nil //nolint:nilerr // an unverifiable opcert is not adopted
+	}
+	envelope, err := opcert.Encode(oc, coldVkey)
+	if err != nil {
+		return nil, err
+	}
+	candidate := secret.DeepCopy()
+	candidate.Data[certFile] = envelope
+	if len(candidate.Data[keyFileNodeCert]) > 0 {
+		candidate.Data[keyFileNodeCert] = envelope
+	}
+	return candidate, nil
 }
 
 // issuerFor returns the node's configured cold signer, reading its client

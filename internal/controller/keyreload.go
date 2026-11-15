@@ -85,6 +85,10 @@ type liveKeys struct {
 	// counter is the opcert counter of the bundle behind checksum, nil when
 	// the template does not record it.
 	counter *int64
+	// agent is set when the node signs through an agent that serves its newest
+	// opcert, so it can report a counter the keys Secret has not been judged
+	// at yet. It is not read from the template: the caller sets it.
+	agent bool
 }
 
 // keysRollout is how a validated key bundle reaches the node.
@@ -189,6 +193,23 @@ func decideKeysLoad(
 	}
 	pending := prev
 	if pending == nil || pending.Checksum != full {
+		if loaded != nil && *loaded == counter && live.agent &&
+			live.counter != nil && counter > *live.counter {
+			// The agent already serves this opcert and the node has taken
+			// it, so there is nothing to reload: only the opcert in the
+			// Secret differs, and the pod keeps the template it has.
+			return keysRollout{
+				checksum: live.checksum,
+				static:   live.static,
+				approve:  true,
+				pending: &dingov1alpha1.InPlaceReloadStatus{
+					Checksum:    full,
+					Counter:     counter,
+					RequestedAt: metav1.NewTime(now),
+					Applied:     true,
+				},
+			}
+		}
 		if loaded == nil || *loaded == counter {
 			return roll
 		}

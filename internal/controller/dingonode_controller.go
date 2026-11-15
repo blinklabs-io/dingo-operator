@@ -537,6 +537,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 				if err != nil {
 					return err
 				}
+				live.agent = resources.UsesSigningAgent(dn)
 				rollout := decideKeysRollout(
 					resources.ReloadsKeysInPlace(dn), live,
 					keysChecksum(secret), staticKeysChecksum(secret.Data),

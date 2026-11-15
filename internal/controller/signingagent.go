@@ -125,6 +125,13 @@ func validateAgentControl(
 			"spec.blockProducer.signingAgent with rotation.mode Auto " +
 				"requires serverSpkiSha256 to pin the control connection",
 		)
+	case !bp.Rotation.ReloadInPlace:
+		return errors.New(
+			"spec.blockProducer.signingAgent with rotation.mode Auto " +
+				"requires rotation.reloadInPlace: the node takes the " +
+				"rotated opcert from the agent, and a pod roll would " +
+				"interrupt forging",
+		)
 	}
 	return nil
 }

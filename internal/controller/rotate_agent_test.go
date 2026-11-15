@@ -97,11 +97,13 @@ func TestAutoRotateThroughAgent(t *testing.T) {
 	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
 	assert.Equal(t, 1, f.issuer.calls)
 
-	cmds := f.agent.Commands()
-	require.Len(t, cmds, 2)
+	all := f.agent.Commands()
+	require.Len(t, all, 3)
+	assert.Equal(t, "info", all[0].Command)
+	cmds := all[1:]
 	assert.Equal(t, "gen-staged-key", cmds[0].Command)
 	assert.Equal(t, "install-key", cmds[1].Command)
-	for _, c := range cmds {
+	for _, c := range all {
 		assert.Equal(t, "pool-a", c.Profile)
 	}
 
@@ -143,7 +145,7 @@ func TestAutoRotateThroughAgentIssuesOnce(t *testing.T) {
 	f.r.autoRotate(context.Background(), f.dn)
 
 	assert.Equal(t, 1, f.issuer.calls)
-	assert.Len(t, f.agent.Commands(), 2)
+	assert.Len(t, f.agent.Commands(), 3)
 	assert.Equal(t, staged.Data, f.secret(t).Data)
 }
 
@@ -183,7 +185,7 @@ func TestAutoRotateThroughAgentFailureKeepsOldKey(t *testing.T) {
 			agent:      func(p *fakeagent.Profile) { p.InstallError = "kesagent: opcert expired" },
 			wantReason: "AgentInstallFailed",
 			wantMsg:    "opcert expired",
-			wantCmds:   []string{"gen-staged-key", "install-key"},
+			wantCmds:   []string{"info", "gen-staged-key", "install-key"},
 			wantCalls:  1,
 		},
 		{
@@ -193,7 +195,7 @@ func TestAutoRotateThroughAgentFailureKeepsOldKey(t *testing.T) {
 			},
 			wantReason: "IssueFailed",
 			wantMsg:    "signer unreachable",
-			wantCmds:   []string{"gen-staged-key"},
+			wantCmds:   []string{"info", "gen-staged-key"},
 			wantCalls:  1,
 		},
 		{
@@ -297,8 +299,29 @@ func TestAutoRotateThroughAgentChecksSecretWriteFirst(t *testing.T) {
 	assert.Equal(t, "SecretUpdateFailed", cond.Reason)
 }
 
-// A write that fails after the dry run succeeded leaves the agent serving the
-// new key, and is reported rather than hidden.
+// allowSecretUpdates restores an Update that works, over the Secrets as they
+// stand.
+func (f *agentRotateFixture) allowSecretUpdates(t *testing.T) {
+	t.Helper()
+	var objs []client.Object
+	for _, name := range []string{"keys", "control-tls"} {
+		s := &corev1.Secret{}
+		require.NoError(t, f.c.Get(
+			context.Background(),
+			types.NamespacedName{Name: name, Namespace: "pools"}, s,
+		))
+		s.ResourceVersion = ""
+		objs = append(objs, s)
+	}
+	ok := fake.NewClientBuilder().WithScheme(f.c.Scheme()).
+		WithObjects(objs...).Build()
+	f.c, f.r.Client, f.r.APIReader = ok, ok, ok
+}
+
+// A write that fails after install-key leaves the agent serving the new key
+// while the Secret holds the old opcert. The retry must publish the opcert the
+// agent serves: a second counter-4 opcert would not be offered to a node that
+// already took the first, and that node would stop forging.
 func TestAutoRotateThroughAgentSecretWriteFailsAfterInstall(t *testing.T) {
 	t.Parallel()
 	f := newAgentRotateFixture(t, nil)
@@ -312,6 +335,58 @@ func TestAutoRotateThroughAgentSecretWriteFailsAfterInstall(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "SecretUpdateFailed", cond.Reason)
 	assert.Equal(t, before.Data, f.secret(t).Data)
+	servedKey, issue := f.agent.Active("pool-a")
+	assert.Equal(t, uint64(4), issue)
+	servedCert := f.agent.ActiveOpCert("pool-a")
+	require.NotEmpty(t, servedCert)
+
+	// The retry after issueRetryInterval, with the write allowed again.
+	f.allowSecretUpdates(t)
+	f.r.forgetIssueFailure(client.ObjectKeyFromObject(f.dn))
+	cmdsBefore := len(f.agent.Commands())
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond = f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls, "no second opcert is issued")
+	for _, c := range f.agent.Commands()[cmdsBefore:] {
+		assert.Equal(t, "info", c.Command, "no second key is staged or installed")
+	}
+	key, issue := f.agent.Active("pool-a")
+	assert.Equal(t, servedKey, key)
+	assert.Equal(t, uint64(4), issue)
+	assert.Equal(t, servedCert, f.agent.ActiveOpCert("pool-a"))
+
+	after := f.secret(t)
+	state, err := validateKeysSecret(after, f.dn)
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), state.Counter)
+	inSecret, _, err := opcert.Parse(after.Data[keyFileOpCert])
+	require.NoError(t, err)
+	served, _, err := opcert.ParseCBOR(servedCert)
+	require.NoError(t, err)
+	assert.Equal(t, served.KesVkey, inSecret.KesVkey)
+	assert.Equal(t, served.ColdSignature, inSecret.ColdSignature)
+	assert.NotContains(t, after.Data, keyFileKES)
+}
+
+// An agent serving an opcert that is not the next one, or one the cold key did
+// not sign, is not adopted: the rotation proceeds as usual.
+func TestAutoRotateThroughAgentDoesNotAdoptForeignOpCert(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, func(p *fakeagent.Profile) {
+		// The pool's running key at the counter the chain already holds.
+		p.ActiveIssue = 3
+		p.ActiveOpCert = []byte("not an opcert")
+	})
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls)
 	_, issue := f.agent.Active("pool-a")
 	assert.Equal(t, uint64(4), issue)
 }

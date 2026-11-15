@@ -107,8 +107,13 @@ operators.
   the profile before the operator can control it. A step that fails before
   `install-key` leaves the previous key serving and the Secret unchanged, and
   retries after ten minutes as Auto does without an agent, reported in the
-  `OpCertIssued` condition. As for any new opcert, the node loads it in place
-  only with `rotation.reloadInPlace`; otherwise the pod rolls onto it.
+  `OpCertIssued` condition. A failure after `install-key`, such as a lost
+  Secret write, is repaired on the retry: the operator reads the agent's
+  `info` and, when the agent serves the next counter signed by the pool's cold
+  key, writes that opcert instead of issuing another. Auto requires
+  `rotation.reloadInPlace`. The node takes the new opcert from the agent, and
+  a node that already reports the new counter when the Secret is judged is not
+  rolled onto it.
 
   ```yaml
   blockProducer:
