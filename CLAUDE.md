@@ -512,7 +512,9 @@ proven end to end against a real forging node in `test/e2e/rotation_test.go`
 (`make e2e`) — which is what establishes that the roll actually resumes forging
 on the new key, something envtest cannot show.
 
-Only one block producer may forge per pool on a network. When two DingoNodes on
+Only one block producer may forge per pool on a network (a node with
+`spec.blockProducer.pools` claims every listed pool; see "Several pools per
+node"). When two DingoNodes on
 the same network share a pool ID (any namespace, hex or bech32), or share a keys
 Secret (same namespace, whatever network each names), the older one
 by creation time, then namespace/name, keeps the keys. The newer is set
@@ -699,6 +701,100 @@ the opcert is loaded into the running node instead of rolling the pod
   reload never changes the pool, so the forger checks that read `keys-pool`
   hold. A template that keeps an older `keys-checksum` than its Secret is
   judged by its recorded pool, as after any KES rotation.
+
+### Several pools per node (`spec.blockProducer.pools`)
+
+Dingo v0.94.0 forges for several pools from one node, but only from a YAML
+`blockProducerPools` list, and it refuses the list while any single-pool
+setting is in the environment (`CARDANO_SHELLEY_VRF_KEY`, `_KES_KEY`,
+`_OPERATIONAL_CERTIFICATE`, `_KES_AGENT_SOCKET`, `_MODE`, `_ADDRESS`,
+`_ADDRESSES`, `_CLIENT_CERT_FILE`, `_CLIENT_KEY_FILE`, `_SERVER_SPKI_SHA256`,
+`_PLAINTEXT`, `_PROFILE`, with or without `CARDANO_`). Dingo's per-node
+settings (`CARDANO_BLOCK_PRODUCER`, `_KES_AGENT_SIGN_TIMEOUT`,
+`_KEY_WATCH_INTERVAL`) stay environment. Single-pool rendering is unchanged;
+everything below applies only when `pools` is set (`resources.UsesPoolList`).
+
+- Spec. Each entry has `poolId`, `keys.secretRef` and `agentProfile`; all share
+  `signingAgent`, which is required (no local KES keys in list mode).
+  `validatePools` refuses `poolId` or `keys` beside `pools`, a duplicate pool ID
+  (compared normalized, so bech32 and hex match) or agent profile, `Auto`, an
+  image older than `resources.MinPoolListMinor`, and, with more than one pool,
+  the Leios run mode or the Musashi network (`leiosForging`, read from the
+  effective env). `resources.ValidateKeyEnv` refuses `spec.environment`
+  overrides of the single-pool settings and of the vote key path. `Keys` is
+  `omitzero`, so a list node serializes no `keys`.
+- Rendering. `reconcilePoolKeys` (`internal/controller/pools.go`) replaces the
+  single-bundle block in `reconcileResources`. A ConfigMap `<name>-pools`
+  holds `blockProducerPools` (`resources.PoolsConfig`: one entry per accepted
+  pool in pool ID order, `/keys/<hex pool id>/vrf.skey` and `opcert.cert`, the
+  shared agent address, pin, plaintext and client certificate paths, and the
+  pool's `shelleyKesAgentProfile`). It is mounted by subPath at
+  `/etc/dingo/dingo.yaml`: the image entrypoint (`bin/entrypoint.sh`) passes
+  no `--config`, only `serve` and an optional `--debug`, so Dingo resolves
+  that default path (`resolveConfigFile`, after `~/.dingo/dingo.yaml`). A
+  subPath mount never refreshes, so the YAML's checksum is the pod annotation
+  `dingo.blinklabs.io/pools-config-checksum`. Pods get one Secret volume per
+  pool (`block-producer-keys-source-<i>`, pools in ID order), staged by the
+  init container into `/keys/<pool id>/`. A pool-list pod with no accepted pool
+  renders as a node that does not forge (no key mounts, no
+  `CARDANO_BLOCK_PRODUCER`).
+- Bundles. Each pool's Secret is validated by `validateBundle` (the body of
+  `validateKeysSecret`) against that pool's ID and its own `status.pools`
+  counters, on-chain floor and KES period. A bundle that fails, a missing Secret
+  or, with more than one pool, a vote key, drops that pool from the YAML, the
+  volumes, the approvals and `keys-pool`; the other pools keep forging after
+  one pod roll, and the pool is reported in `status.pools` (`keysValid: false`,
+  reason `PoolKeysRejected` or `KeysSecretMissing`) with the node `Degraded`.
+  Only when every pool is dropped is the node refused as a whole: the live
+  template and checksum are kept. Dropping applies to a pool that was forging
+  as well: a bad opcert delivered for a running pool stops that pool at the
+  roll, unlike a refused single-pool bundle, which keeps its pod.
+- Template stability. `keys-checksum` is the checksum of each accepted pool's
+  Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
+  ID, so it covers every Secret's static entries and the set of pools but not
+  a new opcert. A new opcert goes through the approval ConfigMap
+  (`<name>-keys-approval`, one key per pool ID holding the SHA-256 of that
+  pool's opcert) and the staging container (`syncPoolListKeysScript`), which
+  copies a pool's opcert into `/keys/<pool id>/` only when its digest is
+  approved. Dingo reloads it through `CARDANO_SHELLEY_KEY_WATCH_INTERVAL`,
+  which list mode always sets. So list mode is always in-place, with or
+  without `rotation.reloadInPlace`, and has none of the single-pool
+  counter-confirmation and timeout-roll machinery (`decideKeysRollout`): the
+  node-level `keys-static-checksum` and `keys-counter` annotations are not
+  written. The agent client certificate checksum and its hold behave as for
+  one pool.
+- Rotation. `Assisted` and `MonitorOnly` only; `Auto` through the agent per
+  pool is refused. The operator makes no call to the agent in these modes
+  (`agentBundleProblem` and the control role are Auto-only), so a per-pool
+  opcert is checked against its Secret and chain counters, never against what
+  the agent serves; Dingo checks it against the agent when it loads it.
+- Status. `status.pools[]` (keyed by hex pool ID) holds `keysValid`,
+  reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter` and
+  `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
+  `lcommon.PoolId.String`) and normalizes it; Dingo labels them only while the
+  node forges for more than one pool, so a node left with one pool is read from
+  the unlabelled series. The loaded counter is
+  `dingo_forge_opcert_counter_loaded` (the name in Dingo v0.94.0; the
+  single-pool scrape still reads `dingo_forge_opcert_counter`). One
+  `GetOpCertCounters` answer serves every pool (`onchain.PoolsFetcher`, same
+  refresh interval and fail-open behaviour as one pool, per-pool provenance by
+  pool ID). Node status summarizes: `status.kes` is the pool with the fewest
+  periods left (so `Forging` needs it above zero), `RotationDue` is true when
+  any forging pool is due, unknown when one reports nothing, and `KeysValid`
+  is true only while every pool is accepted. `status.opcert` stays a
+  single-pool field.
+- Fence. `forgerIdentity` holds every listed pool and Secret (`pools`,
+  `secrets`), from the spec as well as from each Secret's opcert, whether or
+  not the pool was dropped from the pod. `forgerConflict` compares the spec
+  lists. The pod template records the staged pools as a sorted, comma-separated
+  `keys-pool` (`resources.SplitKeysPools`/`JoinKeysPools`; a single-pool value
+  is the one-item case) and mounts one Secret per pool
+  (`resources.KeysSecretNames`); `orphanHolds`, `rollsPastUnknownPool` and
+  `restagesOtherPool` iterate over both. A list template whose Secret now
+  holds another pool's opcert is judged to restage another pool
+  (`restagesOtherPoolOfList`), since Dingo takes the pool from the opcert. A
+  list node's `keys-checksum` is not any Secret's checksum, so checksum
+  equality never matches it.
 
 ### HA
 
