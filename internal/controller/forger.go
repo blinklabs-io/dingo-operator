@@ -90,6 +90,10 @@ type forgerIdentity struct {
 	secret    string
 	checksum  string
 	network   string
+	// agent is set when the forger signs through a remote KES agent and holds
+	// no KES key. Two such forgers do not share an identity: the agent signs
+	// at most one header per pool and slot.
+	agent bool
 }
 
 // backedBy reports whether b's claim on a's keys may halt a. A writer in a's
@@ -114,6 +118,9 @@ func (a forgerIdentity) backedBy(b forgerIdentity) bool {
 // sharedWith describes what a and b share, or returns "" when they are
 // different forgers.
 func (a forgerIdentity) sharedWith(b forgerIdentity) string {
+	if a.agent && b.agent {
+		return ""
+	}
 	if sameNetwork(a.network, b.network) {
 		for _, p := range a.pools {
 			if slices.Contains(b.pools, p) {
@@ -207,7 +214,58 @@ func (r *DingoNodeReconciler) nodeIdentity(
 		id.keyed = append(id.keyed, p)
 	}
 	id.checksum = sum
+	if resources.UsesSigningAgent(dn) {
+		local, err := r.holdsLocalKES(ctx, dn)
+		if err != nil {
+			return id, err
+		}
+		id.agent = !local
+	}
 	return id, nil
+}
+
+// holdsLocalKES reports whether a workload dn controls may still sign with a
+// local KES key: its StatefulSet, while it wants a replica, or one of its
+// running pods, does not sign through an agent. The spec alone cannot say: a
+// template is held at its earlier render, for one while the agent client
+// certificate is incomplete, and its pod keeps the KES key it staged. A
+// workload that is down, or one with no keys mounted, holds no key, and the
+// spec decides.
+func (r *DingoNodeReconciler) holdsLocalKES(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) (bool, error) {
+	sts, err := r.ownStatefulSet(ctx, dn)
+	if err != nil || sts == nil {
+		return false, err
+	}
+	if (sts.Spec.Replicas == nil || *sts.Spec.Replicas > 0) &&
+		forgesWithLocalKES(sts.Spec.Template.Spec) {
+		return true, nil
+	}
+	var pods corev1.PodList
+	if err := r.uncachedReader().List(ctx, &pods,
+		client.InNamespace(dn.Namespace),
+		client.MatchingLabels{resources.NodeLabel: dn.Name},
+	); err != nil {
+		return false, fmt.Errorf("list pods of %s/%s: %w",
+			dn.Namespace, dn.Name, err)
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if podRunning(p) && metav1.IsControlledBy(p, sts) &&
+			forgesWithLocalKES(p.Spec) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// forgesWithLocalKES reports whether a pod spec mounts block producer keys
+// without signing through an agent.
+func forgesWithLocalKES(spec corev1.PodSpec) bool {
+	_, keyed := resources.KeysSecretName(spec)
+	return keyed && !resources.PodSignsThroughAgent(spec)
 }
 
 // forgerHeld returns an error when dn may not run its keys yet: an older live
@@ -623,6 +681,12 @@ func (r *DingoNodeReconciler) orphanHolds(
 		namespace: namespace,
 		secret:    secret,
 		network:   podNetwork(spec),
+		agent:     resources.PodSignsThroughAgent(spec),
+	}
+	if mine.agent && theirs.agent {
+		// Neither holds a KES key, so a pool or keys they share, or a keys
+		// bundle one staged and the other now has, is no second forger.
+		return false, nil
 	}
 	recorded := normalizedPoolID(annotations[resources.KeysPoolAnnotation])
 	if recorded != "" {
