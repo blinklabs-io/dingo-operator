@@ -222,8 +222,8 @@ func (r *DingoNodeReconciler) autoRotate(
 	}
 	// install promotes the new key in the agent, so the write below is the
 	// only step left that can fail. If it does, the agent serves the new
-	// opcert while the Secret holds the old one, and the next attempt issues
-	// the same counter again.
+	// opcert while the Secret holds the old one, and the next attempt
+	// publishes the opcert the agent serves instead of issuing another.
 	if install != nil {
 		if err := install(); err != nil {
 			fail("AgentInstallFailed", err.Error())
@@ -346,10 +346,15 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	}
 	// A rotation that failed after install-key left the agent serving the
 	// opcert it issued. Publish that one: issuing another at the same counter
-	// would not be offered to a node that already took the first.
-	if adopted, err := r.adoptServedOpCert(
+	// would not be offered to a node that already took the first. Without an
+	// answer from info that cannot be ruled out, so the attempt fails.
+	adopted, err := r.adoptServedOpCert(
 		ctx, cfg, secret, certFile, chainCounter,
-	); err == nil && adopted != nil {
+	)
+	if err != nil {
+		return nil, nil, "AgentInfoFailed", err
+	}
+	if adopted != nil {
 		return adopted, nil, "", nil
 	}
 	vkey, err := kesagent.GenStagedKey(ctx, cfg)
@@ -383,7 +388,8 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 // serves, when that opcert is the next one for the pool: its issue number is
 // chainCounter+1 and the cold key the Secret's opcert names signed it for the
 // key it commits to. It returns nil, nil when the agent serves anything else,
-// so the caller rotates as usual. The agent is only read.
+// so the caller rotates as usual, and an error only when info fails. The
+// agent is only read.
 func (r *DingoNodeReconciler) adoptServedOpCert(
 	ctx context.Context,
 	cfg kesagent.Config,
@@ -392,16 +398,19 @@ func (r *DingoNodeReconciler) adoptServedOpCert(
 	chainCounter uint64,
 ) (*corev1.Secret, error) {
 	active, err := kesagent.ActiveKey(ctx, cfg)
-	if err != nil || active.IssueNumber != chainCounter+1 {
+	if err != nil {
 		return nil, err
+	}
+	if active.IssueNumber != chainCounter+1 {
+		return nil, nil
 	}
 	oc, coldVkey, err := opcert.ParseCBOR(active.OpCert)
 	if err != nil {
-		return nil, err
+		return nil, nil //nolint:nilerr // an unreadable opcert is not adopted
 	}
 	_, known, err := opcert.Parse(secret.Data[certFile])
 	if err != nil {
-		return nil, err
+		return nil, nil //nolint:nilerr // autoRotate parsed it already
 	}
 	sigErr := ledger.VerifyOpCertSignature(oc, coldVkey)
 	if sigErr != nil || !bytes.Equal(coldVkey, known) ||

@@ -49,7 +49,7 @@ import (
 // Error texts of the agent, from bursa's attested.go and attested_control.go.
 const (
 	ErrRoleNotPermitted = "kesagent: client is not permitted the requested role"
-	errNoActiveKey      = "kesagent: no active key"
+	errNoActiveKey      = "kesagent: no active KES key installed"
 	errDropKey          = "kesagent: drop-key is not served on a remote control session"
 )
 
@@ -68,6 +68,8 @@ type Profile struct {
 	ActiveOpCert []byte
 	// InstallError, when set, makes install-key refuse with this text.
 	InstallError string
+	// InfoError, when set, makes info refuse with this text.
+	InfoError string
 }
 
 // Command is a control command the agent received.
@@ -170,6 +172,14 @@ func (a *Agent) ActiveOpCert(name string) []byte {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]byte(nil), a.profile(name).ActiveOpCert...)
+}
+
+// SetInfoError makes info on a profile refuse with msg, or answer again when
+// msg is empty.
+func (a *Agent) SetInfoError(name, msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.profile(name).InfoError = msg
 }
 
 // Staged returns the verification key staged for a profile, or nil.
@@ -381,6 +391,9 @@ func (a *Agent) dispatch(
 		p.ActiveOpCert = append([]byte(nil), cert...)
 		return wireReply{Ok: true, Info: info()}
 	default:
+		if p.InfoError != "" {
+			return fail(p.InfoError)
+		}
 		return wireReply{Ok: true, Info: info()}
 	}
 }

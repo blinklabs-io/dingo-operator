@@ -137,8 +137,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				cs.Type,
 			)
 		}
-		// Before the Auto checks, so Auto with a signing agent is refused
-		// for that reason rather than for an incomplete cold signer.
+		// Before the Auto checks, so Auto with a signing agent but without
+		// its control settings is refused for that reason rather than for an
+		// incomplete cold signer.
 		if err := validateSigningAgent(bp); err != nil {
 			return err
 		}

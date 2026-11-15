@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"strings"
@@ -23,6 +24,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
+	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/blinklabs-io/dingo-operator/internal/test/fakeagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -168,7 +170,7 @@ func TestAutoRotateThroughAgentFailureKeepsOldKey(t *testing.T) {
 			mutate: func(f *agentRotateFixture) {
 				f.dn.Spec.BlockProducer.SigningAgent.ControlProfile = "pool-b"
 			},
-			wantReason: "AgentGenStagedKeyFailed",
+			wantReason: "AgentInfoFailed",
 			wantMsg:    fakeagent.ErrRoleNotPermitted,
 		},
 		{
@@ -177,7 +179,7 @@ func TestAutoRotateThroughAgentFailureKeepsOldKey(t *testing.T) {
 				f.dn.Spec.BlockProducer.SigningAgent.ServerSPKISHA256 =
 					strings.Repeat("ab", sha256.Size)
 			},
-			wantReason: "AgentGenStagedKeyFailed",
+			wantReason: "AgentInfoFailed",
 			wantMsg:    "does not match the pin",
 		},
 		{
@@ -389,4 +391,86 @@ func TestAutoRotateThroughAgentDoesNotAdoptForeignOpCert(t *testing.T) {
 	assert.Equal(t, 1, f.issuer.calls)
 	_, issue := f.agent.Active("pool-a")
 	assert.Equal(t, uint64(4), issue)
+}
+
+// A retry whose info fails must not stage a fresh key: after a lost Secret
+// write the agent may already serve a counter-4 opcert the node has taken, and
+// a second one at the same counter would strand it. The attempt fails instead,
+// and a later retry whose info answers adopts the served opcert.
+func TestAutoRotateThroughAgentInfoFailureDoesNotRestage(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	f.deniedSecretUpdates(t, true)
+	before := f.secret(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+	servedKey, issue := f.agent.Active("pool-a")
+	require.Equal(t, uint64(4), issue)
+	servedCert := f.agent.ActiveOpCert("pool-a")
+
+	f.allowSecretUpdates(t)
+	f.agent.SetInfoError("pool-a", "connection reset")
+	f.r.forgetIssueFailure(client.ObjectKeyFromObject(f.dn))
+	cmdsBefore := len(f.agent.Commands())
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "AgentInfoFailed", cond.Reason)
+	assert.Contains(t, cond.Message, "connection reset")
+	assert.Equal(t, 1, f.issuer.calls, "no second opcert is issued")
+	for _, c := range f.agent.Commands()[cmdsBefore:] {
+		assert.Equal(t, "info", c.Command, "no second key is staged or installed")
+	}
+	key, issue := f.agent.Active("pool-a")
+	assert.Equal(t, servedKey, key)
+	assert.Equal(t, uint64(4), issue)
+	assert.Equal(t, servedCert, f.agent.ActiveOpCert("pool-a"))
+	assert.Equal(t, before.Data, f.secret(t).Data)
+
+	f.agent.SetInfoError("pool-a", "")
+	f.r.forgetIssueFailure(client.ObjectKeyFromObject(f.dn))
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond = f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls)
+	inSecret, _, err := opcert.Parse(f.secret(t).Data[keyFileOpCert])
+	require.NoError(t, err)
+	served, _, err := opcert.ParseCBOR(servedCert)
+	require.NoError(t, err)
+	assert.Equal(t, served.ColdSignature, inSecret.ColdSignature)
+}
+
+// An agent serving the next counter under another pool's cold key is not
+// adopted: only an opcert the Secret's cold key signed is published.
+func TestAutoRotateThroughAgentDoesNotAdoptOtherColdKey(t *testing.T) {
+	t.Parallel()
+	other, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	env, err := other.IssueOpCert(4, 160)
+	require.NoError(t, err)
+	oc, cold, err := opcert.Parse(env)
+	require.NoError(t, err)
+	foreign, err := opcert.EncodeCBOR(oc, cold)
+	require.NoError(t, err)
+	f := newAgentRotateFixture(t, func(p *fakeagent.Profile) {
+		p.ActiveVKey = other.KESVKey
+		p.ActiveIssue = 4
+		p.ActiveOpCert = foreign
+	})
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls, "the rotation proceeds")
+	inSecret, _, err := opcert.Parse(f.secret(t).Data[keyFileOpCert])
+	require.NoError(t, err)
+	assert.NotEqual(t, oc.ColdSignature, inSecret.ColdSignature)
+	key, _ := f.agent.Active("pool-a")
+	assert.Equal(t, inSecret.KesVkey, key)
 }
