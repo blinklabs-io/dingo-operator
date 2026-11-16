@@ -218,6 +218,26 @@ func TestValidateSpecPoolList(t *testing.T) {
 			wantErr: "Leios",
 		},
 		{
+			name: "leios run mode in the CARDANO_ spelling with two pools",
+			mutate: func(dn *dingov1alpha1.DingoNode) {
+				dn.Spec.Environment = map[string]string{
+					"CARDANO_DINGO_RUN_MODE": "leios",
+				}
+			},
+			wantErr: "Leios",
+		},
+		{
+			// envconfig reads the CARDANO_ spelling first, so Dingo runs
+			// serve.
+			name: "CARDANO_ spelling of serve wins over leios",
+			mutate: func(dn *dingov1alpha1.DingoNode) {
+				dn.Spec.Environment = map[string]string{
+					"CARDANO_DINGO_RUN_MODE": "serve",
+					"DINGO_RUN_MODE":         "leios",
+				}
+			},
+		},
+		{
 			name: "musashi network with two pools",
 			mutate: func(dn *dingov1alpha1.DingoNode) {
 				dn.Spec.Network = "musashi"
@@ -293,6 +313,25 @@ func TestValidateSpecPoolListRefusesSinglePoolEnv(t *testing.T) {
 				assert.Contains(t, err.Error(), variant)
 			})
 		}
+	}
+}
+
+// The vote key, which Dingo refuses beside more than one pool, is refused in
+// either spelling envconfig reads.
+func TestValidateSpecPoolListRefusesVoteKeyEnv(t *testing.T) {
+	t.Parallel()
+	pools := newTestPools(t, "a", "b")
+	for _, name := range []string{
+		resources.VoteKeyEnv, "CARDANO_" + resources.VoteKeyEnv,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dn := poolListNode("bp", "ns", 0, pools...)
+			dn.Spec.Environment = map[string]string{name: "/keys/vote.skey"}
+			err := validateSpec(dn)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), name)
+		})
 	}
 }
 

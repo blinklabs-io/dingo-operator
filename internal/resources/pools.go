@@ -285,7 +285,8 @@ var poolsManagedEnv = func() []string {
 
 // validatePoolsEnv rejects spec.environment overrides that Dingo refuses
 // beside blockProducerPools: a single-pool key or agent setting, and the vote
-// key path, which the operator points at a pool's directory.
+// key path, in either spelling, which the operator points at a pool's
+// directory.
 func validatePoolsEnv(dn *dingov1alpha1.DingoNode) error {
 	if !UsesPoolList(dn) {
 		return nil
@@ -300,12 +301,14 @@ func validatePoolsEnv(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 	}
-	if _, ok := dn.Spec.Environment[VoteKeyEnv]; ok {
-		return fmt.Errorf(
-			"%s is managed by the operator when spec.blockProducer.pools "+
-				"is set; remove it from spec.environment",
-			VoteKeyEnv,
-		)
+	for _, name := range []string{VoteKeyEnv, "CARDANO_" + VoteKeyEnv} {
+		if _, ok := dn.Spec.Environment[name]; ok {
+			return fmt.Errorf(
+				"%s is managed by the operator when spec.blockProducer.pools "+
+					"is set; remove it from spec.environment",
+				name,
+			)
+		}
 	}
 	return nil
 }

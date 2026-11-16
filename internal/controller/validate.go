@@ -314,13 +314,19 @@ func validatePools(
 
 // leiosForging reports whether the node's effective environment selects the
 // Leios run mode or the Musashi prototype network, with which Dingo refuses
-// more than one pool.
+// more than one pool. Dingo's envconfig.Process("cardano", ...) reads
+// CARDANO_DINGO_RUN_MODE first and falls back to DINGO_RUN_MODE only when the
+// former is unset.
 func leiosForging(dn *dingov1alpha1.DingoNode) bool {
 	env := map[string]string{}
 	for _, e := range resources.BuildEnv(dn, resources.RenderOptions{}) {
 		env[e.Name] = e.Value
 	}
-	if strings.EqualFold(env["DINGO_RUN_MODE"], "leios") {
+	runMode, ok := env["CARDANO_DINGO_RUN_MODE"]
+	if !ok {
+		runMode = env["DINGO_RUN_MODE"]
+	}
+	if strings.EqualFold(runMode, "leios") {
 		return true
 	}
 	if env["CARDANO_NETWORK"] == ouroboros.NetworkCardanoMusashi.Name {
