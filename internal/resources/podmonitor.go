@@ -45,7 +45,13 @@ func BuildPodMonitor(dn *dingov1alpha1.DingoNode) *unstructured.Unstructured {
 	pm.SetGroupVersionKind(PodMonitorGVK)
 	pm.SetName(dn.Name)
 	pm.SetNamespace(dn.Namespace)
-	pm.SetLabels(Labels(dn))
+	labels := Labels(dn)
+	for k, v := range dn.Spec.Metrics.PodMonitor.Labels {
+		if !podMonitorLabelReserved(k) {
+			labels[k] = v
+		}
+	}
+	pm.SetLabels(labels)
 	pm.Object["spec"] = map[string]any{
 		"selector": map[string]any{
 			"matchLabels": selector,

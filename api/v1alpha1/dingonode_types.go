@@ -473,12 +473,27 @@ type PodMonitorSpec struct {
 	// +kubebuilder:default="30s"
 	// +optional
 	Interval string `json:"interval,omitempty"`
+	// Labels are added to the PodMonitor object, so a Prometheus that selects
+	// PodMonitors by label picks it up. They may replace
+	// app.kubernetes.io/component (the node role by default); the operator's
+	// app.kubernetes.io/name, instance and managed-by labels and the
+	// dingo.blinklabs.io/ prefix are refused.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // MetricsSpec configures metrics exposure for the managed node.
 type MetricsSpec struct {
 	// +optional
 	PodMonitor PodMonitorSpec `json:"podMonitor,omitempty"`
+	// IngressFrom admits these standard NetworkPolicy peers to the metrics
+	// port, for a scraper whose pod or namespace cannot carry the access
+	// label. Clients labelled dingo.blinklabs.io/metrics=allowed (on the pod,
+	// and on the namespace when cross-namespace) stay admitted either way,
+	// since the operator scrapes nodes with that label. This does not grant
+	// node-to-client, API, or relay access.
+	// +optional
+	IngressFrom []networkingv1.NetworkPolicyPeer `json:"ingressFrom,omitempty"`
 }
 
 // RelayServiceSpec configures public P2P exposure without publishing APIs or metrics.

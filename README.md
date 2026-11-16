@@ -503,6 +503,37 @@ PodMonitor copies them onto the node's metrics. Keys under
 `app.kubernetes.io/` and `dingo.blinklabs.io/`, and `cardano_network` and
 `cardano_service`, belong to the operator and are rejected.
 
+`spec.metrics.podMonitor.labels` adds labels to the PodMonitor object itself, for
+a Prometheus that selects PodMonitors by label (the dingo Helm chart's
+PodMonitor extra labels). They may replace `app.kubernetes.io/component`, which
+is the node role by default. `app.kubernetes.io/name`, `app.kubernetes.io/instance`,
+`app.kubernetes.io/managed-by` and keys under `dingo.blinklabs.io/` are rejected.
+
+```yaml
+spec:
+  podLabels:
+    alias: relay-a
+    group: core
+  metrics:
+    podMonitor:
+      enabled: true
+      labels:
+        app.kubernetes.io/component: metrics
+        app.kubernetes.io/part-of: observability
+    ingressFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus
+```
+
+`spec.metrics.ingressFrom` admits extra NetworkPolicy peers to the metrics port,
+for a scraper whose pod or namespace cannot carry `dingo.blinklabs.io/metrics=allowed`.
+Labelled clients stay admitted, because the operator scrapes each node's metrics
+with that label. Peers are validated like `apis.ingressFrom`.
+
 The managed NetworkPolicy admits only enabled API ports. `apis.ingressFrom` uses
 standard NetworkPolicy peers; each peer's namespace and pod selectors are ANDed.
 With no explicit peers, API clients must carry `dingo.blinklabs.io/api=allowed` on

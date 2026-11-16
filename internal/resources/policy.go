@@ -89,7 +89,7 @@ func BuildNetworkPolicy(
 	metricsPort := intstr.FromInt32(portMetrics)
 
 	metricsIngress := networkingv1.NetworkPolicyIngressRule{
-		From: labelledClientPeers(MetricsAccessLabel),
+		From: metricsPeers(dn),
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Protocol: &tcp, Port: &metricsPort},
 		},

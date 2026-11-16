@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
@@ -376,6 +377,29 @@ func TestValidateSpecPodLabels(t *testing.T) {
 	require.NoError(t, validateSpec(dn))
 	dn.Spec.PodLabels["dingo.blinklabs.io/node"] = "other"
 	require.ErrorContains(t, validateSpec(dn), "podLabels")
+}
+
+func TestValidateSpecMetrics(t *testing.T) {
+	t.Parallel()
+	node := func() *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "relay"},
+			Spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+			},
+		}
+	}
+	dn := node()
+	dn.Spec.Metrics.PodMonitor.Labels = map[string]string{
+		"app.kubernetes.io/component": "metrics",
+	}
+	require.NoError(t, validateSpec(dn))
+	dn.Spec.Metrics.PodMonitor.Labels["app.kubernetes.io/name"] = "other"
+	require.ErrorContains(t, validateSpec(dn), "metrics.podMonitor.labels")
+
+	dn = node()
+	dn.Spec.Metrics.IngressFrom = []networkingv1.NetworkPolicyPeer{{}}
+	require.ErrorContains(t, validateSpec(dn), "metrics.ingressFrom[0]")
 }
 
 func TestValidateSpecAutoRotation(t *testing.T) {

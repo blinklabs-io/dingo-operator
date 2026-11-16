@@ -222,8 +222,10 @@ cert-manager).
   `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and
   the operator's own KES and wedge scrapes all fail across the pod boundary and
   the node reports `RotationDue=Unknown` indefinitely. The block-producer and
-  relay policies allow this listener only to clients carrying the metrics
-  access label. The scrape goes through the *headless* Service: the client
+  relay policies allow this listener to clients carrying the metrics access
+  label, plus any `spec.metrics.ingressFrom` peers; those peers are added and
+  never replace the label grant, or the operator's own scrape would be
+  blocked. The scrape goes through the *headless* Service: the client
   Service gates endpoints on readiness, which would hide KES and wedge state
   precisely while a node is behind, stalled or catching up.
 - Mithril completion is tracked by markers, not by the database file.
