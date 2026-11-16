@@ -194,7 +194,7 @@ func poolSourcePath(poolID string) string {
 
 // poolSourceVolumes returns the Secret volumes of the rendered pools.
 func poolSourceVolumes(opts RenderOptions) []corev1.Volume {
-	var vols []corev1.Volume
+	vols := make([]corev1.Volume, 0, len(opts.Pools))
 	for i, p := range SortedPools(opts.Pools) {
 		vols = append(vols, corev1.Volume{
 			Name: poolSourceVolume(i),
@@ -212,7 +212,7 @@ func poolSourceVolumes(opts RenderOptions) []corev1.Volume {
 // poolSourceMounts returns the read-only mounts of the rendered pools' Secrets
 // for a staging container.
 func poolSourceMounts(opts RenderOptions) []corev1.VolumeMount {
-	var mounts []corev1.VolumeMount
+	mounts := make([]corev1.VolumeMount, 0, len(opts.Pools))
 	for i, p := range SortedPools(opts.Pools) {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      poolSourceVolume(i),
@@ -276,7 +276,7 @@ var poolsManagedEnv = func() []string {
 		"SHELLEY_KES_AGENT_PLAINTEXT",
 		"SHELLEY_KES_AGENT_PROFILE",
 	}
-	var out []string
+	out := make([]string, 0, 2*len(names))
 	for _, n := range names {
 		out = append(out, "CARDANO_"+n, n)
 	}
