@@ -151,18 +151,21 @@ operators.
   or without the `CARDANO_` prefix), which Dingo refuses beside a pool list;
   `spec.environment` may not set them either. More than one pool is refused
   with Leios: a vote key in any pool's Secret leaves that pool out, and
-  `DINGO_RUN_MODE=leios` or the Musashi network refuses the spec.
+  `DINGO_RUN_MODE=leios` (or `CARDANO_DINGO_RUN_MODE`, which Dingo reads
+  first) or the Musashi network refuses the spec.
 
   Each pool's bundle is validated on its own, against its own pool ID and
   counters. A pool whose bundle fails (a missing Secret included) is left out of
   the pool list, the pod rolls once, and the others keep forging; the pool is
   reported in `status.pools` with `keysValid: false` and the reason, and the
   node is `Degraded`. Only when every bundle fails is the node refused as a
-  whole and its live pod template kept, as for a refused single-pool bundle.
+  whole and its live pod template kept, as for a refused single-pool bundle;
+  the pools that template runs are still observed.
   `status.pools` also holds each pool's on-disk, on-chain (one
   node-to-client query reads all of them) and loaded opcert counters and KES
   periods, read from the `pool_id`-labelled series Dingo exposes with several
-  pools. `status.kes` is the pool with the fewest KES periods left, and
+  pools, for every pool the live pod template stages whatever its bundle's
+  verdict. `status.kes` is the pool with the fewest KES periods left, and
   `RotationDue` is true while any pool is due.
 
   `rotation.mode` may be `Assisted` or `MonitorOnly`; `Auto` through the agent

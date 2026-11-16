@@ -786,7 +786,9 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   pool ID; an attempt remembered for a pool list is never reused for
   `poolId`, nor the reverse, as `onChainAttempt.list` marks it). Node status summarizes: `status.kes` is the pool with the fewest
   periods left (so `Forging` needs it above zero), `RotationDue` is true when
-  any forging pool is due, unknown when one reports nothing, and `KeysValid`
+  any forging pool is due (one the live template stages, `runningPools`, or
+  one with labelled series, whatever its bundle's verdict; the others' KES
+  status is cleared), unknown when one reports nothing, and `KeysValid`
   is true only while every pool is accepted. `status.opcert` stays a
   single-pool field.
 - Fence. `forgerIdentity` holds every listed pool and Secret (`pools`,
