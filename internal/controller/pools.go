@@ -529,12 +529,13 @@ func (r *DingoNodeReconciler) readScrapedPod(
 // at both reads is the one that answered. During a roll the StatefulSet
 // template already records the next pools while the old pod still runs and
 // exports its series, so the template does not say whose they are. When the
-// pod changed, or either read failed, the pools are unknown. With no pod at
-// either read, the pools the live StatefulSet template stages stand in. Its
-// pod forges them with the keys it loaded whatever their bundles' verdict is
-// now: a template held because every bundle, or the signing agent
-// certificate, was refused keeps running pools that are not accepted. The
-// result is empty when the pod or template records no pools.
+// pod changed, records no pools, or either read failed, the pools are
+// unknown. With no pod at either read, the pools the live StatefulSet
+// template stages stand in. Its pod forges them with the keys it loaded
+// whatever their bundles' verdict is now: a template held because every
+// bundle, or the signing agent certificate, was refused keeps running pools
+// that are not accepted. The result is empty when the template records no
+// pools.
 func (r *DingoNodeReconciler) runningPools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -562,6 +563,13 @@ func (r *DingoNodeReconciler) runningPools(
 		before.pod.UID != after.pod.UID:
 		return nil, false
 	default:
+		// A pod that records no pools, started from a template rendered
+		// before the record existed, does not say whose series it exports.
+		if len(resources.SplitKeysPools(
+			after.pod.Annotations[resources.KeysPoolAnnotation],
+		)) == 0 {
+			return nil, false
+		}
 		annotations = after.pod.Annotations
 	}
 	for _, p := range resources.SplitKeysPools(

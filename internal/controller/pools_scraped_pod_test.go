@@ -138,4 +138,22 @@ func TestRefreshForgeStatusAttributesUnlabelledMetricsToTheScrapedPod(
 		require.NotNil(t, pa.LoadedCounter)
 		assert.Equal(t, int64(2), *pa.LoadedCounter)
 	})
+
+	t.Run("bp-0 records no pools", func(t *testing.T) {
+		t.Parallel()
+		dn, objs := setup(t)
+		// A pod of a template rendered before the record existed.
+		c := conflictClient(t, append(objs, scrapedPoolPod("pod-old", ""))...)
+		r := poolReconciler(c)
+		r.ForgeStatus = poolMetricsFetcher{st: scrape}
+		r.refreshForgeStatus(context.Background(), dn)
+
+		// Its series are not b's because b's keys are accepted.
+		pa, pb := poolStatus(dn, a.id), poolStatus(dn, b.id)
+		assert.Equal(t, dingov1alpha1.KESStatus{}, pb.KES)
+		assert.Nil(t, pb.LoadedCounter)
+		assert.Equal(t, int64(30), pa.KES.RemainingPeriods)
+		require.NotNil(t, pa.LoadedCounter)
+		assert.Equal(t, int64(2), *pa.LoadedCounter)
+	})
 }
