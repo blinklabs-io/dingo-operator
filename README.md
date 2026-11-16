@@ -328,7 +328,10 @@ count, and if its workload is running the reconcile fails closed.
 
 A node with `spec.blockProducer.pools` claims every listed pool and every
 listed keys Secret: a pool in its list conflicts with another node's `poolId`
-or list on the same network, and the refusal message names the pool. A pool
+or list on the same network, and the refusal message names the pool, unless
+both sign through an agent as described below. A pool list always signs
+through `spec.blockProducer.signingAgent`, so two pool-list nodes that share a
+pool are not fenced against each other. A pool
 left out of the pod for its keys stays claimed, since the spec and the Secret
 still name it. Its pod template records the pools it staged as a sorted,
 comma-separated `dingo.blinklabs.io/keys-pool`, and mounts one Secret per pool.
@@ -350,7 +353,11 @@ invalid-spec halts: when either producer has no `signingAgent`, a local
 workload counts as agent-signed from what it carries, not from the DingoNode
 spec: the `dingo` container has a literal `CARDANO_SHELLEY_KES_AGENT_ADDRESS`
 and no `CARDANO_SHELLEY_KES_KEY`, with no `envFrom`, command or arguments that
-could set either. A node whose spec names an agent but whose StatefulSet
+could set either. A pool-list workload has no agent address variable; it counts
+as agent-signed when its `dingo` container mounts the pool list ConfigMap at
+`/etc/dingo/dingo.yaml` and has no `CARDANO_SHELLEY_KES_KEY` or
+`SHELLEY_KES_KEY`, under the same `envFrom`, command and argument rule. A node
+whose spec names an agent but whose StatefulSet
 template or running pod still has a local KES key, as when the template is held
 at its earlier render, is fenced as a local producer until that workload stops.
 Stopped, it stays at zero replicas while its template is held at that render,

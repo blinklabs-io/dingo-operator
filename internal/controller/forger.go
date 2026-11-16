@@ -229,7 +229,7 @@ func (r *DingoNodeReconciler) nodeIdentity(
 				id.keyed = append(id.keyed, pool)
 			}
 		}
-		return id, nil
+		return id, r.markAgentSigned(ctx, dn, &id)
 	}
 	if bp != nil {
 		id.secrets = []string{bp.Keys.SecretRef}
@@ -252,14 +252,25 @@ func (r *DingoNodeReconciler) nodeIdentity(
 		id.keyed = append(id.keyed, p)
 	}
 	id.checksum = sum
-	if resources.UsesSigningAgent(dn) {
-		local, err := r.holdsLocalKES(ctx, dn)
-		if err != nil {
-			return id, err
-		}
-		id.agent = !local
+	return id, r.markAgentSigned(ctx, dn, &id)
+}
+
+// markAgentSigned sets id.agent when dn signs through an agent, a pool list
+// included, and no workload it controls may still sign with a local KES key.
+func (r *DingoNodeReconciler) markAgentSigned(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	id *forgerIdentity,
+) error {
+	if !resources.UsesSigningAgent(dn) {
+		return nil
 	}
-	return id, nil
+	local, err := r.holdsLocalKES(ctx, dn)
+	if err != nil {
+		return err
+	}
+	id.agent = !local
+	return nil
 }
 
 // holdsLocalKES reports whether a workload dn controls may still sign with a
@@ -299,11 +310,11 @@ func (r *DingoNodeReconciler) holdsLocalKES(
 	return false, nil
 }
 
-// forgesWithLocalKES reports whether a pod spec mounts block producer keys
-// without signing through an agent.
+// forgesWithLocalKES reports whether a pod spec mounts block producer keys,
+// one Secret or one per pool, without signing through an agent.
 func forgesWithLocalKES(spec corev1.PodSpec) bool {
-	_, keyed := resources.KeysSecretName(spec)
-	return keyed && !resources.PodSignsThroughAgent(spec)
+	return len(resources.KeysSecretNames(spec)) > 0 &&
+		!resources.PodSignsThroughAgent(spec)
 }
 
 // forgerHeld returns an error when dn may not run its keys yet: an older live

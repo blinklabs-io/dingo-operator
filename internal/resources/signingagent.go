@@ -28,7 +28,9 @@ import (
 const (
 	// KESKeyEnv names a local KES signing key. Dingo refuses it alongside an
 	// agent address.
-	KESKeyEnv                = "CARDANO_SHELLEY_KES_KEY"
+	KESKeyEnv = "CARDANO_SHELLEY_KES_KEY"
+	// unprefixedKESKeyEnv is KESKeyEnv in the spelling envconfig also reads.
+	unprefixedKESKeyEnv      = "SHELLEY_KES_KEY"
 	signingAgentAddressEnv   = "CARDANO_SHELLEY_KES_AGENT_ADDRESS"
 	signingAgentPinEnv       = "CARDANO_SHELLEY_KES_AGENT_SERVER_SPKI_SHA256"
 	signingAgentPlaintextEnv = "CARDANO_SHELLEY_KES_AGENT_PLAINTEXT"
@@ -58,10 +60,22 @@ func UsesSigningAgent(dn *dingov1alpha1.DingoNode) bool {
 // address on the dingo container with no CARDANO_SHELLEY_KES_KEY proves it;
 // envFrom, a command or arguments could set either where it cannot be read, so
 // they, a missing dingo container and a missing address read as a local key.
+// A pool-list pod has no agent address env: each pool's agent settings are in
+// the pool list file, so the pool list ConfigMap mounted where Dingo reads its
+// configuration, with no CARDANO_SHELLEY_KES_KEY or SHELLEY_KES_KEY, proves
+// it instead.
 func PodSignsThroughAgent(spec corev1.PodSpec) bool {
 	c, ok := DingoContainer(spec)
 	if !ok || len(c.EnvFrom) > 0 || len(c.Command) > 0 || len(c.Args) > 0 {
 		return false
+	}
+	if mountsPoolList(spec, c) {
+		for _, e := range c.Env {
+			if e.Name == KESKeyEnv || e.Name == unprefixedKESKeyEnv {
+				return false
+			}
+		}
+		return true
 	}
 	agent := false
 	for _, e := range c.Env {
@@ -73,6 +87,28 @@ func PodSignsThroughAgent(spec corev1.PodSpec) bool {
 		}
 	}
 	return agent
+}
+
+// mountsPoolList reports whether c, the dingo container of spec, reads the
+// pool list ConfigMap as its configuration file.
+func mountsPoolList(spec corev1.PodSpec, c *corev1.Container) bool {
+	fromConfigMap := false
+	for _, v := range spec.Volumes {
+		if v.Name == poolsConfigVolumeName {
+			fromConfigMap = v.ConfigMap != nil
+		}
+	}
+	if !fromConfigMap {
+		return false
+	}
+	for _, m := range c.VolumeMounts {
+		if m.Name == poolsConfigVolumeName &&
+			m.MountPath == poolsConfigMountPath &&
+			m.SubPath == PoolsConfigKey {
+			return true
+		}
+	}
+	return false
 }
 
 // signingAgentEnv returns Dingo's agent settings for a block producer that

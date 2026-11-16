@@ -79,11 +79,11 @@ func TestPoolListFence(t *testing.T) {
 			wantPool: pools[1].id,
 		},
 		{
-			name:     "a listed pool against another node's list",
-			first:    list("first", "ns", time.Hour, pools[0], pools[1]),
-			second:   list("second", "ns", 0, pools[1], pools[2]),
-			conflict: true,
-			wantPool: pools[1].id,
+			// Both sign every pool through the agent, which signs at most
+			// one header per pool and slot.
+			name:   "a listed pool against another node's list",
+			first:  list("first", "ns", time.Hour, pools[0], pools[1]),
+			second: list("second", "ns", 0, pools[1], pools[2]),
 		},
 		{
 			name:   "disjoint lists",
