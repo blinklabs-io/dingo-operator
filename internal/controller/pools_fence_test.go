@@ -309,7 +309,7 @@ func TestRestagesOtherPoolOfList(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			c := conflictClient(t, dn, sts.DeepCopy(), tt.a, tt.b)
+			c := conflictClient(t, dn.DeepCopy(), sts.DeepCopy(), tt.a, tt.b)
 			got, err := reconcilerFor(c).restagesOtherPool(ctx, dn)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
@@ -321,7 +321,7 @@ func TestRestagesOtherPoolOfList(t *testing.T) {
 		unrecorded := sts.DeepCopy()
 		unrecorded.Spec.Template.Annotations[resources.KeysPoolAnnotation] =
 			pools[0].id
-		c := conflictClient(t, dn, unrecorded,
+		c := conflictClient(t, dn.DeepCopy(), unrecorded,
 			secretOf(pools[0], pools[0].secret),
 			secretOf(pools[1], pools[1].secret))
 		got, err := reconcilerFor(c).restagesOtherPool(ctx, dn)
