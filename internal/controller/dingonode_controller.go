@@ -1104,7 +1104,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// replica's keys rather than an aggregate pipeline observation.
 	st := statuses[0]
 	if resources.UsesPoolList(dn) {
-		r.observePools(dn, st)
+		r.observePools(dn, st, r.runningPools(ctx, dn))
 		return
 	}
 	r.observeLoadedOpCert(dn, st)

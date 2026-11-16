@@ -30,6 +30,7 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -489,12 +490,37 @@ func (r *DingoNodeReconciler) rejectAllPoolKeys(
 	}
 }
 
+// runningPools returns the pools the node's live StatefulSet template stages.
+// Its pod forges them with the keys it loaded whatever their bundles' verdict
+// is now: a template held because every bundle, or the signing agent
+// certificate, was refused keeps running pools that are not accepted. It is
+// empty when the template cannot be read or records no pools.
+func (r *DingoNodeReconciler) runningPools(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) map[string]bool {
+	running := map[string]bool{}
+	if r.Client == nil {
+		return running
+	}
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(dn), sts); err != nil {
+		return running
+	}
+	for _, p := range resources.SplitKeysPools(
+		sts.Spec.Template.Annotations[resources.KeysPoolAnnotation],
+	) {
+		running[normalizedPoolID(p)] = true
+	}
+	return running
+}
+
 // poolMetricsByID returns the node's per-pool metrics keyed by normalized pool
 // ID. Dingo labels the series with pool_id only while it forges for more than
-// one pool; a node left with a single pool exposes them unlabelled, and they
+// one pool; a node running a single pool exposes them unlabelled, and they
 // are that pool's.
 func poolMetricsByID(
-	dn *dingov1alpha1.DingoNode,
+	running map[string]bool,
 	st *forgestatus.Status,
 ) map[string]*forgestatus.PoolMetrics {
 	byID := make(map[string]*forgestatus.PoolMetrics, len(st.Pools))
@@ -505,10 +531,8 @@ func poolMetricsByID(
 		return byID
 	}
 	var rendered []string
-	for _, ps := range dn.Status.Pools {
-		if ps.KeysValid {
-			rendered = append(rendered, ps.PoolID)
-		}
+	for id := range running {
+		rendered = append(rendered, id)
 	}
 	if len(rendered) == 1 &&
 		(st.HasKESData || st.HasOpCertCounter || st.OpCertUnloaded) {
@@ -529,26 +553,38 @@ func poolMetricsByID(
 // observePools records each pool's KES state and loaded opcert counter from
 // the node's metrics, and summarizes them for the node: status.kes is the pool
 // with the fewest KES periods left, and RotationDue is true while any forging
-// pool is due.
+// pool is due. A pool forges while the running template stages it (running)
+// or the node reports series labelled with it, whatever its bundle's verdict;
+// with no running template recorded, the pools whose keys were accepted stand
+// in for it.
 func (r *DingoNodeReconciler) observePools(
 	dn *dingov1alpha1.DingoNode,
 	st *forgestatus.Status,
+	running map[string]bool,
 ) {
 	syncPoolStatuses(dn)
-	byID := poolMetricsByID(dn, st)
+	if len(running) == 0 {
+		running = map[string]bool{}
+		for _, ps := range dn.Status.Pools {
+			if ps.KeysValid {
+				running[ps.PoolID] = true
+			}
+		}
+	}
+	byID := poolMetricsByID(running, st)
 	renewBefore := int64(dn.Spec.BlockProducer.Rotation.RenewBeforePeriods)
 
 	var due, unobserved []string
 	var lowest *dingov1alpha1.PoolStatus
 	for i := range dn.Status.Pools {
 		ps := &dn.Status.Pools[i]
-		if !ps.KeysValid {
+		pm := byID[ps.PoolID]
+		if !running[ps.PoolID] && pm == nil {
 			// Left out of the node: nothing is forging for it.
 			ps.KES = dingov1alpha1.KESStatus{}
 			ps.LoadedCounter = nil
 			continue
 		}
-		pm := byID[ps.PoolID]
 		if pm == nil {
 			unobserved = append(unobserved, ps.PoolID)
 			continue
