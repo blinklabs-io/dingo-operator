@@ -593,7 +593,7 @@ type APISpec struct {
 // need a Dingo image that supports them (v0.82.0 or later); the operator
 // rejects a spec that enables tracing on an older canonical image rather than
 // leaving the node to ignore the settings.
-// +kubebuilder:validation:XValidation:rule="(!has(self.endpoint) && !has(self.serviceName) && !has(self.sampleRatio)) || (has(self.enabled) && self.enabled)",message="endpoint, serviceName and sampleRatio require enabled=true"
+// +kubebuilder:validation:XValidation:rule="(!has(self.endpoint) && !has(self.serviceName) && !has(self.sampleRatio) && !has(self.alwaysSamplePools)) || (has(self.enabled) && self.enabled)",message="endpoint, serviceName, sampleRatio and alwaysSamplePools require enabled=true"
 type TracingSpec struct {
 	// Enabled turns on trace export. It is off by default because an exporter
 	// with no collector listening logs connection errors continuously.
@@ -618,6 +618,57 @@ type TracingSpec struct {
 	// +kubebuilder:validation:Pattern=`^(0(\.[0-9]+)?|1(\.0+)?)$`
 	// +optional
 	SampleRatio string `json:"sampleRatio,omitempty"`
+	// AlwaysSamplePools lists stake pool IDs, bech32 (pool1...) or the hex
+	// key hash, whose blocks are traced whatever sampleRatio says. Requires a
+	// Dingo image of v0.91.0 or later.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Pattern=`^(pool1[0-9a-z]{50,60}|[0-9a-fA-F]{56})$`
+	// +optional
+	AlwaysSamplePools []string `json:"alwaysSamplePools,omitempty"`
+}
+
+// OTLPProtocol is the OTLP transport for exported logs and metrics.
+// +kubebuilder:validation:Enum=grpc;http/protobuf
+type OTLPProtocol string
+
+// OTLPSpec configures OpenTelemetry export of the node's logs and metrics,
+// through the standard OTEL_* variables. Requires a Dingo image of v0.91.0 or
+// later. Stdout logging and the /metrics endpoint are unaffected.
+//
+// The endpoint, protocol and headers are the generic OTEL_EXPORTER_OTLP_*
+// settings, so traces use them too when tracing is enabled without its own
+// endpoint.
+type OTLPSpec struct {
+	// Endpoint is the OTLP collector base URL, for example
+	// http://otel-collector.observability:4317. When empty, the OpenTelemetry
+	// default for the protocol applies.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https?://[^\s]+$`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+	// Protocol is the OTLP transport. When empty, the OpenTelemetry default
+	// (http/protobuf) applies.
+	// +optional
+	Protocol OTLPProtocol `json:"protocol,omitempty"`
+	// Logs exports every log record over OTLP as well as to stdout.
+	// +optional
+	Logs bool `json:"logs,omitempty"`
+	// Metrics pushes the node's Prometheus metrics over OTLP, with the same
+	// names as /metrics.
+	// +optional
+	Metrics bool `json:"metrics,omitempty"`
+	// HeadersSecretRef names a Secret key holding OTEL_EXPORTER_OTLP_HEADERS
+	// (comma-separated key=value pairs, for example an authorization header).
+	// The pod does not start until the Secret and key exist.
+	// +optional
+	HeadersSecretRef *corev1.SecretKeySelector `json:"headersSecretRef,omitempty"`
+	// ResourceAttributes are added to OTEL_RESOURCE_ATTRIBUTES on every
+	// exported signal. The operator always sets k8s.pod.name,
+	// k8s.namespace.name, k8s.node.name and cardano.network.name, so those
+	// keys are refused. Values are percent-encoded.
+	// +kubebuilder:validation:MaxProperties=32
+	// +optional
+	ResourceAttributes map[string]string `json:"resourceAttributes,omitempty"`
 }
 
 // LogFormat selects Dingo's log output handler.
@@ -750,6 +801,11 @@ type DingoNodeSpec struct {
 	// Tracing configures OpenTelemetry trace export.
 	// +optional
 	Tracing TracingSpec `json:"tracing,omitempty"`
+	// OTLP exports the node's logs and metrics over OpenTelemetry and sets
+	// OTEL_RESOURCE_ATTRIBUTES. An empty otlp: {} adds only the resource
+	// attributes, for example to traces.
+	// +optional
+	OTLP *OTLPSpec `json:"otlp,omitempty"`
 	// Logging configures the node's log level and format.
 	// +optional
 	Logging LoggingSpec `json:"logging,omitempty"`

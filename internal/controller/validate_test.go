@@ -295,6 +295,40 @@ func TestValidateSpecTracingImage(t *testing.T) {
 	require.NoError(t, validateSpec(disabled))
 }
 
+func TestValidateRejectsPoolsOnOldImage(t *testing.T) {
+	const pool = "0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+	pools := func(tag string) *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "mainnet",
+			Tracing: dingov1alpha1.TracingSpec{
+				Enabled:           true,
+				AlwaysSamplePools: []string{pool},
+			},
+			Image: dingov1alpha1.ImageSpec{Tag: tag},
+		}}
+	}
+	require.ErrorContains(t, validateSpec(pools("0.90.0")), "v0.91.0")
+	require.NoError(t, validateSpec(pools("0.91.0")))
+	require.NoError(t, validateSpec(pools("main")))
+
+	otlp := func(tag string) *dingov1alpha1.DingoNode {
+		return &dingov1alpha1.DingoNode{Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "mainnet",
+			OTLP:    &dingov1alpha1.OTLPSpec{Logs: true},
+			Image:   dingov1alpha1.ImageSpec{Tag: tag},
+		}}
+	}
+	require.ErrorContains(t, validateSpec(otlp("0.90.0")), "v0.91.0")
+	require.ErrorContains(t, validateSpec(otlp("")), "v0.91.0")
+	require.NoError(t, validateSpec(otlp("0.91.0")))
+
+	bad := otlp("0.91.0")
+	bad.Spec.OTLP.ResourceAttributes = map[string]string{"k8s.node.name": "x"}
+	require.ErrorContains(t, validateSpec(bad), "k8s.node.name")
+}
+
 func TestValidateSpecRejectsConflictingVoteKeyEnv(t *testing.T) {
 	t.Parallel()
 

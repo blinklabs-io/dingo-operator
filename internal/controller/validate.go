@@ -100,6 +100,17 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		)
 	}
 
+	if resources.UsesObservabilityExport(dn) &&
+		!resources.SupportsObservabilityExport(dn) {
+		return errors.New(
+			"spec.tracing.alwaysSamplePools and spec.otlp require a Dingo " +
+				"image of v0.91.0 or later; set spec.image.tag",
+		)
+	}
+	if err := resources.ValidateObservability(dn); err != nil {
+		return err
+	}
+
 	if dn.Spec.Role == dingov1alpha1.RoleBlockProducer {
 		bp := dn.Spec.BlockProducer
 		if bp == nil {
@@ -253,6 +264,12 @@ func forgerConflict(
 			// An invalid spec is not reconciled; forgerHeld holds the pool
 			// for it only while its workload runs.
 			validateSpec(o) != nil {
+			continue
+		}
+		// Two producers that sign through an agent hold no KES key, and the
+		// agent signs at most one header per pool and slot. A workload of o
+		// that still holds a local KES key is caught by heldBy, which reads it.
+		if resources.UsesSigningAgent(dn) && resources.UsesSigningAgent(o) {
 			continue
 		}
 		if pool != "" &&

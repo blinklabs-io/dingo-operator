@@ -1829,6 +1829,45 @@ func TestCRDRejectsInvalidTracingAndLogging(t *testing.T) {
 			wantErr: "sampleRatio",
 		},
 		{
+			name: "always-sample pools without enabled",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.Tracing.AlwaysSamplePools = []string{
+					"0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+				}
+			},
+			wantErr: "require enabled=true",
+		},
+		{
+			name: "always-sample pool not a pool ID",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.Tracing = dingov1alpha1.TracingSpec{
+					Enabled:           true,
+					AlwaysSamplePools: []string{"not-a-pool"},
+				}
+			},
+			wantErr: "alwaysSamplePools",
+		},
+		{
+			name: "unknown OTLP protocol",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.OTLP = &dingov1alpha1.OTLPSpec{
+					Logs:     true,
+					Protocol: dingov1alpha1.OTLPProtocol("http/json"),
+				}
+			},
+			wantErr: "protocol",
+		},
+		{
+			name: "OTLP endpoint not a URL",
+			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
+				s.OTLP = &dingov1alpha1.OTLPSpec{
+					Logs:     true,
+					Endpoint: "otel:4317",
+				}
+			},
+			wantErr: "endpoint",
+		},
+		{
 			name: "unknown log level",
 			mutate: func(s *dingov1alpha1.DingoNodeSpec) {
 				s.Logging.Level = dingov1alpha1.LogLevel("trace")
@@ -1858,6 +1897,16 @@ func TestCRDRejectsInvalidTracingAndLogging(t *testing.T) {
 				Enabled:     true,
 				Endpoint:    "http://otel:4318",
 				SampleRatio: "0.5",
+				AlwaysSamplePools: []string{
+					"0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+					"pool1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+				},
+			},
+			OTLP: &dingov1alpha1.OTLPSpec{
+				Endpoint: "http://otel:4317",
+				Protocol: dingov1alpha1.OTLPProtocol("grpc"),
+				Logs:     true,
+				Metrics:  true,
 			},
 			Logging: dingov1alpha1.LoggingSpec{
 				Level:  dingov1alpha1.LogLevel("warn"),
