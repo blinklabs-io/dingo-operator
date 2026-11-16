@@ -164,9 +164,14 @@ operators.
   `status.pools` also holds each pool's on-disk, on-chain (one
   node-to-client query reads all of them) and loaded opcert counters and KES
   periods, read from the `pool_id`-labelled series Dingo exposes with several
-  pools, for every pool the live pod template stages whatever its bundle's
-  verdict. `status.kes` is the pool with the fewest KES periods left, and
-  `RotationDue` is true while any pool is due.
+  pools, for every pool the running pod stages whatever its bundle's verdict.
+  A pod running one pool exposes its series unlabelled; they are attributed by
+  the `dingo.blinklabs.io/keys-pool` annotation of the scraped pod, read before
+  and after the scrape, not by the StatefulSet template, which during a roll
+  already records the next pools. When that pod changed between the reads or
+  records no pools, unlabelled series are attributed to no pool, and pools
+  without labelled series keep their status. `status.kes` is the pool with the
+  fewest KES periods left, and `RotationDue` is true while any pool is due.
 
   `rotation.mode` may be `Assisted` or `MonitorOnly`; `Auto` through the agent
   per pool is not supported yet and is refused. A new opcert in one pool's
