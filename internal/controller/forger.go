@@ -617,7 +617,8 @@ func (r *DingoNodeReconciler) restagesOtherPoolOfList(
 // may have staged the pool dn's keys now name, and dn's roll would then start
 // a second forger of it. Two such producers hold each other; each whose keys
 // moved to another pool is halted (restagesOtherPool), and the first whose
-// rival pod stops rolls.
+// rival pod stops rolls. A pool-list node's pod must have staged every pool
+// the node lists: a pool new to it may be the one the other pod forges.
 func (r *DingoNodeReconciler) rollsPastUnknownPool(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -650,9 +651,19 @@ func (r *DingoNodeReconciler) rollsPastUnknownPool(
 		if recorded := resources.SplitKeysPools(
 			p.Annotations[resources.KeysPoolAnnotation],
 		); len(recorded) > 0 {
+			staged := make([]string, 0, len(recorded))
 			for _, pool := range recorded {
-				if !slices.Contains(mine.pools, normalizedPoolID(pool)) {
+				pool = normalizedPoolID(pool)
+				if !slices.Contains(mine.pools, pool) {
 					return false, nil
+				}
+				staged = append(staged, pool)
+			}
+			if resources.UsesPoolList(dn) {
+				for _, pool := range poolIDs(dn.Spec.BlockProducer) {
+					if !slices.Contains(staged, pool) {
+						return false, nil
+					}
 				}
 			}
 			continue
