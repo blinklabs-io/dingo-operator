@@ -614,9 +614,10 @@ func (r *DingoNodeReconciler) refreshPoolOnChainCounters(
 	listKey := strings.Join(ids, ",")
 	key := client.ObjectKeyFromObject(dn)
 
-	// A remembered attempt of another pool list says nothing about this one.
+	// A remembered attempt of another pool list, or of poolId, says nothing
+	// about this one.
 	if last, ok := r.lastOnChainAttempt(key); ok {
-		if last.poolID != listKey {
+		if !last.list || last.poolID != listKey {
 			r.forgetOnChainAttempt(key)
 		} else if time.Since(last.at) < onChainCounterRefreshInterval {
 			r.applyPoolCounterAttempt(dn, last)
@@ -648,7 +649,7 @@ func (r *DingoNodeReconciler) refreshPoolOnChainCounters(
 		strconv.Itoa(resources.PortNodeToClient),
 	)
 
-	attempt := onChainAttempt{at: time.Now(), poolID: listKey}
+	attempt := onChainAttempt{at: time.Now(), poolID: listKey, list: true}
 	counters, err := fetcher.FetchPools(ctx, onchain.Query{
 		Address:      addr,
 		NetworkMagic: magic,

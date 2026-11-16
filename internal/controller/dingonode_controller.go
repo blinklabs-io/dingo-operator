@@ -174,6 +174,9 @@ type onChainAttempt struct {
 	// counters holds, by pool ID, the counters a pool list's attempt read.
 	// poolID is then the sorted list of the pools asked about.
 	counters map[string]int64
+	// list marks an attempt of a pool list. A one-pool list's poolID equals
+	// poolId's, so the mode is what tells the two apart.
+	list bool
 }
 
 // +kubebuilder:rbac:groups=dingo.blinklabs.io,resources=dingonodes,verbs=get;list;watch;create;update;patch;delete
@@ -1357,7 +1360,7 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 	// Observed condition about a pool that is no longer configured.
 	if last, ok := r.lastOnChainAttempt(key); ok &&
 		time.Since(last.at) < onChainCounterRefreshInterval {
-		if last.ok && last.poolID != wantPool {
+		if last.list || (last.ok && last.poolID != wantPool) {
 			r.forgetOnChainAttempt(key)
 		} else {
 			r.applyOnChainAttempt(dn, last, wantPool)
