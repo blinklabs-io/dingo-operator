@@ -82,6 +82,9 @@ type Status struct {
 	// HasOpCertCounter reports whether the gauge was present.
 	OpCertCounter    int64
 	HasOpCertCounter bool
+	// OpCertUnloaded is set when dingo_forge_opcert_counter_loaded is NaN: the
+	// node has no opcert loaded, and HasOpCertCounter stays false.
+	OpCertUnloaded bool
 	// Pools holds the series Dingo labels with pool_id, keyed by the label
 	// value (a bech32 pool ID). Dingo labels them only while it forges for
 	// more than one pool; it is nil for a node that forges for one.
@@ -101,6 +104,9 @@ type PoolMetrics struct {
 	// HasOpCertCounter reports whether it was a number.
 	OpCertCounter    int64
 	HasOpCertCounter bool
+	// OpCertUnloaded is set when the loaded counter is NaN: the node has no
+	// opcert loaded for the pool.
+	OpCertUnloaded bool
 }
 
 // Fetcher retrieves forge status from a node's metrics endpoint.
@@ -193,7 +199,9 @@ func Parse(r io.Reader) (*Status, error) {
 			s.PipelineHalted = v != 0
 		case metricOpCertCounter:
 			// NaN: no opcert is loaded.
-			if !math.IsNaN(v) {
+			if math.IsNaN(v) {
+				s.OpCertUnloaded = true
+			} else {
 				s.OpCertCounter = int64(v)
 				s.HasOpCertCounter = true
 			}
@@ -234,7 +242,9 @@ func (s *Status) addPoolSample(pool, name string, v float64) {
 		get().OpCertExpiryKESPeriod = int64(v)
 	case metricOpCertCounter:
 		// NaN: the node has no opcert loaded for the pool.
-		if !math.IsNaN(v) {
+		if math.IsNaN(v) {
+			get().OpCertUnloaded = true
+		} else {
 			get().OpCertCounter = int64(v)
 			get().HasOpCertCounter = true
 		}

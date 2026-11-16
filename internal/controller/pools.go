@@ -510,7 +510,8 @@ func poolMetricsByID(
 			rendered = append(rendered, ps.PoolID)
 		}
 	}
-	if len(rendered) == 1 && (st.HasKESData || st.HasOpCertCounter) {
+	if len(rendered) == 1 &&
+		(st.HasKESData || st.HasOpCertCounter || st.OpCertUnloaded) {
 		byID[rendered[0]] = &forgestatus.PoolMetrics{
 			CurrentKESPeriod:      st.CurrentKESPeriod,
 			RemainingKESPeriods:   st.RemainingKESPeriods,
@@ -519,6 +520,7 @@ func poolMetricsByID(
 			HasKESData:            st.HasKESData,
 			OpCertCounter:         st.OpCertCounter,
 			HasOpCertCounter:      st.HasOpCertCounter,
+			OpCertUnloaded:        !st.HasOpCertCounter && st.OpCertUnloaded,
 		}
 	}
 	return byID
@@ -551,8 +553,11 @@ func (r *DingoNodeReconciler) observePools(
 			unobserved = append(unobserved, ps.PoolID)
 			continue
 		}
-		if pm.HasOpCertCounter {
+		switch {
+		case pm.HasOpCertCounter:
 			ps.LoadedCounter = new(pm.OpCertCounter)
+		case pm.OpCertUnloaded:
+			ps.LoadedCounter = nil
 		}
 		if !pm.HasKESData {
 			unobserved = append(unobserved, ps.PoolID)

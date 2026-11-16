@@ -40,4 +40,5 @@ func TestParseUnlabelledLoadedCounter(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, st.HasOpCertCounter,
 		"NaN means no opcert is loaded")
+	assert.True(t, st.OpCertUnloaded)
 }
