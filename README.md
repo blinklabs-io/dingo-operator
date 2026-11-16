@@ -200,8 +200,19 @@ operators.
 - **Tracing and logging** — `spec.tracing` exports OpenTelemetry spans over
   OTLP/HTTP (endpoint, service name defaulting to the node name, sample ratio)
   and needs a Dingo image of v0.82.0 or later, which the operator checks before
-  rendering. `spec.logging` sets the node's log level and format; `json` suits
-  Loki or ELK.
+  rendering. `spec.tracing.alwaysSamplePools` (bech32 or hex pool IDs, up to 64)
+  traces those pools' blocks whatever the sample ratio. `spec.otlp` exports the
+  node's logs and metrics over OTLP through the standard `OTEL_*` variables:
+  endpoint, protocol (`grpc` or `http/protobuf`), `logs`, `metrics`, a
+  `headersSecretRef` for `OTEL_EXPORTER_OTLP_HEADERS`, and extra
+  `resourceAttributes`. `OTEL_RESOURCE_ATTRIBUTES` always carries the pod,
+  namespace and node names (from the downward API) and `cardano.network.name`;
+  `otlp: {}` adds only those attributes, for example to traces. Stdout logs
+  and `/metrics` are unaffected. Both need Dingo v0.91.0 or later, checked
+  before rendering. The OTLP endpoint, protocol and headers are the generic
+  settings, so traces use them too when tracing has no endpoint of its own.
+  `spec.logging` sets the node's log level and format; `json` suits Loki or
+  ELK.
 - **On-chain counter floor** — with `blockProducer.nodeToClient.enabled`, the
   operator reads the pool's authoritative opcert counter from the node over
   node-to-client local-state-query, publishes it as

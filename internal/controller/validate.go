@@ -103,6 +103,17 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		)
 	}
 
+	if resources.UsesObservabilityExport(dn) &&
+		!resources.SupportsObservabilityExport(dn) {
+		return errors.New(
+			"spec.tracing.alwaysSamplePools and spec.otlp require a Dingo " +
+				"image of v0.91.0 or later; set spec.image.tag",
+		)
+	}
+	if err := resources.ValidateObservability(dn); err != nil {
+		return err
+	}
+
 	if dn.Spec.Role == dingov1alpha1.RoleBlockProducer {
 		bp := dn.Spec.BlockProducer
 		if bp == nil {

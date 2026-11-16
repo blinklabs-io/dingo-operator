@@ -22,6 +22,18 @@ spec:
   #   enabled: true
   #   endpoint: http://otel-collector.observability:4318
   #   sampleRatio: "0.1"
+  #   alwaysSamplePools:
+  #     - pool1...
+  # otlp:
+  #   endpoint: http://otel-collector.observability:4317
+  #   protocol: grpc
+  #   logs: true
+  #   metrics: true
+  #   headersSecretRef:
+  #     name: otlp-headers
+  #     key: headers
+  #   resourceAttributes:
+  #     deployment.environment: production
   topology:
     # Relays peer with the block producer and any external relays.
     relayRefs:

@@ -17,6 +17,7 @@ package resources
 import (
 	"sort"
 	"strconv"
+	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -340,6 +341,12 @@ func tracingEnv(dn *dingov1alpha1.DingoNode) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "DINGO_TRACING_SAMPLE_RATIO",
 			Value: t.SampleRatio,
+		})
+	}
+	if len(t.AlwaysSamplePools) > 0 {
+		env = append(env, corev1.EnvVar{
+			Name:  "DINGO_TRACING_ALWAYS_SAMPLE_POOLS",
+			Value: strings.Join(t.AlwaysSamplePools, ","),
 		})
 	}
 	return env

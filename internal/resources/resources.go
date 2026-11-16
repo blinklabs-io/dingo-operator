@@ -499,6 +499,7 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		})
 	}
 	env = append(env, tracingEnv(dn)...)
+	env = append(env, otlpEnv(dn)...)
 	env = append(env, loggingEnv(dn)...)
 	bp := dn.Spec.BlockProducer
 	// Dingo binds node-to-client to 127.0.0.1:3002 unless told otherwise, so it
@@ -610,7 +611,10 @@ func mergeEnv(base []corev1.EnvVar, extra map[string]string) []corev1.EnvVar {
 	}
 	for _, k := range sortedKeys(extra) {
 		if i, ok := index[k]; ok {
+			// A variable the operator sources from a Secret or the downward
+			// API carries ValueFrom; keeping it beside Value is invalid.
 			base[i].Value = extra[k]
+			base[i].ValueFrom = nil
 			continue
 		}
 		base = append(base, corev1.EnvVar{Name: k, Value: extra[k]})
