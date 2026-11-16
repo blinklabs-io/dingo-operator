@@ -84,9 +84,9 @@ operators.
   keys checksum alone.
   The canonical Dingo image must be one that reads the remote agent settings;
   the default image and older tags are refused as `InvalidSpec` before the
-  pod template changes. No released Dingo version qualifies yet, so the
-  operator requires a version newer than the latest release; set
-  `spec.image.tag` to a release with remote agent support once one ships.
+  pod template changes. Dingo v0.93.0 is the first release that qualifies, so
+  set `spec.image.tag` to v0.93.0 or later. Agent profiles, which let one agent
+  serve several pools, need v0.94.0 or later; the operator does not check this.
   Custom repositories and tags that are not a version are trusted, as for
   `spec.tracing`.
   `plaintext` takes neither a pin nor a client certificate. The field is named
