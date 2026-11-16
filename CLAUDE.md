@@ -156,6 +156,11 @@ cert-manager).
   `localstatequery.Client.GetOpCertCounters()` returns a map keyed by pool
   cold-key hash. Dingo serves NtC over TCP on its private port (3002) as well as
   its UNIX socket, so the operator dials the pod and needs no access to `/ipc`.
+  The socket itself lives at `/ipc/dingo/dingo.socket` (`DINGO_SOCKET_PATH`),
+  in a directory the `ipc-socket-dir` init container creates as the pod's user
+  with mode 0755: Dingo v0.94.0 and later refuse a socket parent that group or
+  other can write or that another user owns, and the `/ipc` emptyDir root is
+  world-writable.
   Dingo's own `/ipc`-free HTTP surface for this (dingo #2871) is no longer a
   blocker.
   - Two things gate it, both off by default and both documented under "OpCert

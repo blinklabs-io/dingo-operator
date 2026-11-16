@@ -1899,12 +1899,33 @@ func TestReconcileKeepsLegacyDataVolumeName(t *testing.T) {
 	require.Len(t, got.Spec.VolumeClaimTemplates, 1)
 	assert.Equal(t, "data", got.Spec.VolumeClaimTemplates[0].Name)
 	pod := got.Spec.Template.Spec
-	pods := append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...)
 	require.Greater(t, len(pod.InitContainers), 0, "mithril init container expected")
-	for _, c := range pods {
-		assert.Contains(t, c.VolumeMounts,
-			corev1.VolumeMount{Name: "data", MountPath: "/data"}, c.Name)
+	assertDataMounts(t, pod, "data")
+	for _, c := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
 		assert.NotContains(t, volumeMountNames(c.VolumeMounts), "dingo-data")
+	}
+}
+
+// assertDataMounts checks that the node container and the init containers
+// that work on the chain database mount the data volume under want, and that
+// every other container mounting /data uses the same volume. Containers that
+// do not need the data volume may omit it.
+func assertDataMounts(t *testing.T, pod corev1.PodSpec, want string) {
+	t.Helper()
+	mount := corev1.VolumeMount{Name: want, MountPath: "/data"}
+	require.NotEmpty(t, pod.Containers)
+	assert.Contains(t, pod.Containers[0].VolumeMounts, mount)
+	for _, ctr := range pod.InitContainers {
+		if ctr.Name == "data-volume-sticky-bit" || ctr.Name == "mithril-sync" {
+			assert.Contains(t, ctr.VolumeMounts, mount, ctr.Name)
+		}
+	}
+	for _, ctr := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
+		for _, m := range ctr.VolumeMounts {
+			if m.MountPath == "/data" {
+				assert.Equal(t, want, m.Name, ctr.Name)
+			}
+		}
 	}
 }
 
@@ -1946,11 +1967,7 @@ func assertDataVolume(t *testing.T, c client.Client, want string) {
 		types.NamespacedName{Name: "old", Namespace: "old-ns"}, got))
 	require.Len(t, got.Spec.VolumeClaimTemplates, 1)
 	assert.Equal(t, want, got.Spec.VolumeClaimTemplates[0].Name)
-	pod := got.Spec.Template.Spec
-	for _, ctr := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
-		assert.Contains(t, ctr.VolumeMounts,
-			corev1.VolumeMount{Name: want, MountPath: "/data"}, ctr.Name)
-	}
+	assertDataMounts(t, got.Spec.Template.Spec, want)
 }
 
 func TestReconcileReusesRetainedDataClaims(t *testing.T) {

@@ -45,28 +45,28 @@ func TestDataVolumeStickyInitContainer(t *testing.T) {
 			name:  "relay",
 			dn:    relayNode(),
 			opts:  RenderOptions{Replicas: 1},
-			names: []string{dataStickyInitName, mithrilInitName},
+			names: []string{dataStickyInitName, ipcInitName, mithrilInitName},
 		},
 		{
 			name: "block producer",
 			dn:   bpNode(),
 			opts: RenderOptions{Replicas: 1, MountKeys: true},
 			names: []string{
-				dataStickyInitName, keysInitName, mithrilInitName,
+				dataStickyInitName, ipcInitName, keysInitName, mithrilInitName,
 			},
 		},
 		{
 			name:  "mithril disabled",
 			dn:    noMithril,
 			opts:  RenderOptions{Replicas: 1},
-			names: []string{dataStickyInitName},
+			names: []string{dataStickyInitName, ipcInitName},
 		},
 		{
 			name: "legacy data volume",
 			dn:   relayNode(),
 			opts: RenderOptions{Replicas: 1, DataVolumeName: "data"},
 			names: []string{
-				dataStickyInitName, mithrilInitName,
+				dataStickyInitName, ipcInitName, mithrilInitName,
 			},
 		},
 	} {

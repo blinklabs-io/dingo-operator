@@ -431,6 +431,15 @@ read-only and privilege escalation is disabled. The pod therefore needs a
 namespace that admits the `baseline` Pod Security Standard; `restricted` refuses
 a root container.
 
+Dingo's UNIX socket is at `/ipc/dingo/dingo.socket` (`DINGO_SOCKET_PATH`), not
+in the `/ipc` volume root. That root is an `emptyDir` writable by every user,
+and Dingo v0.94.0 and later refuse a socket parent that group or other can
+write. The `ipc-socket-dir` init container creates `/ipc/dingo` with mode 0755
+as the pod's user, non-root with every capability dropped, using `/bin/sh`,
+`mkdir` and `chmod` from the node's image. A `DINGO_SOCKET_PATH` set in
+`spec.environment` replaces this path; its parent directory must likewise not
+be writable by group or other.
+
 ### Sizing and health
 
 Size for growth and bootstrap peak usage. Mithril bootstrap can temporarily hold

@@ -65,6 +65,7 @@ const (
 	keysInitName       = "prepare-block-producer-keys"
 	mithrilInitName    = "mithril-sync"
 	dataStickyInitName = "data-volume-sticky-bit"
+	ipcInitName        = "ipc-socket-dir"
 
 	// DefaultDataVolumeName names the data volume claim template of new
 	// StatefulSets. It matches the dingo Helm chart, so claims are
@@ -73,6 +74,13 @@ const (
 	dataMountPath         = "/data"
 	tmpVolumeName         = "tmp"
 	ipcVolumeName         = "ipc"
+	ipcMountPath          = "/ipc"
+	// ipcSocketDir holds Dingo's UNIX socket. Dingo v0.94.0 and later refuse a
+	// socket parent that group or other can write, and the /ipc emptyDir root
+	// is world-writable, so the socket goes one level down into a directory
+	// the node's own user creates with mode 0755.
+	ipcSocketDir  = ipcMountPath + "/dingo"
+	ipcSocketPath = ipcSocketDir + "/dingo.socket"
 
 	keysSourceName = "block-producer-keys-source"
 	keysSourcePath = "/var/run/dingo-keys-source"
@@ -441,6 +449,9 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		{Name: "CARDANO_NETWORK", Value: dn.Spec.Network},
 		{Name: "CARDANO_DATABASE_PATH", Value: dataMountPath},
 		{Name: "DINGO_STORAGE_MODE", Value: storageMode(dn)},
+		// The image entrypoint keeps a DINGO_SOCKET_PATH it is given (it
+		// overwrites CARDANO_SOCKET_PATH), so this moves the socket.
+		{Name: "DINGO_SOCKET_PATH", Value: ipcSocketPath},
 		// Keep Dingo's own shutdown deadline strictly inside the pod's grace
 		// period. The name is CARDANO_-prefixed, not DINGO_: Dingo runs a single
 		// envconfig.Process("cardano", ...), and this field has no explicit
@@ -850,7 +861,7 @@ func volumeMounts(
 	mounts := []corev1.VolumeMount{
 		{Name: opts.dataVolume(), MountPath: dataMountPath},
 		{Name: tmpVolumeName, MountPath: "/tmp"},
-		{Name: ipcVolumeName, MountPath: "/ipc"},
+		{Name: ipcVolumeName, MountPath: ipcMountPath},
 	}
 	if opts.HasTopology {
 		mounts = append(mounts, corev1.VolumeMount{
