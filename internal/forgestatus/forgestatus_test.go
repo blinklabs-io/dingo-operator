@@ -146,6 +146,7 @@ func TestParseTipSlot(t *testing.T) {
 }
 
 func TestParseOpCertCounter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		body    string
@@ -154,15 +155,47 @@ func TestParseOpCertCounter(t *testing.T) {
 	}{
 		{
 			name:    "present",
-			body:    "dingo_forge_opcert_counter 7\n",
+			body:    "dingo_forge_opcert_counter_loaded 7\n",
 			want:    7,
 			wantHas: true,
 		},
 		{
 			name:    "present at zero",
-			body:    "dingo_forge_opcert_counter 0\n",
+			body:    "dingo_forge_opcert_counter_loaded 0\n",
 			want:    0,
 			wantHas: true,
+		},
+		{
+			name: "labelled sample",
+			body: `# HELP dingo_forge_opcert_counter_loaded issue number of the operational certificate currently loaded
+# TYPE dingo_forge_opcert_counter_loaded gauge
+dingo_forge_opcert_counter_loaded{network="preview"} 5
+`,
+			want:    5,
+			wantHas: true,
+		},
+		{
+			name: "loaded and onchain together read the loaded one",
+			body: "dingo_forge_opcert_counter_onchain 9\n" +
+				"dingo_forge_opcert_counter_loaded 10\n",
+			want:    10,
+			wantHas: true,
+		},
+		{
+			name: "onchain alone is not the loaded counter",
+			body: "dingo_forge_opcert_counter_onchain 9\n",
+		},
+		{
+			name: "labelled onchain alone is not the loaded counter",
+			body: `dingo_forge_opcert_counter_onchain{network="preview"} 9` + "\n",
+		},
+		{
+			name: "bare name is not a Dingo series",
+			body: "dingo_forge_opcert_counter 7\n",
+		},
+		{
+			name: "NaN means no opcert loaded",
+			body: "dingo_forge_opcert_counter_loaded NaN\n",
 		},
 		{
 			name: "absent on a node that does not export it",
@@ -171,6 +204,7 @@ func TestParseOpCertCounter(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := Parse(strings.NewReader(tc.body))
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got.OpCertCounter)
