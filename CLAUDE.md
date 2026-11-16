@@ -225,7 +225,10 @@ cert-manager).
   relay policies allow this listener to clients carrying the metrics access
   label, plus any `spec.metrics.ingressFrom` peers; those peers are added and
   never replace the label grant, or the operator's own scrape would be
-  blocked. The scrape goes through the *headless* Service: the client
+  blocked. The rule also admits labelled pods in the operator's own namespace
+  (`OperatorNamespace`, from `POD_NAMESPACE` or the service-account namespace
+  file), because that namespace often lacks the label and a cross-namespace
+  label peer needs both. The scrape goes through the *headless* Service: the client
   Service gates endpoints on readiness, which would hide KES and wedge state
   precisely while a node is behind, stalled or catching up.
 - Mithril completion is tracked by markers, not by the database file.

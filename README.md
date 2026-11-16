@@ -511,15 +511,15 @@ is the node role by default. `app.kubernetes.io/name`, `app.kubernetes.io/instan
 
 ```yaml
 spec:
-  podLabels:
-    alias: relay-a
-    group: core
   metrics:
     podMonitor:
       enabled: true
       labels:
         app.kubernetes.io/component: metrics
         app.kubernetes.io/part-of: observability
+      metricLabels:
+        alias: relay-a
+        group: core
     ingressFrom:
       - namespaceSelector:
           matchLabels:
@@ -533,6 +533,22 @@ spec:
 for a scraper whose pod or namespace cannot carry `dingo.blinklabs.io/metrics=allowed`.
 Labelled clients stay admitted, because the operator scrapes each node's metrics
 with that label. Peers are validated like `apis.ingressFrom`.
+The operator's own pod is admitted from its namespace (`POD_NAMESPACE`, or the
+service-account namespace file) even when that namespace does not carry the
+label.
+
+`spec.metrics.podMonitor.metricLabels` adds fixed labels to every scraped series
+through PodMonitor relabelings. Unlike `spec.podLabels` it leaves the pod
+template alone, so adding or changing one does not restart the node. Keys must
+be Prometheus label names; the `__` prefix, `instance`, `job`, `namespace`,
+`pod`, `container`, `endpoint`, `cardano_network`, `cardano_service` and keys
+also in `spec.podLabels` are rejected.
+
+When moving a node from the dingo Helm chart, the operator's PodMonitor has the
+node's name, which is the chart release's PodMonitor name too. The operator
+adopts an existing object of that name, and Helm then keeps reverting it. Turn
+off the chart's PodMonitor first, then set `metrics.podMonitor.enabled`. Keeping
+the name keeps the series' `job` label (`<namespace>/<name>`) continuous.
 
 The managed NetworkPolicy admits only enabled API ports. `apis.ingressFrom` uses
 standard NetworkPolicy peers; each peer's namespace and pod selectors are ANDed.

@@ -15,9 +15,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSplitNamespaces(t *testing.T) {
@@ -35,4 +38,16 @@ func TestSplitNamespaces(t *testing.T) {
 			assert.Equal(t, tt.want, splitNamespaces(tt.in))
 		})
 	}
+}
+
+func TestOperatorNamespace(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "namespace")
+	require.NoError(t, os.WriteFile(file, []byte("from-file\n"), 0o600))
+	missing := filepath.Join(dir, "missing")
+
+	assert.Equal(t, "from-env", operatorNamespace("from-env", file))
+	assert.Equal(t, "from-env", operatorNamespace(" from-env ", file))
+	assert.Equal(t, "from-file", operatorNamespace("", file))
+	assert.Empty(t, operatorNamespace("", missing))
 }

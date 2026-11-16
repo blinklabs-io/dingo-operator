@@ -85,11 +85,29 @@ const MetricsAccessLabel = "dingo.blinklabs.io/metrics"
 func BuildNetworkPolicy(
 	dn *dingov1alpha1.DingoNode,
 ) *networkingv1.NetworkPolicy {
+	return BuildNetworkPolicyFor(dn, PolicyOptions{})
+}
+
+// PolicyOptions carries what the node's NetworkPolicy needs from outside the
+// DingoNode.
+type PolicyOptions struct {
+	// OperatorNamespace is the namespace the operator runs in. When set, the
+	// metrics rule admits the operator's labelled pod from it whether or not
+	// the namespace carries the metrics access label. Empty keeps the
+	// labelled-namespace requirement.
+	OperatorNamespace string
+}
+
+// BuildNetworkPolicyFor is BuildNetworkPolicy with options.
+func BuildNetworkPolicyFor(
+	dn *dingov1alpha1.DingoNode,
+	opts PolicyOptions,
+) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	metricsPort := intstr.FromInt32(portMetrics)
 
 	metricsIngress := networkingv1.NetworkPolicyIngressRule{
-		From: metricsPeers(dn),
+		From: metricsPeers(dn, opts.OperatorNamespace),
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Protocol: &tcp, Port: &metricsPort},
 		},

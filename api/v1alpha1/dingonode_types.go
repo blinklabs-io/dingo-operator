@@ -480,6 +480,14 @@ type PodMonitorSpec struct {
 	// dingo.blinklabs.io/ prefix are refused.
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
+	// MetricLabels are fixed labels added to every scraped series through
+	// PodMonitor relabelings, for example alias or group. Unlike podLabels
+	// they do not change the pod template, so changing them does not restart
+	// the node. Keys must be Prometheus label names; keys starting with __,
+	// the target labels instance, job, namespace, pod, container and endpoint,
+	// cardano_network, cardano_service and podLabels keys are refused.
+	// +optional
+	MetricLabels map[string]string `json:"metricLabels,omitempty"`
 }
 
 // MetricsSpec configures metrics exposure for the managed node.

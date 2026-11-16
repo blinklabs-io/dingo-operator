@@ -111,6 +111,11 @@ type DingoNodeReconciler struct {
 	// The manager's Secret cache must be scoped to the namespaces the operator
 	// may list (KeyBundleCacheOptions); leave it false otherwise.
 	WatchKeyBundles bool
+	// OperatorNamespace is the namespace the operator runs in. Node
+	// NetworkPolicies admit the operator's metrics scrape from it even when
+	// the namespace lacks the metrics access label. Empty keeps the
+	// labelled-namespace requirement.
+	OperatorNamespace string
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex
@@ -748,7 +753,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 	}
 	if err := r.upsertNetworkPolicy(
-		ctx, dn, resources.BuildNetworkPolicy(served),
+		ctx, dn, resources.BuildNetworkPolicyFor(
+			served,
+			resources.PolicyOptions{OperatorNamespace: r.OperatorNamespace},
+		),
 	); err != nil {
 		return fmt.Errorf("apply networkpolicy: %w", err)
 	}

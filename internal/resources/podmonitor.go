@@ -17,6 +17,7 @@ package resources
 import (
 	"maps"
 	"slices"
+	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -69,12 +70,7 @@ func BuildPodMonitor(dn *dingov1alpha1.DingoNode) *unstructured.Unstructured {
 				"interval": interval,
 				// Name the series by pod rather than by pod IP and port,
 				// which change when the pod is recreated.
-				"relabelings": []any{
-					map[string]any{
-						"sourceLabels": []any{"__meta_kubernetes_pod_name"},
-						"targetLabel":  "instance",
-					},
-				},
+				"relabelings": relabelings(dn),
 			},
 		},
 	}
@@ -96,6 +92,26 @@ func toInterfaceMap(in map[string]string) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// relabelings names each series by pod rather than by pod IP and port, which
+// change when the pod is recreated, then adds spec.metrics.podMonitor
+// metricLabels as fixed labels. A replacement is expanded like a regexp
+// template, so each $ is doubled to stay literal.
+func relabelings(dn *dingov1alpha1.DingoNode) []any {
+	labels := dn.Spec.Metrics.PodMonitor.MetricLabels
+	out := make([]any, 0, 1+len(labels))
+	out = append(out, map[string]any{
+		"sourceLabels": []any{"__meta_kubernetes_pod_name"},
+		"targetLabel":  "instance",
+	})
+	for _, key := range sortedKeys(labels) {
+		out = append(out, map[string]any{
+			"targetLabel": key,
+			"replacement": strings.ReplaceAll(labels[key], "$", "$$"),
+		})
 	}
 	return out
 }

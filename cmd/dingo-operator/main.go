@@ -140,6 +140,10 @@ func main() {
 
 		TipStallThreshold: tipStallThreshold,
 		WatchKeyBundles:   len(watchNamespaces) > 0,
+		OperatorNamespace: operatorNamespace(
+			os.Getenv("POD_NAMESPACE"),
+			serviceAccountNamespaceFile,
+		),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(
@@ -199,4 +203,21 @@ func splitNamespaces(list string) []string {
 		}
 	}
 	return out
+}
+
+// serviceAccountNamespaceFile holds the pod's namespace when the service
+// account token is mounted.
+const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// operatorNamespace returns env when set, else the contents of file (the
+// service-account namespace file), else "".
+func operatorNamespace(env, file string) string {
+	if ns := strings.TrimSpace(env); ns != "" {
+		return ns
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

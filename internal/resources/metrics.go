@@ -17,9 +17,12 @@ package resources
 import (
 	"fmt"
 	"net"
+	"regexp"
+	"slices"
 	"strings"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
@@ -52,8 +55,58 @@ func ValidateMetrics(dn *dingov1alpha1.DingoNode) error {
 			)
 		}
 	}
+	if err := validateMetricLabels(dn); err != nil {
+		return err
+	}
 	return validateIngressPeers("metrics.ingressFrom", dn.Spec.Metrics.IngressFrom)
 }
+
+// reservedMetricLabels are the series labels Prometheus or the PodMonitor
+// already set; a fixed value would overwrite them on every series.
+var reservedMetricLabels = []string{
+	"instance", "job", "namespace", "pod", "container", "endpoint",
+	"cardano_network", "cardano_service",
+}
+
+// validateMetricLabels rejects metricLabels keys that are not Prometheus
+// label names, that Prometheus reserves (the __ prefix), that would
+// overwrite a target label, or that podLabels already copies onto the series
+// (two sources for one label would fight).
+func validateMetricLabels(dn *dingov1alpha1.DingoNode) error {
+	for _, key := range sortedKeys(dn.Spec.Metrics.PodMonitor.MetricLabels) {
+		if !prometheusLabelName.MatchString(key) {
+			return fmt.Errorf(
+				"metrics.podMonitor.metricLabels key %q is not a Prometheus "+
+					"label name ([a-zA-Z_][a-zA-Z0-9_]*)",
+				key,
+			)
+		}
+		if strings.HasPrefix(key, "__") {
+			return fmt.Errorf(
+				"metrics.podMonitor.metricLabels key %q: the __ prefix is "+
+					"reserved by Prometheus",
+				key,
+			)
+		}
+		if slices.Contains(reservedMetricLabels, key) {
+			return fmt.Errorf(
+				"metrics.podMonitor.metricLabels key %q would overwrite a "+
+					"target label",
+				key,
+			)
+		}
+		if _, ok := dn.Spec.PodLabels[key]; ok {
+			return fmt.Errorf(
+				"metrics.podMonitor.metricLabels key %q is also in podLabels, "+
+					"which already copies it onto the series",
+				key,
+			)
+		}
+	}
+	return nil
+}
+
+var prometheusLabelName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func podMonitorLabelReserved(key string) bool {
 	switch key {
@@ -65,13 +118,33 @@ func podMonitorLabelReserved(key string) bool {
 	return strings.HasPrefix(key, "dingo.blinklabs.io/")
 }
 
-// metricsPeers returns who may scrape the metrics port: labelled clients, then
-// the spec's peers. The labelled grant always stays, because the operator
-// carries that label and scrapes every node for KES and wedge status; spec
-// peers replacing it would blind the operator. The spec's peers are copied so
-// the policy never aliases the DingoNode it was built from.
-func metricsPeers(dn *dingov1alpha1.DingoNode) []networkingv1.NetworkPolicyPeer {
+// metricsPeers returns who may scrape the metrics port: labelled clients, the
+// operator's labelled pod in its own namespace, then the spec's peers. The
+// labelled grant always stays, because the operator carries that label and
+// scrapes every node for KES and wedge status; spec peers replacing it would
+// blind the operator. The operator-namespace peer lets that scrape through
+// when the operator's namespace does not carry the label; in the node's own
+// namespace the pod-only peer already admits it. The spec's peers are copied
+// so the policy never aliases the DingoNode it was built from.
+func metricsPeers(
+	dn *dingov1alpha1.DingoNode,
+	operatorNamespace string,
+) []networkingv1.NetworkPolicyPeer {
 	peers := labelledClientPeers(MetricsAccessLabel)
+	if operatorNamespace != "" && operatorNamespace != dn.Namespace {
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					corev1.LabelMetadataName: operatorNamespace,
+				},
+			},
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					MetricsAccessLabel: NodeToClientAccessAllowed,
+				},
+			},
+		})
+	}
 	for i := range dn.Spec.Metrics.IngressFrom {
 		var peer networkingv1.NetworkPolicyPeer
 		dn.Spec.Metrics.IngressFrom[i].DeepCopyInto(&peer)
