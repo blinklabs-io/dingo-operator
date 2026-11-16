@@ -774,8 +774,9 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   `lcommon.PoolId.String`) and normalizes it; Dingo labels them only while the
   node forges for more than one pool, so a node left with one pool is read from
   the unlabelled series. The loaded counter is
-  `dingo_forge_opcert_counter_loaded` (the name in Dingo v0.94.0; the
-  single-pool scrape still reads `dingo_forge_opcert_counter`). One
+  `dingo_forge_opcert_counter_loaded`, labelled or not
+  (`forgestatus.Status.OpCertCounter` for the unlabelled one, the field a
+  single-pool node reads). One
   `GetOpCertCounters` answer serves every pool (`onchain.PoolsFetcher`, same
   refresh interval and fail-open behaviour as one pool, per-pool provenance by
   pool ID). Node status summarizes: `status.kes` is the pool with the fewest
