@@ -214,8 +214,10 @@ operators.
   NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
-- **Safe HA** — `SingleActive` is the only supported strategy: exactly one
-  forger, with reschedule on failure. `ActiveStandby` is rejected by
+- **Safe HA** — `SingleActive` is the only supported strategy: one forger per
+  pool, with reschedule on failure. Producers that all sign through the same
+  `spec.blockProducer.signingAgent` deployment are the exception: the producer
+  fence described below does not apply to them. `ActiveStandby` is rejected by
   validation until fenced failover is implemented. A block producer gets
   a PodDisruptionBudget that keeps its one pod available, so `kubectl drain` of
   its node does not complete. Set
@@ -330,6 +332,30 @@ or list on the same network, and the refusal message names the pool. A pool
 left out of the pod for its keys stays claimed, since the spec and the Secret
 still name it. Its pod template records the pools it staged as a sorted,
 comma-separated `dingo.blinklabs.io/keys-pool`, and mounts one Secret per pool.
+
+Two block producers that both sign through `spec.blockProducer.signingAgent` are
+not fenced against each other. For such a pair, the same pool on the same
+network, the same keys Secret name in a namespace and the same keys checksum
+are not conflicts: neither is refused with `DuplicateForger`, held or scaled to
+zero, so a pool can have a second producer that keeps forging when one node is
+lost. This holds because the Bursa KES agent's shared slot guard signs at most
+one header per pool and slot across agent replicas, and an agent-signed producer
+holds no KES key to sign a block on its own. The operator cannot verify that
+two producers share one agent store: the guarantee depends on them signing
+through the same agent deployment, and two producers pointed at independent
+agents are not protected from a double forge. Every other pair keeps the fence
+described above, including cross-namespace, held-template, restage and
+invalid-spec halts: when either producer has no `signingAgent`, a local
+`kes.skey` is a KES key that can sign, so the older still keeps the keys. A
+workload counts as agent-signed from what it carries, not from the DingoNode
+spec: the `dingo` container has a literal `CARDANO_SHELLEY_KES_AGENT_ADDRESS`
+and no `CARDANO_SHELLEY_KES_KEY`, with no `envFrom`, command or arguments that
+could set either. A node whose spec names an agent but whose StatefulSet
+template or running pod still has a local KES key, as when the template is held
+at its earlier render, is fenced as a local producer until that workload stops.
+Stopped, it stays at zero replicas while its template is held at that render,
+for one while its agent client certificate Secret is incomplete; the replicas
+return with the agent-signed template.
 
 ## Installation
 
