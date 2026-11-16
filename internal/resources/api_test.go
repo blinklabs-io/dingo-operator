@@ -258,6 +258,25 @@ func TestAPIIngressPeerValidation(t *testing.T) {
 				IPBlock: &networkingv1.IPBlock{CIDR: "not-a-cidr"},
 			},
 		},
+		{
+			name: "except outside CIDR",
+			peer: networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR:   "192.0.2.0/24",
+					Except: []string{"198.51.100.0/25"},
+				},
+			},
+		},
+		{
+			name: "selector requirement without values",
+			peer: networkingv1.NetworkPolicyPeer{
+				PodSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key: "app", Operator: metav1.LabelSelectorOpIn,
+					}},
+				},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dn := apiNode()

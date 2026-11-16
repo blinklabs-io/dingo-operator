@@ -225,6 +225,67 @@ func TestValidateMetrics(t *testing.T) {
 			}},
 			wantErr: "metrics.ingressFrom[0].ipBlock.except[0] is invalid",
 		},
+		{
+			name: "except outside cidr",
+			peers: []networkingv1.NetworkPolicyPeer{{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR:   "10.0.0.0/8",
+					Except: []string{"192.168.0.0/16"},
+				},
+			}},
+			wantErr: "metrics.ingressFrom[0].ipBlock.except[0] must be a strict subset",
+		},
+		{
+			name: "except same prefix",
+			peers: []networkingv1.NetworkPolicyPeer{{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR:   "10.0.0.0/8",
+					Except: []string{"10.0.0.0/8"},
+				},
+			}},
+			wantErr: "metrics.ingressFrom[0].ipBlock.except[0] must be a strict subset",
+		},
+		{
+			name: "except broader prefix",
+			peers: []networkingv1.NetworkPolicyPeer{{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR:   "10.1.0.0/16",
+					Except: []string{"10.0.0.0/8"},
+				},
+			}},
+			wantErr: "metrics.ingressFrom[0].ipBlock.except[0] must be a strict subset",
+		},
+		{
+			name: "pod selector requirement without values",
+			peers: []networkingv1.NetworkPolicyPeer{{
+				PodSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key: "app", Operator: metav1.LabelSelectorOpIn,
+					}},
+				},
+			}},
+			wantErr: "metrics.ingressFrom[0].podSelector",
+		},
+		{
+			name: "namespace selector requirement without values",
+			peers: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key: "team", Operator: metav1.LabelSelectorOpIn,
+					}},
+				},
+			}},
+			wantErr: "metrics.ingressFrom[0].namespaceSelector",
+		},
+		{
+			name: "invalid selector label key",
+			peers: []networkingv1.NetworkPolicyPeer{{
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"bad key": "x"},
+				},
+			}},
+			wantErr: "metrics.ingressFrom[0].podSelector",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

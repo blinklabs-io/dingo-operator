@@ -21,7 +21,10 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 // ValidateMetrics rejects PodMonitor labels that would replace the
@@ -78,10 +81,12 @@ func metricsPeers(dn *dingov1alpha1.DingoNode) []networkingv1.NetworkPolicyPeer 
 }
 
 // validateIngressPeers rejects NetworkPolicy peers the API server would refuse
-// (ipBlock with a selector, bad CIDRs) or read as "everyone" (an empty peer),
-// naming the field so the error points at the spec.
+// (ipBlock with a selector, an invalid selector, bad CIDRs, an except that is
+// not a strict subset of its cidr) or read as "everyone" (an empty peer),
+// naming the field so the error points at the spec. A peer the API server
+// refuses fails the whole NetworkPolicy apply, and the reconcile stops there.
 func validateIngressPeers(
-	field string,
+	prefix string,
 	peers []networkingv1.NetworkPolicyPeer,
 ) error {
 	for i, peer := range peers {
@@ -89,29 +94,56 @@ func validateIngressPeers(
 		if peer.IPBlock != nil && selectors {
 			return fmt.Errorf(
 				"%s[%d] cannot combine ipBlock with selectors",
-				field, i,
+				prefix, i,
 			)
 		}
 		if peer.IPBlock == nil && !selectors {
 			return fmt.Errorf(
 				"%s[%d] must set ipBlock or a selector",
-				field, i,
+				prefix, i,
 			)
+		}
+		path := field.NewPath(fmt.Sprintf("%s[%d]", prefix, i))
+		for _, sel := range []struct {
+			name     string
+			selector *metav1.LabelSelector
+		}{
+			{"podSelector", peer.PodSelector},
+			{"namespaceSelector", peer.NamespaceSelector},
+		} {
+			errs := metav1validation.ValidateLabelSelector(
+				sel.selector,
+				metav1validation.LabelSelectorValidationOptions{},
+				path.Child(sel.name),
+			)
+			if len(errs) > 0 {
+				return errs.ToAggregate()
+			}
 		}
 		if peer.IPBlock == nil {
 			continue
 		}
-		if _, _, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
+		_, cidr, err := net.ParseCIDR(peer.IPBlock.CIDR)
+		if err != nil {
 			return fmt.Errorf(
 				"%s[%d].ipBlock.cidr is invalid: %w",
-				field, i, err,
+				prefix, i, err,
 			)
 		}
+		cidrBits, _ := cidr.Mask.Size()
 		for j, excluded := range peer.IPBlock.Except {
-			if _, _, err := net.ParseCIDR(excluded); err != nil {
+			_, except, err := net.ParseCIDR(excluded)
+			if err != nil {
 				return fmt.Errorf(
 					"%s[%d].ipBlock.except[%d] is invalid: %w",
-					field, i, j, err,
+					prefix, i, j, err,
+				)
+			}
+			exceptBits, _ := except.Mask.Size()
+			if !cidr.Contains(except.IP) || exceptBits <= cidrBits {
+				return fmt.Errorf(
+					"%s[%d].ipBlock.except[%d] must be a strict subset of cidr %s",
+					prefix, i, j, peer.IPBlock.CIDR,
 				)
 			}
 		}
