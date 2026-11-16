@@ -739,8 +739,11 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   renders as a node that does not forge (no key mounts, no
   `CARDANO_BLOCK_PRODUCER`).
 - Bundles. Each pool's Secret is validated by `validateBundle` (the body of
-  `validateKeysSecret`) against that pool's ID and its own `status.pools`
-  counters, on-chain floor and KES period. A bundle that fails, a missing Secret
+  `validateKeysSecret`) against that pool's ID, its own `status.pools`
+  counters and on-chain floor, and the KES period the node last reported for
+  any pool (`nodeKESPeriod`: the period follows from the slot, so an
+  unobserved or dropped pool is still checked for expiry). A bundle that fails,
+  a missing Secret
   or, with more than one pool, a vote key, drops that pool from the YAML, the
   volumes, the approvals and `keys-pool`; the other pools keep forging after
   one pod roll, and the pool is reported in `status.pools` (`keysValid: false`,
@@ -793,7 +796,11 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   `keys-pool` (`resources.SplitKeysPools`/`JoinKeysPools`; a single-pool value
   is the one-item case) and mounts one Secret per pool
   (`resources.KeysSecretNames`); `orphanHolds`, `rollsPastUnknownPool` and
-  `restagesOtherPool` iterate over both. A list template whose Secret now
+  `restagesOtherPool` iterate over both; `rollsPastUnknownPool` passes a list
+  node only when its running pod recorded every listed pool, since a pool new
+  to it may be the one the unknown pod forges. `nodeIdentity` records the
+  spec's pools and Secrets before reading any Secret, so a failed read still
+  returns them. A list template whose Secret now
   holds another pool's opcert is judged to restage another pool
   (`restagesOtherPoolOfList`), since Dingo takes the pool from the opcert. A
   list node's `keys-checksum` is not any Secret's checksum, so checksum
