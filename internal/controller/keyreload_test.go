@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
@@ -973,4 +974,42 @@ func TestDecideKeysRolloutAgentAdoptedCounter(t *testing.T) {
 			assert.False(t, got.timedOut)
 		})
 	}
+}
+
+// scrapeTextFetcher serves a Prometheus text exposition through the real
+// forgestatus parser, standing in for a Dingo /metrics scrape.
+type scrapeTextFetcher struct{ body string }
+
+func (f scrapeTextFetcher) Fetch(
+	_ context.Context,
+	_ string,
+) (*forgestatus.Status, error) {
+	return forgestatus.Parse(strings.NewReader(f.body))
+}
+
+// A scrape of Dingo's real exposition must set status.opCert.loadedCounter and
+// confirm a pending in-place reload.
+func TestRefreshForgeStatusReadsLoadedOpCertFromDingoExposition(t *testing.T) {
+	t.Parallel()
+	const body = `# TYPE dingo_forge_opcert_counter_loaded gauge
+dingo_forge_opcert_counter_loaded 4
+# TYPE dingo_forge_opcert_counter_onchain gauge
+dingo_forge_opcert_counter_onchain 3
+cardano_node_metrics_currentKESPeriod_int 900
+cardano_node_metrics_remainingKESPeriods_int 55
+`
+	dn := blockProducerNode("bp", "bp-ns", "keys", "pool")
+	dn.Status.OpCert.InPlaceReload = &dingov1alpha1.InPlaceReloadStatus{
+		Checksum: "new", Counter: 4,
+	}
+	r := &DingoNodeReconciler{
+		ForgeStatus: scrapeTextFetcher{body: body},
+		Recorder:    events.NewFakeRecorder(1),
+	}
+
+	r.refreshForgeStatus(context.Background(), dn)
+
+	require.NotNil(t, dn.Status.OpCert.LoadedCounter)
+	assert.Equal(t, int64(4), *dn.Status.OpCert.LoadedCounter)
+	assert.True(t, dn.Status.OpCert.InPlaceReload.Applied)
 }

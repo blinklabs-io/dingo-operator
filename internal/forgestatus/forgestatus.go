@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,9 +45,11 @@ const (
 	metricSlotNum        = "cardano_node_metrics_slotNum_int"
 	metricPipelineStuck  = "dingo_ledger_pipeline_stuck"
 	metricPipelineHalted = "dingo_ledger_pipeline_halted"
-	// The issue counter of the opcert the forger is using, which changes when
-	// Dingo reloads its credentials in place.
-	metricOpCertCounter = "dingo_forge_opcert_counter"
+	// The issue counter of the opcert the forger has loaded, which changes
+	// when Dingo reloads its credentials in place. It is NaN while no opcert
+	// is loaded. Dingo also exports dingo_forge_opcert_counter_onchain, the
+	// ledger's counter, which is a different value and is not read here.
+	metricOpCertCounter = "dingo_forge_opcert_counter_loaded"
 )
 
 // Status is the observed forge/KES state of a node.
@@ -165,8 +168,11 @@ func Parse(r io.Reader) (*Status, error) {
 			s.HasPipelineHaltedMetric = true
 			s.PipelineHalted = v != 0
 		case metricOpCertCounter:
-			s.OpCertCounter = int64(v)
-			s.HasOpCertCounter = true
+			// NaN: no opcert is loaded.
+			if !math.IsNaN(v) {
+				s.OpCertCounter = int64(v)
+				s.HasOpCertCounter = true
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
