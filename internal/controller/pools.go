@@ -109,7 +109,7 @@ func syncPoolStatuses(dn *dingov1alpha1.DingoNode) {
 }
 
 // poolChecks returns what a pool's bundle is validated against: the pool's own
-// counters and KES period, as last observed.
+// counters, and the KES period the node last reported (nodeKESPeriod).
 func poolChecks(
 	dn *dingov1alpha1.DingoNode,
 	p dingov1alpha1.BlockProducerPool,
@@ -128,9 +128,21 @@ func poolChecks(
 		agent:            true,
 		onChainFloor:     floor,
 		onDisk:           ps.OnDiskCounter,
-		kesPeriod:        ps.KES.CurrentPeriod,
+		kesPeriod:        nodeKESPeriod(dn),
 		maxKESEvolutions: bp.MaxKESEvolutions,
 	}
+}
+
+// nodeKESPeriod is the current KES period the node last reported for any of
+// its pools. The period follows from the slot, so it is the same for every
+// pool: one the node has not reported on yet, or a pool left out of the node,
+// is judged by the others'. 0 means none has been reported.
+func nodeKESPeriod(dn *dingov1alpha1.DingoNode) int64 {
+	cur := dn.Status.KES.CurrentPeriod
+	for _, ps := range dn.Status.Pools {
+		cur = max(cur, ps.KES.CurrentPeriod)
+	}
+	return cur
 }
 
 // evaluatePools reads and validates each pool's keys Secret. A pool whose
