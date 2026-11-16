@@ -1568,10 +1568,26 @@ func desiredReplicas(dn *dingov1alpha1.DingoNode) int32 {
 	return 1
 }
 
+// dingoNodePredicate filters the DingoNode For watch. The reconciler writes
+// status on most passes (status.tip advances with the chain), and a status
+// write does not bump metadata.generation. Without this filter every status
+// write enqueued the node again at once, doubling the reconcile rate on a
+// single worker. Spec changes, annotation changes (a manual nudge), create
+// and delete still enqueue; RequeueAfter keeps observed state fresh.
+func dingoNodePredicate() predicate.Predicate {
+	return predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicate.AnnotationChangedPredicate{},
+	)
+}
+
 // SetupWithManager registers the reconciler and its owned types.
 func (r *DingoNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&dingov1alpha1.DingoNode{}).
+		For(
+			&dingov1alpha1.DingoNode{},
+			builder.WithPredicates(dingoNodePredicate()),
+		).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
