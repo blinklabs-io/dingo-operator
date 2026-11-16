@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,4 +50,36 @@ dingo_ledger_pipeline_halted 0
 	assert.Equal(t, int64(20), ps.KES.RemainingPeriods)
 	require.NotNil(t, ps.LoadedCounter)
 	assert.Equal(t, int64(6), *ps.LoadedCounter)
+}
+
+// status.pools describes a pool list; it does not outlive one.
+func TestReconcileResourcesClearsPoolStatusWithoutPoolList(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		node func() *dingov1alpha1.DingoNode
+	}{
+		{"single pool", func() *dingov1alpha1.DingoNode {
+			return forgerNode("bp", "ns", conflictPoolID, "keys", 0)
+		}},
+		{"relay", func() *dingov1alpha1.DingoNode {
+			dn := forgerNode("relay", "ns", "", "", 0)
+			dn.Spec.Role = dingov1alpha1.RoleRelay
+			dn.Spec.BlockProducer = nil
+			return dn
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := tc.node()
+			dn.Status.Pools = []dingov1alpha1.PoolStatus{{
+				PoolID: otherPoolID, KeysValid: true, OnDiskCounter: 3,
+			}}
+			c := conflictClient(t, dn)
+			require.NoError(
+				t, reconcilerFor(c).reconcileResources(context.Background(), dn),
+			)
+			assert.Empty(t, dn.Status.Pools)
+		})
+	}
 }

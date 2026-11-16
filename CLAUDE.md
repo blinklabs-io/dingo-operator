@@ -768,7 +768,8 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   (`agentBundleProblem` and the control role are Auto-only), so a per-pool
   opcert is checked against its Secret and chain counters, never against what
   the agent serves; Dingo checks it against the agent when it loads it.
-- Status. `status.pools[]` (keyed by hex pool ID) holds `keysValid`,
+- Status. `status.pools[]` (keyed by hex pool ID, cleared once the node no
+  longer uses a pool list) holds `keysValid`,
   reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter` and
   `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
   `lcommon.PoolId.String`) and normalizes it; Dingo labels them only while the

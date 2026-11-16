@@ -504,6 +504,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// externally-delivered key/opcert swap takes effect. The Secret is read via
 	// the uncached APIReader (get-only, no informer/watch) to avoid holding the
 	// cluster-wide Secret cache this operator must not have.
+	if !resources.UsesPoolList(dn) {
+		// status.pools describes a pool list; a node without one has none.
+		dn.Status.Pools = nil
+	}
 	if resources.UsesPoolList(dn) && r.APIReader != nil {
 		keep, msg, err := r.reconcilePoolKeys(ctx, dn, &opts)
 		if err != nil {
