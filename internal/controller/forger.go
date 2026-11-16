@@ -200,12 +200,15 @@ func (r *DingoNodeReconciler) nodeIdentity(
 	if bp != nil && len(bp.Pools) > 0 {
 		// Every listed pool is claimed, a pool left out of the pod for its
 		// keys included: dropping it must not free the pool for another node
-		// while the Secret and the spec still name it.
+		// while the Secret and the spec still name it. The spec's claims come
+		// first, so a failed Secret read still returns all of them.
 		for _, p := range bp.Pools {
 			if pool := normalizedPoolID(p.PoolID); pool != "" {
 				id.pools = append(id.pools, pool)
 			}
 			id.secrets = append(id.secrets, p.Keys.SecretRef)
+		}
+		for _, p := range bp.Pools {
 			pool, _, keyed, err := r.keysPoolID(
 				ctx, id.namespace, p.Keys.SecretRef,
 			)
