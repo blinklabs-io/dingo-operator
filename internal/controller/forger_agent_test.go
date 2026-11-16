@@ -462,3 +462,140 @@ func TestReconcileAgentForgerAndOrphanPodWithKeysBundle(t *testing.T) {
 		})
 	}
 }
+
+// A producer switching to an agent is halted by the fence while its workload
+// still holds a local KES key. Halted, it counts as agent-signed and is
+// admitted beside the older agent-signed producer, but while its pod template
+// is held at the local-KES render it stays at zero replicas: the held template
+// would start a local signer outside the agent's slot guard. Once the agent
+// template can be applied, the template and replicas land together.
+func TestReconcileSwitchingProducerStaysHaltedWhileTemplateHeld(t *testing.T) {
+	t.Parallel()
+	crt, key := testClientCertPair(t)
+	for _, tt := range []struct {
+		name   string
+		mtls   bool
+		reason string
+		// release makes the agent template applicable.
+		release func(ctx context.Context, c client.Client, keys *corev1.Secret) error
+	}{
+		{
+			name:   "incomplete agent client certificate",
+			mtls:   true,
+			reason: reasonSigningAgentCertInvalid,
+			release: func(ctx context.Context, c client.Client, _ *corev1.Secret) error {
+				var cert corev1.Secret
+				if err := c.Get(ctx, types.NamespacedName{
+					Name: "agent-client", Namespace: "ns",
+				}, &cert); err != nil {
+					return err
+				}
+				cert.Data[corev1.TLSPrivateKeyKey] = key
+				return c.Update(ctx, &cert)
+			},
+		},
+		{
+			name:   "missing keys Secret",
+			reason: "KeysSecretMissing",
+			release: func(ctx context.Context, c client.Client, keys *corev1.Secret) error {
+				return c.Create(ctx, keys)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pool, full := poolKeys(t)
+			data := withoutKey(full, keyFileKES)
+			older := agentForger("old", "ns", pool, "k-old", time.Hour)
+			switching := agentForger("new", "ns", pool, "k-new", 0)
+			objs := []client.Object{older, keysSecret("k-old", "ns", data)}
+			newKeys := keysSecret("k-new", "ns", data)
+			if tt.mtls {
+				switching.Spec.BlockProducer.SigningAgent =
+					&dingov1alpha1.SigningAgentSpec{
+						Address:             "kes-agent.signing.svc:7000",
+						ClientCertSecretRef: "agent-client",
+					}
+				objs = append(objs, newKeys, &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "agent-client", Namespace: "ns",
+					},
+					Data: map[string][]byte{corev1.TLSCertKey: crt},
+				})
+			}
+			c := conflictClient(t, objs...)
+			r := reconcilerFor(c)
+			reconcileNode(t, r, older)
+			require.True(t, forging(t, c, older))
+
+			// The workload was rendered before the switch: a local KES key.
+			pre := localForger("new", "ns", pool, "k-new", 0)
+			local := resources.BuildStatefulSet(pre, resources.RenderOptions{
+				Replicas: 1, MountKeys: true, KeysPool: pool,
+				KeysChecksum: keysChecksum(keysSecret("k-new", "ns", full)),
+			})
+			local.CreationTimestamp = metav1.Now()
+			local.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: dingov1alpha1.GroupVersion.String(),
+				Kind:       "DingoNode",
+				Name:       switching.Name,
+				UID:        switching.UID,
+				Controller: new(true),
+			}}
+			require.NoError(t, c.Create(ctx, switching))
+			require.NoError(t, c.Create(ctx, local))
+			reconcileNode(t, r, switching)
+			require.True(t, refusedAsDuplicate(t, c, switching),
+				degradedMessage(t, c, switching))
+			require.False(t, forging(t, c, switching))
+
+			// Halted, it is admitted, but its template is held at the
+			// local-KES render: it must not restart.
+			for range 2 {
+				reconcileNode(t, r, switching)
+				var sts appsv1.StatefulSet
+				require.NoError(t, c.Get(
+					ctx, client.ObjectKeyFromObject(switching), &sts,
+				))
+				require.True(t, forgesWithLocalKES(sts.Spec.Template.Spec),
+					"the template is held at the local-KES render")
+				assert.False(t, forging(t, c, switching),
+					"a held local-KES template must not restart")
+				assert.Equal(t, tt.reason, degradedReason(t, c, switching),
+					degradedMessage(t, c, switching))
+				assert.True(t, forging(t, c, older))
+			}
+
+			// Once the agent template applies, it rolls and forges.
+			require.NoError(t, tt.release(ctx, c, newKeys))
+			reconcileNode(t, r, switching)
+			var sts appsv1.StatefulSet
+			require.NoError(t, c.Get(
+				ctx, client.ObjectKeyFromObject(switching), &sts,
+			))
+			assert.True(t, resources.PodSignsThroughAgent(
+				sts.Spec.Template.Spec,
+			))
+			assert.True(t, forging(t, c, switching))
+			assert.False(t, refusedAsDuplicate(t, c, switching),
+				degradedMessage(t, c, switching))
+			assert.True(t, forging(t, c, older))
+		})
+	}
+}
+
+func degradedReason(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+) string {
+	t.Helper()
+	var got dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(n), &got,
+	))
+	d := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	if d == nil {
+		return ""
+	}
+	return d.Reason
+}

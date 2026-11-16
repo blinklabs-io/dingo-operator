@@ -290,6 +290,9 @@ and no `CARDANO_SHELLEY_KES_KEY`, with no `envFrom`, command or arguments that
 could set either. A node whose spec names an agent but whose StatefulSet
 template or running pod still has a local KES key, as when the template is held
 at its earlier render, is fenced as a local producer until that workload stops.
+Stopped, it stays at zero replicas while its template is held at that render,
+for one while its agent client certificate Secret is incomplete; the replicas
+return with the agent-signed template.
 
 ## Installation
 
