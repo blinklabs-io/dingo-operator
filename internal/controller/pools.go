@@ -490,29 +490,86 @@ func (r *DingoNodeReconciler) rejectAllPoolKeys(
 	}
 }
 
-// runningPools returns the pools the node's live StatefulSet template stages.
-// Its pod forges them with the keys it loaded whatever their bundles' verdict
-// is now: a template held because every bundle, or the signing agent
-// certificate, was refused keeps running pools that are not accepted. It is
-// empty when the template cannot be read or records no pools.
+// scrapedPodRead is the pod refreshForgeStatus scrapes, as read at one moment:
+// nil when there is none, err when it could not be read.
+type scrapedPodRead struct {
+	pod *corev1.Pod
+	err error
+}
+
+// readScrapedPod reads replica 0 of dn, the pod whose metrics a block
+// producer's status is taken from. Pods are listed, not read by name: the
+// operator may list them but not get them, and holds no Pod informer.
+func (r *DingoNodeReconciler) readScrapedPod(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) scrapedPodRead {
+	if r.APIReader == nil && r.Client == nil {
+		return scrapedPodRead{}
+	}
+	var pods corev1.PodList
+	if err := r.uncachedReader().List(ctx, &pods,
+		client.InNamespace(dn.Namespace),
+		client.MatchingLabels{resources.NodeLabel: dn.Name},
+	); err != nil {
+		return scrapedPodRead{err: err}
+	}
+	name := dn.Name + "-0"
+	for i := range pods.Items {
+		if pods.Items[i].Name == name {
+			return scrapedPodRead{pod: &pods.Items[i]}
+		}
+	}
+	return scrapedPodRead{}
+}
+
+// runningPools returns the pools the scraped pod stages, from the keys-pool
+// annotation its template gave it, and whether they are known. before is the
+// pod as read before the scrape; it is read again here, and only the same pod
+// at both reads is the one that answered. During a roll the StatefulSet
+// template already records the next pools while the old pod still runs and
+// exports its series, so the template does not say whose they are. When the
+// pod changed, or either read failed, the pools are unknown. With no pod at
+// either read, the pools the live StatefulSet template stages stand in. Its
+// pod forges them with the keys it loaded whatever their bundles' verdict is
+// now: a template held because every bundle, or the signing agent
+// certificate, was refused keeps running pools that are not accepted. The
+// result is empty when the pod or template records no pools.
 func (r *DingoNodeReconciler) runningPools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) map[string]bool {
+	before scrapedPodRead,
+) (map[string]bool, bool) {
 	running := map[string]bool{}
-	if r.Client == nil {
-		return running
+	after := r.readScrapedPod(ctx, dn)
+	if before.err != nil || after.err != nil {
+		return nil, false
 	}
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(dn), sts); err != nil {
-		return running
+	var annotations map[string]string
+	switch {
+	case before.pod == nil && after.pod == nil:
+		if r.Client == nil {
+			return running, true
+		}
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(
+			ctx, client.ObjectKeyFromObject(dn), sts,
+		); err != nil {
+			return running, true
+		}
+		annotations = sts.Spec.Template.Annotations
+	case before.pod == nil || after.pod == nil ||
+		before.pod.UID != after.pod.UID:
+		return nil, false
+	default:
+		annotations = after.pod.Annotations
 	}
 	for _, p := range resources.SplitKeysPools(
-		sts.Spec.Template.Annotations[resources.KeysPoolAnnotation],
+		annotations[resources.KeysPoolAnnotation],
 	) {
 		running[normalizedPoolID(p)] = true
 	}
-	return running
+	return running, true
 }
 
 // poolMetricsByID returns the node's per-pool metrics keyed by normalized pool
@@ -556,14 +613,19 @@ func poolMetricsByID(
 // pool is due. A pool forges while the running template stages it (running)
 // or the node reports series labelled with it, whatever its bundle's verdict;
 // with no running template recorded, the pools whose keys were accepted stand
-// in for it.
+// in for it. When known is false the scraped pod's pools are unknown: only
+// series labelled with a pool are recorded, and every other pool keeps its
+// status and counts as unobserved.
 func (r *DingoNodeReconciler) observePools(
 	dn *dingov1alpha1.DingoNode,
 	st *forgestatus.Status,
 	running map[string]bool,
+	known bool,
 ) {
 	syncPoolStatuses(dn)
-	if len(running) == 0 {
+	if !known {
+		running = map[string]bool{}
+	} else if len(running) == 0 {
 		running = map[string]bool{}
 		for _, ps := range dn.Status.Pools {
 			if ps.KeysValid {
@@ -579,7 +641,7 @@ func (r *DingoNodeReconciler) observePools(
 	for i := range dn.Status.Pools {
 		ps := &dn.Status.Pools[i]
 		pm := byID[ps.PoolID]
-		if !running[ps.PoolID] && pm == nil {
+		if known && !running[ps.PoolID] && pm == nil {
 			// Left out of the node: nothing is forging for it.
 			ps.KES = dingov1alpha1.KESStatus{}
 			ps.LoadedCounter = nil

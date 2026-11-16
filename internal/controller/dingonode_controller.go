@@ -1023,6 +1023,12 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// exactly when /readyz fails -- a node behind, stalled or catching up is
 	// when its remaining KES periods matter most. The headless Service sets
 	// PublishNotReadyAddresses, so an unready node stays scrapable.
+	// A pool list's unlabelled series are attributed by the pod that answered,
+	// read before and after the scrape.
+	var scraped scrapedPodRead
+	if isBP && resources.UsesPoolList(dn) {
+		scraped = r.readScrapedPod(ctx, dn)
+	}
 	var statuses []*forgestatus.Status
 	var scrapeFailed bool
 	for replica := range desiredReplicas(dn) {
@@ -1104,7 +1110,8 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// replica's keys rather than an aggregate pipeline observation.
 	st := statuses[0]
 	if resources.UsesPoolList(dn) {
-		r.observePools(dn, st, r.runningPools(ctx, dn))
+		running, known := r.runningPools(ctx, dn, scraped)
+		r.observePools(dn, st, running, known)
 		return
 	}
 	r.observeLoadedOpCert(dn, st)
