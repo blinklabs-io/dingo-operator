@@ -120,10 +120,11 @@ func keysScript(dn *dingov1alpha1.DingoNode) string {
 	return prepareBlockProducerKeysScript
 }
 
-// initContainers sets the sticky bit on the data volume root, prepares private
-// key files when mounted and builds the Mithril bootstrap init container when
-// enabled. The Secret source can be widened by a pod fsGroup, so Dingo reads an
-// owner-only copy from a memory-backed volume.
+// initContainers sets the sticky bit on the data volume root, creates the
+// socket directory under /ipc, prepares private key files when mounted and
+// builds the Mithril bootstrap init container when enabled. The Secret source
+// can be widened by a pod fsGroup, so Dingo reads an owner-only copy from a
+// memory-backed volume.
 func initContainers(
 	dn *dingov1alpha1.DingoNode,
 	opts RenderOptions,
@@ -145,6 +146,24 @@ func initContainers(
 			{Name: opts.dataVolume(), MountPath: dataMountPath},
 		},
 		SecurityContext: dataStickySecurityContext(),
+		Resources:       dn.Spec.Resources,
+	}, {
+		// Runs as the pod's user, the same one Dingo runs as, so Dingo owns
+		// the socket directory: v0.94.0 accepts only a parent it or root
+		// owns. chmod sets the mode whatever the runtime's umask is.
+		Name:            ipcInitName,
+		Image:           imageRef(dn),
+		ImagePullPolicy: pullPolicy(dn),
+		Command: []string{
+			"/bin/sh",
+			"-c",
+			"mkdir -p " + ipcSocketDir + " && chmod 0755 " + ipcSocketDir,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: tmpVolumeName, MountPath: "/tmp"},
+			{Name: ipcVolumeName, MountPath: ipcMountPath},
+		},
+		SecurityContext: containerSecurityContext(),
 		Resources:       dn.Spec.Resources,
 	}}
 	if mountsBlockProducerKeys(dn, opts) {

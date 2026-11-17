@@ -514,7 +514,7 @@ func TestBuildStatefulSet(t *testing.T) {
 		sts := BuildStatefulSet(relayNode(), RenderOptions{Replicas: 1})
 		assert.Equal(
 			t,
-			[]string{dataStickyInitName, mithrilInitName},
+			[]string{dataStickyInitName, ipcInitName, mithrilInitName},
 			initContainerNames(sts.Spec.Template.Spec),
 		)
 	})
