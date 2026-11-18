@@ -314,6 +314,36 @@ func TestReconcileChartStatefulSetNetworkMismatch(t *testing.T) {
 	}
 }
 
+// The refusal is visible on the DingoNode, not only in the operator log.
+func TestReconcileSelectorMismatchSetsCondition(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	ns := "adopt-mismatch-status"
+	createNamespace(t, ctx, c, ns)
+
+	require.NoError(t, c.Create(ctx, chartStatefulSet("dingo", ns, "preprod", "")))
+	require.NoError(t, c.Create(ctx, relayNode("dingo", ns, "preview")))
+
+	key := types.NamespacedName{Name: "dingo", Namespace: ns}
+	_, err := reconcilerFor(c).Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.Error(t, err)
+	assert.True(t, apierrors.IsInvalid(err), "not an API rejection: %v", err)
+
+	var got dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(ctx, key, &got))
+	for _, typ := range []string{condReady, condDegraded} {
+		cond := meta.FindStatusCondition(got.Status.Conditions, typ)
+		require.NotNil(t, cond, "no %s condition", typ)
+		assert.Equal(t, reasonSelectorMismatch, cond.Reason, typ)
+		assert.Contains(t, cond.Message, `"dingo"`, typ)
+		assert.Contains(t, cond.Message, "selector", typ)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, condReady)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	assert.Equal(t, metav1.ConditionTrue, degraded.Status)
+}
+
 // A block producer takes over the chart StatefulSet that already forges with
 // its pool's keys without refusing itself as a duplicate and without a second
 // forger: the chart's StatefulSet is not an operator workload for the fence

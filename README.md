@@ -470,7 +470,8 @@ DingoNode of that name. Check this before creating the DingoNode. When the
 selector does not match, the operator refuses the StatefulSet before writing
 any Service: the Services and the StatefulSet stay as they were, the chart's pod
 keeps serving, and each reconcile fails with a selector error until the
-mismatch is resolved. Claim templates are immutable, so a
+mismatch is resolved. The DingoNode reports it as `Ready=False` and
+`Degraded=True` with reason `StatefulSetSelectorMismatch`. Claim templates are immutable, so a
 StatefulSet created by an earlier operator version keeps its `data` template and
 `data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
 node whose retained claims exist, it uses their template name, preferring

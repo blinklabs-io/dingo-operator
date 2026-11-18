@@ -320,6 +320,16 @@ func (r *DingoNodeReconciler) Reconcile(
 	}
 
 	if err := r.reconcileResources(ctx, dn); err != nil {
+		// The error is still returned so the retry backoff applies: the
+		// selector is immutable and only a change to the node or the
+		// StatefulSet resolves it.
+		if _, ok := errors.AsType[*selectorMismatchError](err); ok {
+			if serr := r.markNotReady(
+				ctx, dn, reasonSelectorMismatch, err,
+			); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -466,6 +476,18 @@ func (r *DingoNodeReconciler) liveConfigChecksum(
 	return sts.Spec.Template.Annotations[resources.ConfigChecksumAnnotation], nil
 }
 
+// reasonSelectorMismatch is the condition reason for a node whose same-named
+// StatefulSet has an immutable selector the operator's pod template cannot
+// satisfy.
+const reasonSelectorMismatch = "StatefulSetSelectorMismatch"
+
+// selectorMismatchError marks the refusal from checkStatefulSetSelector so
+// Reconcile can report it without reclassifying other apply failures.
+type selectorMismatchError struct{ err error }
+
+func (e *selectorMismatchError) Error() string { return e.err.Error() }
+func (e *selectorMismatchError) Unwrap() error { return e.err }
+
 // checkStatefulSetSelector refuses an existing StatefulSet whose immutable
 // selector the operator's pod template cannot satisfy. The error matches the
 // API server's rejection of that template.
@@ -487,7 +509,7 @@ func (r *DingoNodeReconciler) checkStatefulSetSelector(
 	if sel.Matches(labels.Set(tmplLabels)) {
 		return nil
 	}
-	return apierrors.NewInvalid(
+	return &selectorMismatchError{err: apierrors.NewInvalid(
 		schema.GroupKind{Group: "apps", Kind: "StatefulSet"},
 		sts.Name,
 		field.ErrorList{field.Invalid(
@@ -495,7 +517,7 @@ func (r *DingoNodeReconciler) checkStatefulSetSelector(
 			tmplLabels,
 			"`selector` does not match template `labels`",
 		)},
-	)
+	)}
 }
 
 // reconcileResources applies all child objects for the node.
