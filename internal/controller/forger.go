@@ -59,6 +59,17 @@ func unverifiedHeldf(format string, a ...any) error {
 	return &forgerHeldError{msg: fmt.Sprintf(format, a...)}
 }
 
+// manualStep is appended to a refusal of a producer the operator may not stop
+// on the other's claim: nothing it can verify shows which of the two holds
+// custody, so it stops neither and an operator must stop one.
+func manualStep(backed bool) string {
+	if backed {
+		return ""
+	}
+	return "; the operator cannot verify which of the two producers holds " +
+		"custody of the keys and stops neither: stop one of the producers"
+}
+
 // workloadState is what a workload proves about the keys it runs.
 type workloadState int
 
@@ -297,26 +308,11 @@ func (r *DingoNodeReconciler) heldBy(
 			held := heldf
 			if !backed {
 				held = unverifiedHeldf
-				// Two agent-signed producers hold no KES key to show custody
-				// of the pool, so neither is ever backed by the other. A
-				// DingoNode may always stop its own workload, so the newer one
-				// does when the older runs: that gives no one authority over
-				// another namespace, and an older producer that never ran
-				// holds nothing.
-				if resources.UsesSigningAgent(dn) && resources.UsesSigningAgent(o) {
-					up, err := r.workloadUp(ctx, o)
-					if err != nil {
-						return err
-					}
-					if up == workloadVerified {
-						held = heldf
-					}
-				}
 			}
 			return held(
 				"block producer %s/%s already forges with the same %s; only "+
-					"one DingoNode may stage a pool's keys",
-				o.Namespace, o.Name, what,
+					"one DingoNode may stage a pool's keys%s",
+				o.Namespace, o.Name, what, manualStep(backed),
 			)
 		}
 		// o is refused and halts itself, or is invalid and keeps only the
@@ -339,8 +335,8 @@ func (r *DingoNodeReconciler) heldBy(
 		}
 		return held(
 			"block producer %s/%s still runs with the same %s; waiting "+
-				"for it to stop",
-			o.Namespace, o.Name, what,
+				"for it to stop%s",
+			o.Namespace, o.Name, what, manualStep(backed),
 		)
 	}
 	return r.orphanForger(ctx, dn, mine)

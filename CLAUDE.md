@@ -599,13 +599,9 @@ is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name
 count, and if its workload is running the reconcile fails closed.
 
-Producers that sign through `spec.blockProducer.signingAgent` hold no KES key in
-their keys Secret, so nothing shows custody of the pool across namespaces and
-the older cannot halt the newer. Instead the newer of two such producers stops
-its own workload while the older one's workload runs; an older producer that
-does not run holds nothing. A producer whose spec now names an agent but whose
-held template still signs with a local KES key stays at zero replicas until the
-agent template applies.
+A producer whose spec now names a signing agent but whose held template still
+signs with a local KES key stays at zero replicas until the agent template
+applies.
 
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:

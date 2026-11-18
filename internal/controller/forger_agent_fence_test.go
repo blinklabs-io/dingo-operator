@@ -138,10 +138,11 @@ func ownedWorkload(
 
 // Two agent-signed producers of one pool in different namespaces, both already
 // running, as an upgrade from a release that did not fence them leaves them.
-// Neither may stop the other: a pool ID is public, so it is no authority over
-// another namespace's workload. The newer stops its own workload instead, so
-// exactly one keeps running, and the older is not halted.
-func TestReconcileRunningAgentSignedForgersAcrossNamespacesSelfFence(
+// A pool ID is public and an agent bundle holds no KES key, so nothing shows
+// which producer holds custody: both are refused as duplicates, neither
+// StatefulSet is stopped, and the message names the other producer and the
+// manual step.
+func TestReconcileRunningAgentSignedForgersAcrossNamespacesAreRefusedNotStopped(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -156,16 +157,42 @@ func TestReconcileRunningAgentSignedForgersAcrossNamespacesSelfFence(
 		reconcileNode(t, r, newer)
 		reconcileNode(t, r, older)
 	}
-	assert.True(t, stoppedAtZero(t, c, newer),
-		"the newer stops its own workload")
+	for _, n := range []*dingov1alpha1.DingoNode{older, newer} {
+		assert.True(t, refusedAsDuplicate(t, c, n), degradedMessage(t, c, n))
+		assert.True(t, forging(t, c, n),
+			"%s/%s is not stopped: the operator cannot verify custody",
+			n.Namespace, n.Name)
+	}
+	assert.Contains(t, degradedMessage(t, c, newer), "ns-a/bp")
+	assert.Contains(t, degradedMessage(t, c, newer), "stop one of the producers")
+	assert.Contains(t, degradedMessage(t, c, older), "ns-b/bp")
+	assert.Contains(t, degradedMessage(t, c, older), "stop one of the producers")
+}
+
+// An older agent-signed node in another namespace that names the same public
+// pool ID, with a running StatefulSet it controls, is no authority over the
+// newer producer: the newer keeps its replica and is only refused.
+func TestReconcileUntrustedOlderAgentClaimDoesNotStopNewer(t *testing.T) {
+	t.Parallel()
+	older := agentForger("squat", "ns-a", conflictPoolID, "squat-keys", time.Hour)
+	newer := agentForger("bp", "ns-b", conflictPoolID, "keys-b", 0)
+	c := conflictClient(t, older, newer,
+		ownedWorkload(older, older, conflictPoolID, 1),
+		ownedWorkload(newer, newer, conflictPoolID, 1),
+	)
+	r := reconcilerFor(c)
+	for range 2 {
+		reconcileNode(t, r, newer)
+	}
 	assert.True(t, refusedAsDuplicate(t, c, newer),
 		degradedMessage(t, c, newer))
-	assert.True(t, forging(t, c, older), "the older keeps forging")
+	assert.True(t, forging(t, c, newer),
+		"a claim to a public pool ID does not stop a running producer")
 }
 
 // A producer that never ran cannot hold a pool: an older agent-signed
 // producer with no workload does not stop a newer running one in another
-// namespace, which only an older workload that runs may do.
+// namespace.
 func TestReconcileAgentSignedForgerKeepsRunningBesideIdleOlder(t *testing.T) {
 	t.Parallel()
 	older := agentForger("bp", "ns-a", conflictPoolID, "keys-a", time.Hour)

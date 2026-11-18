@@ -279,13 +279,20 @@ is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name
 count, and if its workload is running the reconcile fails closed.
 
-Producers that sign through `spec.blockProducer.signingAgent` hold no KES key in
-their keys Secret, so nothing shows custody of the pool across namespaces and
-the older cannot halt the newer. Instead the newer of two such producers stops
-its own workload while the older one's workload runs; an older producer that
-does not run holds nothing. A producer whose spec now names an agent but whose
-held template still signs with a local KES key stays at zero replicas until the
-agent template applies.
+A producer whose spec now names a signing agent but whose held template still
+signs with a local KES key stays at zero replicas until the agent template
+applies.
+
+### Upgrading with agent-signed producers
+
+An earlier release did not fence producers that both sign through
+`spec.blockProducer.signingAgent`. If two such producers of one pool in different
+namespaces were admitted together, both are refused as duplicates after
+upgrading (`DuplicateForger`, Degraded) and neither StatefulSet is stopped: an
+agent bundle holds no KES key, so the operator cannot verify which producer
+holds custody of the pool and does not stop one on another's claim. Stop one of
+them by hand, for example by deleting its DingoNode or scaling its StatefulSet
+to zero.
 
 ## Installation
 
