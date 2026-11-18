@@ -142,13 +142,17 @@ func TestReconcilePoolListsSharingAPoolAreFenced(t *testing.T) {
 }
 
 // A pool-list node and a single-pool agent-signed node that share a pool are
-// fenced in both directions, whichever is older.
+// fenced in both directions, whichever is older, in one namespace or across
+// two.
 func TestReconcilePoolListAndAgentSignedSinglePoolAreFenced(t *testing.T) {
 	t.Parallel()
 	pools := newTestPools(t, "a", "b")
-	single := func(name string, age time.Duration) *dingov1alpha1.DingoNode {
+	single := func(
+		name, ns string,
+		age time.Duration,
+	) *dingov1alpha1.DingoNode {
 		// Its own keys Secret, so only the shared pool conflicts.
-		return agentForger(name, "ns-a", pools[1].id, "keys-"+name, age)
+		return agentForger(name, ns, pools[1].id, "keys-"+name, age)
 	}
 	tests := []struct {
 		name         string
@@ -157,12 +161,22 @@ func TestReconcilePoolListAndAgentSignedSinglePoolAreFenced(t *testing.T) {
 		{
 			"older pool list, newer single",
 			agentPoolList("old", "ns-a", time.Hour, pools...),
-			single("new", 0),
+			single("new", "ns-a", 0),
 		},
 		{
 			"older single, newer pool list",
-			single("old", time.Hour),
+			single("old", "ns-a", time.Hour),
 			agentPoolList("new", "ns-a", 0, pools...),
+		},
+		{
+			"older pool list, newer single in another namespace",
+			agentPoolList("old", "ns-a", time.Hour, pools...),
+			single("new", "ns-b", 0),
+		},
+		{
+			"older single, newer pool list in another namespace",
+			single("old", "ns-a", time.Hour),
+			agentPoolList("new", "ns-b", 0, pools...),
 		},
 	}
 	for _, tt := range tests {
@@ -170,7 +184,7 @@ func TestReconcilePoolListAndAgentSignedSinglePoolAreFenced(t *testing.T) {
 			t.Parallel()
 			objs := append(
 				[]client.Object{tt.older, tt.newer},
-				poolSecretsIn(t, pools, "ns-a")...,
+				poolSecretsIn(t, pools, "ns-a", "ns-b")...,
 			)
 			c := conflictClient(t, objs...)
 			r := reconcilerFor(c)
