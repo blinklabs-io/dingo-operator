@@ -432,11 +432,17 @@ New StatefulSets name their data claim template `dingo-data`, so claims are
 `dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
 after the chart's StatefulSet adopts its existing claims once that StatefulSet
 is removed; the chart names it after the release when the release name contains
-`dingo`, and `<release>-dingo` otherwise. A DingoNode also takes over a running
-chart StatefulSet of the same name and namespace: the existing object becomes
-the DingoNode's controlled StatefulSet and its pod template is replaced with
-the operator's, keeping the `dingo-data` claim template. Replacing the
-template rolls the pod. Order matters:
+`dingo`, and `<release>-dingo` otherwise. Moving a chart release this way needs
+no takeover: uninstall the release, which keeps the claims because Helm does not
+own them, then create the DingoNode. The node is down between the two steps.
+A keys Secret the chart generated is deleted at uninstall, so back up the keys
+and provision the Secret outside the release first.
+
+To avoid that gap, a DingoNode can instead take over a running chart
+StatefulSet of the same name and namespace: the existing object becomes the
+DingoNode's controlled StatefulSet and its pod template is replaced with the
+operator's, keeping the `dingo-data` claim template. Replacing the template
+rolls the pod once. Order matters:
 
 1. Add the `helm.sh/resource-policy: keep` annotation to the StatefulSet
    through a `helm upgrade` of the release, not by annotating the live object.
