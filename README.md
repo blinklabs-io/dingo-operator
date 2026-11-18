@@ -169,10 +169,8 @@ operators.
   NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
-- **Safe HA** — `SingleActive` is the only supported strategy: one forger per
-  pool, with reschedule on failure. Producers that all sign through the same
-  `spec.blockProducer.signingAgent` deployment are the exception: the producer
-  fence described below does not apply to them. `ActiveStandby` is rejected by
+- **Safe HA** — `SingleActive` is the only supported strategy: exactly one
+  forger, with reschedule on failure. `ActiveStandby` is rejected by
   validation until fenced failover is implemented. A block producer gets
   a PodDisruptionBudget that keeps its one pod available, so `kubectl drain` of
   its node does not complete. Set
@@ -258,13 +256,19 @@ keys Secret. Besides that held template, only two kinds of
 evidence scale a running producer to zero: an older valid DingoNode
 naming the same pool or keys, and the workload of a live DingoNode that shares
 them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
-controls, matched by UID. Across namespaces either counts only when that
+controls, matched by UID. The workload of a newer valid DingoNode does not
+stop a producer already running beside it in the same namespace, or in two
+namespaces both listed in the operator's `--forger-fence-namespaces`: the newer
+one is stopped instead. Across namespaces either kind counts only when that
 DingoNode's keys Secret holds the KES signing key its opcert certifies for the
-shared pool: a pool ID, or an opcert copied from a block header, is public, so
-a DingoNode in another namespace that only names the pool refuses without
-halting. Owner references are set by whoever creates the object, so this
-trusts anyone who may create pods or StatefulSets in the producer's namespace,
-or in the namespace of a DingoNode whose keys Secret holds the pool's keys. A
+shared pool, or when both namespaces are listed: a pool ID, or an opcert copied
+from a block header, is public, so a DingoNode in another namespace that only
+names the pool refuses without halting. A refusal that does not halt never
+hides one that does. Owner references are set by whoever creates the object,
+so this trusts anyone who may create pods or StatefulSets in the producer's
+namespace, or in the namespace of a DingoNode whose keys Secret holds the
+pool's keys, and anyone who may create or edit a DingoNode in a listed
+namespace: an edited DingoNode keeps its age. A
 producer's own pods are only those controlled, by UID, by the StatefulSet it
 controls; a pod that only carries its name label is another workload. A
 workload no live DingoNode
@@ -281,29 +285,26 @@ is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name
 count, and if its workload is running the reconcile fails closed.
 
-Two block producers that both sign through `spec.blockProducer.signingAgent` are
-not fenced against each other. For such a pair, the same pool on the same
-network, the same keys Secret name in a namespace and the same keys checksum
-are not conflicts: neither is refused with `DuplicateForger`, held or scaled to
-zero, so a pool can have a second producer that keeps forging when one node is
-lost. This holds because the Bursa KES agent's shared slot guard signs at most
-one header per pool and slot across agent replicas, and an agent-signed producer
-holds no KES key to sign a block on its own. The operator cannot verify that
-two producers share one agent store: the guarantee depends on them signing
-through the same agent deployment, and two producers pointed at independent
-agents are not protected from a double forge. Every other pair keeps the fence
-described above, including cross-namespace, held-template, restage and
-invalid-spec halts: when either producer has no `signingAgent`, a local
-`kes.skey` is a KES key that can sign, so the older still keeps the keys. A
-workload counts as agent-signed from what it carries, not from the DingoNode
-spec: the `dingo` container has a literal `CARDANO_SHELLEY_KES_AGENT_ADDRESS`
-and no `CARDANO_SHELLEY_KES_KEY`, with no `envFrom`, command or arguments that
-could set either. A node whose spec names an agent but whose StatefulSet
-template or running pod still has a local KES key, as when the template is held
-at its earlier render, is fenced as a local producer until that workload stops.
-Stopped, it stays at zero replicas while its template is held at that render,
-for one while its agent client certificate Secret is incomplete; the replicas
-return with the agent-signed template.
+A producer whose spec now names a signing agent but whose held template still
+signs with a local KES key stays at zero replicas until the agent template
+applies.
+
+### Upgrading with agent-signed producers
+
+An earlier release did not fence producers that both sign through
+`spec.blockProducer.signingAgent`, so a pair of one pool may be running when you
+upgrade. Within one namespace the operator now scales the newer DingoNode to
+zero and refuses it (`DuplicateForger`); the older keeps running.
+
+Across namespaces a pool ID is public and an agent bundle holds no KES key, so
+the operator cannot verify custody and does not stop either producer: both are
+refused as duplicates (Degraded) and keep forging. Either delete one DingoNode
+and confirm its pods have terminated, or have the cluster admin start the
+operator with `--forger-fence-namespaces=ns-a,ns-b`. When both namespaces are
+listed the operator fences the pair as it does within one namespace, for every
+producer pair, agent-signed or not. Anyone who may create or edit a DingoNode
+in a listed namespace can then stop a producer in another listed namespace, so
+list only namespaces one party controls.
 
 ## Installation
 
