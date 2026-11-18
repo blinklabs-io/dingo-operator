@@ -51,30 +51,6 @@ func UsesSigningAgent(dn *dingov1alpha1.DingoNode) bool {
 		dn.Spec.BlockProducer.SigningAgent != nil
 }
 
-// PodSignsThroughAgent reports whether a pod spec or template signs block
-// headers through a remote agent and so holds no KES key. It reads what the
-// workload carries, not the DingoNode spec, which can name an agent while a
-// held template or a running pod still has a local KES key. Only an agent
-// address on the dingo container with no CARDANO_SHELLEY_KES_KEY proves it;
-// envFrom, a command or arguments could set either where it cannot be read, so
-// they, a missing dingo container and a missing address read as a local key.
-func PodSignsThroughAgent(spec corev1.PodSpec) bool {
-	c, ok := DingoContainer(spec)
-	if !ok || len(c.EnvFrom) > 0 || len(c.Command) > 0 || len(c.Args) > 0 {
-		return false
-	}
-	agent := false
-	for _, e := range c.Env {
-		switch e.Name {
-		case KESKeyEnv:
-			return false
-		case signingAgentAddressEnv:
-			agent = e.ValueFrom == nil && e.Value != ""
-		}
-	}
-	return agent
-}
-
 // signingAgentEnv returns Dingo's agent settings for a block producer that
 // signs through an agent.
 func signingAgentEnv(sa *dingov1alpha1.SigningAgentSpec) []corev1.EnvVar {

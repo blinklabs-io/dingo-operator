@@ -147,9 +147,7 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 // template of an existing StatefulSet as it is live: set while the keys Secret
 // is rejected or missing, so no template change, including one from an operator
 // upgrade, rolls the pod onto the rejected Secret or onto one that cannot start.
-// A stopped StatefulSet whose held template would sign with a local KES key
-// stays stopped; see holdsStoppedLocalSigner. It reports whether a template
-// change was withheld.
+// It reports whether a template change was withheld.
 func (r *DingoNodeReconciler) upsertStatefulSet(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -200,9 +198,7 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		} else {
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
-			if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
-				sts.Spec.Replicas = desired.Spec.Replicas
-			}
+			sts.Spec.Replicas = desired.Spec.Replicas
 			if keepTemplate {
 				withheld = &desired.Spec.Template
 			} else {
@@ -235,22 +231,6 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		probe.Spec.Template,
 		sts.Spec.Template,
 	), nil
-}
-
-// holdsStoppedLocalSigner reports whether a stopped StatefulSet must stay at
-// zero replicas: dn signs through an agent, so the fence admits it once its
-// workload is down, but its template is held at a render that signs with a
-// local KES key. Restoring replicas would start that local signer beside the
-// agent-signed producers of its pool, so the replicas return only with the
-// agent template.
-func holdsStoppedLocalSigner(
-	dn *dingov1alpha1.DingoNode,
-	sts *appsv1.StatefulSet,
-	keepTemplate bool,
-) bool {
-	return keepTemplate && resources.UsesSigningAgent(dn) &&
-		sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 &&
-		forgesWithLocalKES(sts.Spec.Template.Spec)
 }
 
 // setsVoteKey reports whether a pod template sets the vote key variable.

@@ -599,30 +599,6 @@ is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name
 count, and if its workload is running the reconcile fails closed.
 
-Two block producers that both sign through `spec.blockProducer.signingAgent` are
-not fenced against each other. For such a pair, the same pool on the same
-network, the same keys Secret name in a namespace and the same keys checksum
-are not conflicts: neither is refused with `DuplicateForger`, held or scaled to
-zero, so a pool can have a second producer that keeps forging when one node is
-lost. This holds because the Bursa KES agent's shared slot guard signs at most
-one header per pool and slot across agent replicas, and an agent-signed producer
-holds no KES key to sign a block on its own. The operator cannot verify that
-two producers share one agent store: the guarantee depends on them signing
-through the same agent deployment, and two producers pointed at independent
-agents are not protected from a double forge. Every other pair keeps the fence
-described above, including cross-namespace, held-template, restage and
-invalid-spec halts: when either producer has no `signingAgent`, a local
-`kes.skey` is a KES key that can sign, so the older still keeps the keys. A
-workload counts as agent-signed from what it carries, not from the DingoNode
-spec: the `dingo` container has a literal `CARDANO_SHELLEY_KES_AGENT_ADDRESS`
-and no `CARDANO_SHELLEY_KES_KEY`, with no `envFrom`, command or arguments that
-could set either. A node whose spec names an agent but whose StatefulSet
-template or running pod still has a local KES key, as when the template is held
-at its earlier render, is fenced as a local producer until that workload stops.
-Stopped, it stays at zero replicas while its template is held at that render,
-for one while its agent client certificate Secret is incomplete; the replicas
-return with the agent-signed template.
-
 Full `Auto` rotation (`internal/controller/rotate.go`), run after the
 metrics scrape on every reconcile:
 
@@ -732,9 +708,7 @@ the opcert is loaded into the running node instead of rolling the pod
 ### HA
 
 - `SingleActive` (default): `replicas: 1` + pod anti-affinity + PDB +
-  NetworkPolicy → exactly one forger per DingoNode; rely on reschedule. The
-  producer fence (see above) does not hold two producers that both sign through
-  `spec.blockProducer.signingAgent` apart. With one replica the
+  NetworkPolicy → exactly one forger; rely on reschedule. With one replica the
   PDB blocks every voluntary eviction, so a drain never completes;
   `spec.blockProducer.podDisruptionBudget.enabled: false` removes it.
 - `ActiveStandby` (not implemented): `validateSpec` rejects it. The intended
