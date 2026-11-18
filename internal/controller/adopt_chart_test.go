@@ -321,7 +321,10 @@ func TestReconcileSelectorMismatchSetsCondition(t *testing.T) {
 	ns := "adopt-mismatch-status"
 	createNamespace(t, ctx, c, ns)
 
-	require.NoError(t, c.Create(ctx, chartStatefulSet("dingo", ns, "preprod", "")))
+	require.NoError(
+		t,
+		c.Create(ctx, chartStatefulSet("dingo", ns, "preprod", "")),
+	)
 	require.NoError(t, c.Create(ctx, relayNode("dingo", ns, "preview")))
 
 	key := types.NamespacedName{Name: "dingo", Namespace: ns}
@@ -342,6 +345,23 @@ func TestReconcileSelectorMismatchSetsCondition(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
 	assert.Equal(t, metav1.ConditionTrue, degraded.Status)
+
+	// Removing the chart's StatefulSet resolves the mismatch, and the next
+	// pass clears the refusal.
+	sts := getStatefulSet(t, ctx, c, "dingo", ns)
+	require.NoError(t, c.Delete(ctx, sts))
+	require.True(
+		t,
+		apierrors.IsNotFound(c.Get(ctx, key, &appsv1.StatefulSet{})),
+	)
+	reconcile(t, ctx, reconcilerFor(c), "dingo", ns)
+
+	require.NoError(t, c.Get(ctx, key, &got))
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, condDegraded))
+	ready = meta.FindStatusCondition(got.Status.Conditions, condReady)
+	require.NotNil(t, ready)
+	assert.NotEqual(t, reasonSelectorMismatch, ready.Reason)
+	assert.NotEqual(t, "Degraded", got.Status.Phase)
 }
 
 // A block producer takes over the chart StatefulSet that already forges with

@@ -471,12 +471,12 @@ selector does not match, the operator refuses the StatefulSet before writing
 any Service: the Services and the StatefulSet stay as they were, the chart's pod
 keeps serving, and each reconcile fails with a selector error until the
 mismatch is resolved. The DingoNode reports it as `Ready=False` and
-`Degraded=True` with reason `StatefulSetSelectorMismatch`. Claim templates are immutable, so a
-StatefulSet created by an earlier operator version keeps its `data` template and
-`data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
-node whose retained claims exist, it uses their template name, preferring
-`dingo-data` when both are present. Only claims labelled with the node's
-`cardano_network` count. Kubernetes reuses a claim by name alone, so the
+`Degraded=True` with reason `StatefulSetSelectorMismatch`. Claim templates are
+immutable, so a StatefulSet created by an earlier operator version keeps its
+`data` template and `data-<name>-<ordinal>` claims. When the operator creates a
+StatefulSet for a node whose retained claims exist, it uses their template name,
+preferring `dingo-data` when both are present. Only claims labelled with the
+node's `cardano_network` count. Kubernetes reuses a claim by name alone, so the
 operator refuses to create the StatefulSet while a claim under the template name
 it would use belongs to another network or has no network label.
 
