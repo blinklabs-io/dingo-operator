@@ -70,51 +70,119 @@ func stagesKeys(t *testing.T, c client.Client, n *dingov1alpha1.DingoNode) {
 		"%s/%s mounts no keys", n.Namespace, n.Name)
 }
 
-// Pool-list producers sign every pool through the agent, so two of them that
-// share a pool are not fenced against each other.
-func TestReconcilePoolListsSharingAnAgentDoNotFence(t *testing.T) {
+// Pool-list producers sign every pool through the agent, and are fenced like
+// any other pair: every pool in either list is compared with the other node's
+// pools, so a shared pool makes the newer node a duplicate. The operator cannot
+// show that two producers share one agent store, so the agent exempts no pair.
+func TestReconcilePoolListsSharingAPoolAreFenced(t *testing.T) {
 	t.Parallel()
 	pools := newTestPools(t, "a", "b", "c")
-	for _, tt := range []struct {
-		name          string
-		first, second *dingov1alpha1.DingoNode
+	tests := []struct {
+		name            string
+		older, newer    *dingov1alpha1.DingoNode
+		fenceNamespaces []string
+		// halted is whether the newer, running first, is scaled to zero.
+		halted bool
 	}{
 		{
-			name: "same namespace",
-			first: agentPoolList(
-				"bp-1", "ns-a", time.Hour, pools[0], pools[1],
-			),
-			second: agentPoolList(
-				"bp-2", "ns-a", 0, pools[1], pools[2],
-			),
+			name:   "same namespace",
+			older:  agentPoolList("bp-1", "ns-a", time.Hour, pools[0], pools[1]),
+			newer:  agentPoolList("bp-2", "ns-a", 0, pools[1], pools[2]),
+			halted: true,
 		},
 		{
-			name: "another namespace",
-			first: agentPoolList(
-				"bp", "ns-a", time.Hour, pools[0], pools[1],
-			),
-			second: agentPoolList("bp", "ns-b", 0, pools[1], pools[2]),
+			name:   "same namespace, shared last pool",
+			older:  agentPoolList("bp-1", "ns-a", time.Hour, pools[0], pools[1]),
+			newer:  agentPoolList("bp-2", "ns-a", 0, pools[2], pools[1]),
+			halted: true,
 		},
-	} {
+		{
+			name:  "another namespace is refused but not stopped",
+			older: agentPoolList("bp", "ns-a", time.Hour, pools[0], pools[1]),
+			newer: agentPoolList("bp", "ns-b", 0, pools[1], pools[2]),
+		},
+		{
+			name:            "another namespace, both listed",
+			older:           agentPoolList("bp", "ns-a", time.Hour, pools[0], pools[1]),
+			newer:           agentPoolList("bp", "ns-b", 0, pools[1], pools[2]),
+			fenceNamespaces: []string{"ns-a", "ns-b"},
+			halted:          true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			objs := append(
+				[]client.Object{tt.newer},
+				poolSecretsIn(t, pools, "ns-a", "ns-b")...,
+			)
+			// The newer runs first, then the older appears.
+			c := conflictClient(t, objs...)
+			r := reconcilerFor(c)
+			r.FenceNamespaces = tt.fenceNamespaces
+			reconcileNode(t, r, tt.newer)
+			require.True(t, forging(t, c, tt.newer))
+			require.NoError(t, c.Create(ctx, tt.older))
+			reconcileNode(t, r, tt.older)
+			reconcileNode(t, r, tt.newer)
+			assert.True(t, refusedAsDuplicate(t, c, tt.newer),
+				degradedMessage(t, c, tt.newer))
+			if tt.halted {
+				assert.True(t, stoppedAtZero(t, c, tt.newer),
+					"a running newer producer is scaled to zero")
+				reconcileNode(t, r, tt.older)
+				assert.True(t, forging(t, c, tt.older))
+				assert.False(t, refusedAsDuplicate(t, c, tt.older),
+					degradedMessage(t, c, tt.older))
+				stagesKeys(t, c, tt.older)
+			}
+		})
+	}
+}
+
+// A pool-list node and a single-pool agent-signed node that share a pool are
+// fenced in both directions, whichever is older.
+func TestReconcilePoolListAndAgentSignedSinglePoolAreFenced(t *testing.T) {
+	t.Parallel()
+	pools := newTestPools(t, "a", "b")
+	single := func(name string, age time.Duration) *dingov1alpha1.DingoNode {
+		// Its own keys Secret, so only the shared pool conflicts.
+		return agentForger(name, "ns-a", pools[1].id, "keys-"+name, age)
+	}
+	tests := []struct {
+		name         string
+		older, newer *dingov1alpha1.DingoNode
+	}{
+		{
+			"older pool list, newer single",
+			agentPoolList("old", "ns-a", time.Hour, pools...),
+			single("new", 0),
+		},
+		{
+			"older single, newer pool list",
+			single("old", time.Hour),
+			agentPoolList("new", "ns-a", 0, pools...),
+		},
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			objs := append(
-				[]client.Object{tt.first, tt.second},
-				poolSecretsIn(t, pools, "ns-a", "ns-b")...,
+				[]client.Object{tt.older, tt.newer},
+				poolSecretsIn(t, pools, "ns-a")...,
 			)
 			c := conflictClient(t, objs...)
 			r := reconcilerFor(c)
-			reconcileNode(t, r, tt.first)
-			reconcileNode(t, r, tt.second)
-			reconcileNode(t, r, tt.first)
-			reconcileNode(t, r, tt.second)
-			for _, n := range []*dingov1alpha1.DingoNode{tt.first, tt.second} {
-				assert.True(t, forging(t, c, n), "%s/%s", n.Namespace, n.Name)
-				assert.False(t, refusedAsDuplicate(t, c, n), "%s/%s: %s",
-					n.Namespace, n.Name, degradedMessage(t, c, n))
-				notInvalid(t, c, n)
-				stagesKeys(t, c, n)
+			for range 2 {
+				reconcileNode(t, r, tt.older)
+				reconcileNode(t, r, tt.newer)
 			}
+			assert.True(t, refusedAsDuplicate(t, c, tt.newer),
+				degradedMessage(t, c, tt.newer))
+			assert.False(t, forging(t, c, tt.newer))
+			assert.False(t, refusedAsDuplicate(t, c, tt.older),
+				degradedMessage(t, c, tt.older))
 		})
 	}
 }
@@ -219,9 +287,9 @@ func withLocalKESKey(spec *corev1.PodSpec) {
 	}
 }
 
-// A pool-list node's own template and pod sign through the agent: neither is
-// read as a local signer. The same template with a local KES key is one.
-func TestPoolListOwnWorkloadIsNotALocalSigner(t *testing.T) {
+// A pool-list node's own template signs through the agent: it is not read as a
+// local signer. The same template with a local KES key is one.
+func TestPoolListOwnTemplateIsNotALocalSigner(t *testing.T) {
 	t.Parallel()
 	pools := newTestPools(t, "a", "b")
 	for _, local := range []bool{false, true} {
@@ -231,7 +299,6 @@ func TestPoolListOwnWorkloadIsNotALocalSigner(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.Background()
 			dn := agentPoolList("bp", "ns", 0, pools...)
 
 			stopped := renderedPoolList(dn, pools, 0)
@@ -243,35 +310,6 @@ func TestPoolListOwnWorkloadIsNotALocalSigner(t *testing.T) {
 			assert.Equal(t, local,
 				holdsStoppedLocalSigner(dn, stopped, true),
 				"holdsStoppedLocalSigner")
-
-			running := renderedPoolList(dn, pools, 1)
-			if local {
-				withLocalKESKey(&running.Spec.Template.Spec)
-			}
-			pod := &corev1.Pod{
-				ObjectMeta: *running.Spec.Template.ObjectMeta.DeepCopy(),
-				Spec:       *running.Spec.Template.Spec.DeepCopy(),
-			}
-			pod.Name, pod.Namespace = "bp-0", "ns"
-			pod.OwnerReferences = []metav1.OwnerReference{{
-				APIVersion: "apps/v1",
-				Kind:       "StatefulSet",
-				Name:       running.Name,
-				UID:        running.UID,
-				Controller: new(true),
-			}}
-			pod.Status.Phase = corev1.PodRunning
-			c := conflictClient(t, dn, running, pod)
-			got, err := reconcilerFor(c).holdsLocalKES(ctx, dn)
-			require.NoError(t, err)
-			assert.Equal(t, local, got, "holdsLocalKES")
-
-			// Its pod alone, with the StatefulSet scaled down.
-			running.Spec.Replicas = new(int32(0))
-			c = conflictClient(t, dn, running, pod)
-			got, err = reconcilerFor(c).holdsLocalKES(ctx, dn)
-			require.NoError(t, err)
-			assert.Equal(t, local, got, "holdsLocalKES from the pod")
 		})
 	}
 }

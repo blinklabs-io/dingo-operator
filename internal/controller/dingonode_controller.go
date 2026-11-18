@@ -111,6 +111,10 @@ type DingoNodeReconciler struct {
 	// The manager's Secret cache must be scoped to the namespaces the operator
 	// may list (KeyBundleCacheOptions); leave it false otherwise.
 	WatchKeyBundles bool
+	// FenceNamespaces lists the namespaces the cluster admin trusts to fence
+	// each other: a running duplicate pair whose namespaces are both listed
+	// is resolved by stopping the newer producer, as within one namespace.
+	FenceNamespaces []string
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex

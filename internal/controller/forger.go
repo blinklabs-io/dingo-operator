@@ -59,6 +59,30 @@ func unverifiedHeldf(format string, a ...any) error {
 	return &forgerHeldError{msg: fmt.Sprintf(format, a...)}
 }
 
+// manualStep is appended to a refusal of a producer the operator may not stop
+// on the other's claim: nothing it can verify shows which of the two holds
+// custody, so it stops neither and an operator must stop one. Listing both
+// namespaces is offered only for one party's own namespaces: a listed
+// namespace's older DingoNode may stop producers in every other listed one.
+func manualStep(backed bool) string {
+	if backed {
+		return ""
+	}
+	return "; the operator cannot verify which of the two producers holds " +
+		"custody of the keys and stops neither: stop one of the producers, " +
+		"or, if one party controls both namespaces, list both in the " +
+		"operator's --forger-fence-namespaces"
+}
+
+// trustedPair reports whether one authority controls both namespaces: the
+// same namespace's users, or the cluster admin, who lists namespaces that may
+// fence each other. A pool ID, being public, never makes a pair trusted.
+func (r *DingoNodeReconciler) trustedPair(a, b string) bool {
+	return a == b ||
+		(slices.Contains(r.FenceNamespaces, a) &&
+			slices.Contains(r.FenceNamespaces, b))
+}
+
 // workloadState is what a workload proves about the keys it runs.
 type workloadState int
 
@@ -92,10 +116,6 @@ type forgerIdentity struct {
 	secrets  []string
 	checksum string
 	network  string
-	// agent is set when the forger signs through a remote KES agent and holds
-	// no KES key. Two such forgers do not share an identity: the agent signs
-	// at most one header per pool and slot.
-	agent bool
 }
 
 // backedBy reports whether b's claim on a's keys may halt a. A writer in a's
@@ -120,9 +140,6 @@ func (a forgerIdentity) backedBy(b forgerIdentity) bool {
 // sharedWith describes what a and b share, or returns "" when they are
 // different forgers.
 func (a forgerIdentity) sharedWith(b forgerIdentity) string {
-	if a.agent && b.agent {
-		return ""
-	}
 	if sameNetwork(a.network, b.network) {
 		for _, p := range a.pools {
 			if slices.Contains(b.pools, p) {
@@ -229,7 +246,7 @@ func (r *DingoNodeReconciler) nodeIdentity(
 				id.keyed = append(id.keyed, pool)
 			}
 		}
-		return id, r.markAgentSigned(ctx, dn, &id)
+		return id, nil
 	}
 	if bp != nil {
 		id.secrets = []string{bp.Keys.SecretRef}
@@ -252,62 +269,7 @@ func (r *DingoNodeReconciler) nodeIdentity(
 		id.keyed = append(id.keyed, p)
 	}
 	id.checksum = sum
-	return id, r.markAgentSigned(ctx, dn, &id)
-}
-
-// markAgentSigned sets id.agent when dn signs through an agent, a pool list
-// included, and no workload it controls may still sign with a local KES key.
-func (r *DingoNodeReconciler) markAgentSigned(
-	ctx context.Context,
-	dn *dingov1alpha1.DingoNode,
-	id *forgerIdentity,
-) error {
-	if !resources.UsesSigningAgent(dn) {
-		return nil
-	}
-	local, err := r.holdsLocalKES(ctx, dn)
-	if err != nil {
-		return err
-	}
-	id.agent = !local
-	return nil
-}
-
-// holdsLocalKES reports whether a workload dn controls may still sign with a
-// local KES key: its StatefulSet, while it wants a replica, or one of its
-// running pods, does not sign through an agent. The spec alone cannot say: a
-// template is held at its earlier render, for one while the agent client
-// certificate is incomplete, and its pod keeps the KES key it staged. A
-// workload that is down, or one with no keys mounted, holds no key, and the
-// spec decides.
-func (r *DingoNodeReconciler) holdsLocalKES(
-	ctx context.Context,
-	dn *dingov1alpha1.DingoNode,
-) (bool, error) {
-	sts, err := r.ownStatefulSet(ctx, dn)
-	if err != nil || sts == nil {
-		return false, err
-	}
-	if (sts.Spec.Replicas == nil || *sts.Spec.Replicas > 0) &&
-		forgesWithLocalKES(sts.Spec.Template.Spec) {
-		return true, nil
-	}
-	var pods corev1.PodList
-	if err := r.uncachedReader().List(ctx, &pods,
-		client.InNamespace(dn.Namespace),
-		client.MatchingLabels{resources.NodeLabel: dn.Name},
-	); err != nil {
-		return false, fmt.Errorf("list pods of %s/%s: %w",
-			dn.Namespace, dn.Name, err)
-	}
-	for i := range pods.Items {
-		p := &pods.Items[i]
-		if podRunning(p) && metav1.IsControlledBy(p, sts) &&
-			forgesWithLocalKES(p.Spec) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return id, nil
 }
 
 // forgesWithLocalKES reports whether a pod spec mounts block producer keys,
@@ -357,6 +319,10 @@ func (r *DingoNodeReconciler) heldBy(
 	all []dingov1alpha1.DingoNode,
 	mine forgerIdentity,
 ) error {
+	// A refusal that may not halt dn must not hide a later one that does:
+	// the order of all is arbitrary, and a third node naming a public pool ID
+	// would otherwise keep the newer of a trusted pair running.
+	var unverified error
 	for i := range all {
 		o := &all[i]
 		if !o.DeletionTimestamp.IsZero() {
@@ -390,19 +356,39 @@ func (r *DingoNodeReconciler) heldBy(
 		}
 		// Without custody of the keys, a node in another namespace holds dn
 		// back but does not halt it.
-		backed := mine.backedBy(theirs)
+		backed := mine.backedBy(theirs) ||
+			r.trustedPair(mine.namespace, theirs.namespace)
 		// An older node whose spec fails validation is not reconciled, so it
 		// keeps the pool only while the workload it already has runs.
 		if forgerOutranks(o, dn) && validateSpec(o) == nil {
-			held := heldf
-			if !backed {
-				held = unverifiedHeldf
+			if backed {
+				return heldf(
+					"block producer %s/%s already forges with the same %s; "+
+						"only one DingoNode may stage a pool's keys",
+					o.Namespace, o.Name, what,
+				)
 			}
-			return held(
-				"block producer %s/%s already forges with the same %s; only "+
-					"one DingoNode may stage a pool's keys",
-				o.Namespace, o.Name, what,
-			)
+			if unverified == nil {
+				unverified = unverifiedHeldf(
+					"block producer %s/%s already forges with the same %s; "+
+						"only one DingoNode may stage a pool's keys%s",
+					o.Namespace, o.Name, what, manualStep(backed),
+				)
+			}
+			continue
+		}
+		// In a trusted pair a newer o that is valid is fenced when it
+		// reconciles, so a dn that already runs keeps running rather than
+		// being halted by o; a dn that is not up still waits.
+		if validateSpec(o) == nil &&
+			r.trustedPair(mine.namespace, theirs.namespace) {
+			// Only dn's own StatefulSet shows that it runs: a pod that merely
+			// carries its name label must not start it beside o.
+			if own, err := r.workloadUp(ctx, dn); err != nil {
+				return err
+			} else if own == workloadVerified {
+				continue
+			}
 		}
 		// o is refused and halts itself, or is invalid and keeps only the
 		// workload it has, so this cannot wait forever; until its pod is gone
@@ -411,22 +397,26 @@ func (r *DingoNodeReconciler) heldBy(
 		if err != nil {
 			return err
 		}
-		held := heldf
-		switch up {
-		case workloadDown:
+		if up == workloadDown {
 			continue
-		case workloadUnverified:
-			held = unverifiedHeldf
-		case workloadVerified:
-			if !backed {
-				held = unverifiedHeldf
-			}
 		}
-		return held(
-			"block producer %s/%s still runs with the same %s; waiting "+
-				"for it to stop",
-			o.Namespace, o.Name, what,
-		)
+		if up == workloadVerified && backed {
+			return heldf(
+				"block producer %s/%s still runs with the same %s; waiting "+
+					"for it to stop",
+				o.Namespace, o.Name, what,
+			)
+		}
+		if unverified == nil {
+			unverified = unverifiedHeldf(
+				"block producer %s/%s still runs with the same %s; waiting "+
+					"for it to stop%s",
+				o.Namespace, o.Name, what, manualStep(backed),
+			)
+		}
+	}
+	if unverified != nil {
+		return unverified
 	}
 	return r.orphanForger(ctx, dn, mine)
 }
@@ -498,10 +488,12 @@ func podRunning(p *corev1.Pod) bool {
 // dn's own still runs keys dn shares, whatever DingoNode now carries its name:
 // a name reused by a relay or another pool does not own the old pod. A
 // StatefulSet at zero replicas with no pods is down. Live block producers that
-// share dn's keys were already decided by forgerHeld, so this finds only
-// workloads they no longer account for. Such a workload refuses without
-// halting, except as restagesOtherPool decides: a running dn was admitted when
-// none held its keys, and none of this is proof the operator started it.
+// share dn's keys were already decided by forgerHeld, so this finds workloads
+// they no longer account for, and the workload of a newer producer of a
+// trusted pair that dn, already running, outranks; that one is fenced when it
+// reconciles. Such a workload refuses without halting, except as
+// restagesOtherPool decides: a running dn was admitted when none held its
+// keys, and none of this is proof the operator started it.
 func (r *DingoNodeReconciler) orphanForger(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -776,12 +768,6 @@ func (r *DingoNodeReconciler) orphanHolds(
 		namespace: namespace,
 		secrets:   secrets,
 		network:   podNetwork(spec),
-		agent:     resources.PodSignsThroughAgent(spec),
-	}
-	if mine.agent && theirs.agent {
-		// Neither holds a KES key, so a pool or keys they share, or a keys
-		// bundle one staged and the other now has, is no second forger.
-		return false, nil
 	}
 	recorded := resources.SplitKeysPools(
 		annotations[resources.KeysPoolAnnotation],
