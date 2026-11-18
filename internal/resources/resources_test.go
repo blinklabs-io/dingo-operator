@@ -269,6 +269,41 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.Equal(t, int64(101), *securityContext.FSGroup)
 	})
 
+	t.Run(
+		"legacy digest and tag retain their selected user",
+		func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Tag = "0.85.0"
+			dn.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+			securityContext := BuildStatefulSet(
+				dn,
+				RenderOptions{Replicas: 1},
+			).Spec.Template.Spec.SecurityContext
+			require.NotNil(t, securityContext)
+			assert.Equal(t, int64(1000), *securityContext.RunAsUser)
+			assert.Equal(t, int64(1000), *securityContext.RunAsGroup)
+			assert.Equal(t, int64(1000), *securityContext.FSGroup)
+		},
+	)
+
+	t.Run(
+		"digest capability version selects the image user",
+		func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Tag = "0.85.0"
+			dn.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+			dn.Spec.Image.CapabilityVersion = "0.69.0"
+			securityContext := BuildStatefulSet(
+				dn,
+				RenderOptions{Replicas: 1},
+			).Spec.Template.Spec.SecurityContext
+			require.NotNil(t, securityContext)
+			assert.Equal(t, int64(100), *securityContext.RunAsUser)
+			assert.Equal(t, int64(101), *securityContext.RunAsGroup)
+			assert.Equal(t, int64(101), *securityContext.FSGroup)
+		},
+	)
+
 	t.Run("custom image retains the safe legacy default", func(t *testing.T) {
 		dn := relayNode()
 		dn.Spec.Image.Repository = "example/dingo"
@@ -886,10 +921,12 @@ func TestStatefulSetSecurityProfile(t *testing.T) {
 
 func TestSupportsHealthProbes(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		repo  string
-		tag   string
-		wants bool
+		name              string
+		repo              string
+		tag               string
+		digest            string
+		capabilityVersion string
+		wants             bool
 	}{
 		{name: "default tag", wants: true},
 		{name: "first release with the listener", tag: "0.70.13", wants: true},
@@ -913,11 +950,32 @@ func TestSupportsHealthProbes(t *testing.T) {
 			wants: true,
 		},
 		{name: "custom repository", repo: "example/dingo", tag: "0.75.0"},
+		{
+			name:   "legacy digest keeps tag inference",
+			tag:    "0.70.13",
+			digest: "sha256:" + strings.Repeat("a", 64),
+			wants:  true,
+		},
+		{
+			name:              "digest capability version overrides tag",
+			tag:               "0.70.13",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.70.12",
+		},
+		{
+			name:              "digest capability version enables listener",
+			tag:               "0.70.12",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.70.13",
+			wants:             true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dn := relayNode()
 			dn.Spec.Image.Repository = tc.repo
 			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Image.Digest = tc.digest
+			dn.Spec.Image.CapabilityVersion = tc.capabilityVersion
 			assert.Equal(t, tc.wants, supportsHealthProbes(dn))
 		})
 	}
@@ -1151,10 +1209,12 @@ func TestBuildEnvLogging(t *testing.T) {
 
 func TestSupportsTracing(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		repo  string
-		tag   string
-		wants bool
+		name              string
+		repo              string
+		tag               string
+		digest            string
+		capabilityVersion string
+		wants             bool
 	}{
 		{name: "default tag has the options", wants: true},
 		{name: "first release with the options", tag: "0.82.0", wants: true},
@@ -1164,11 +1224,32 @@ func TestSupportsTracing(t *testing.T) {
 		{name: "major above zero", tag: "1.0.0", wants: true},
 		{name: "unparseable tag is trusted", tag: "main", wants: true},
 		{name: "custom repository is trusted", repo: "example/dingo", wants: true},
+		{
+			name:   "legacy digest keeps tag inference",
+			tag:    "0.82.0",
+			digest: "sha256:" + strings.Repeat("a", 64),
+			wants:  true,
+		},
+		{
+			name:              "digest capability version overrides tag",
+			tag:               "0.82.0",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.81.9",
+		},
+		{
+			name:              "digest capability version enables tracing",
+			tag:               "0.81.9",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.82.0",
+			wants:             true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dn := relayNode()
 			dn.Spec.Image.Repository = tc.repo
 			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Image.Digest = tc.digest
+			dn.Spec.Image.CapabilityVersion = tc.capabilityVersion
 			assert.Equal(t, tc.wants, SupportsTracing(dn))
 		})
 	}
@@ -1195,7 +1276,11 @@ func TestDataVolumeNaming(t *testing.T) {
 	)
 	assert.Equal(t, "data", legacy.Spec.VolumeClaimTemplates[0].Name)
 	legacyMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
-	assert.Contains(t, legacy.Spec.Template.Spec.Containers[0].VolumeMounts, legacyMount)
+	assert.Contains(
+		t,
+		legacy.Spec.Template.Spec.Containers[0].VolumeMounts,
+		legacyMount,
+	)
 }
 
 // The staging script accepts the dingo Helm chart's node.cert and always

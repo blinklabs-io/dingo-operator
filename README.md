@@ -195,9 +195,13 @@ operators.
   when they differ from the node's. Apply these labels before upgrading;
   otherwise status and KES monitoring cannot scrape nodes. Metrics access does
   not grant node-to-client access.
-  Set `spec.image.digest` to pin immutable image content; it overrides the
-  tag in container references. Keep `spec.image.tag` set to the pinned image's
-  version because the operator uses it to select the UID and health probes.
+  Set `spec.image.digest` to pin immutable image content; it overrides the tag
+  in container references. New digest references also require
+  `spec.image.capabilityVersion`, set to the Dingo release contained in the
+  image. The operator uses that version to select the UID, health probes and
+  optional feature support. Existing digest and tag pairs retain their current
+  behavior while the digest and tag remain unchanged; add `capabilityVersion`
+  before changing either value.
 
 Only one block producer may forge per pool on a network. When two DingoNodes on
 the same network share a pool ID (any namespace, hex or bech32), or share a keys
