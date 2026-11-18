@@ -443,7 +443,10 @@ To avoid that gap, a DingoNode can instead take over a running chart
 StatefulSet of the same name and namespace: the existing object becomes the
 DingoNode's controlled StatefulSet and its pod template is replaced with the
 operator's, keeping the `dingo-data` claim template. Replacing the template
-rolls the pod once. Order matters:
+rolls the pod once. The Services switch to the operator's selector when the
+takeover is applied, so a chart pod that has not rolled yet receives no Service
+traffic until it rolls; uninstalling the release before creating the DingoNode,
+described above, avoids the takeover. Order matters:
 
 1. Add the `helm.sh/resource-policy: keep` annotation to the StatefulSet
    through a `helm upgrade` of the release, not by annotating the live object.
