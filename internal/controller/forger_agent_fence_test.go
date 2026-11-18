@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -167,6 +168,95 @@ func TestReconcileRunningAgentSignedForgersAcrossNamespacesAreRefusedNotStopped(
 	assert.Contains(t, degradedMessage(t, c, newer), "stop one of the producers")
 	assert.Contains(t, degradedMessage(t, c, older), "ns-b/bp")
 	assert.Contains(t, degradedMessage(t, c, older), "stop one of the producers")
+}
+
+// runningPair is an upgrade-time duplicate: both agent-signed producers of one
+// pool already run, each with the StatefulSet it controls.
+func runningPair(
+	olderNS, newerNS string,
+) (older, newer *dingov1alpha1.DingoNode, objs []client.Object) {
+	older = agentForger("bp", olderNS, conflictPoolID, "keys-a", time.Hour)
+	newer = agentForger("bp2", newerNS, conflictPoolID, "keys-b", 0)
+	return older, newer, []client.Object{
+		older, newer,
+		ownedWorkload(older, older, conflictPoolID, 1),
+		ownedWorkload(newer, newer, conflictPoolID, 1),
+	}
+}
+
+// Where one party controls both producers (one namespace) or the cluster
+// admin lists both namespaces, the newer of a running pair is scaled to zero
+// and refused; the older keeps running, whatever the reconcile order.
+func TestReconcileRunningAgentSignedPairIsFencedWhereTrusted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		olderNS, newNS  string
+		fenceNamespaces []string
+	}{
+		{"same namespace", "ns-a", "ns-a", nil},
+		{"both namespaces listed", "ns-a", "ns-b", []string{"ns-a", "ns-b"}},
+	}
+	for _, tt := range tests {
+		for _, newerFirst := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s newerFirst=%t", tt.name, newerFirst),
+				func(t *testing.T) {
+					t.Parallel()
+					older, newer, objs := runningPair(tt.olderNS, tt.newNS)
+					c := conflictClient(t, objs...)
+					r := reconcilerFor(c)
+					r.FenceNamespaces = tt.fenceNamespaces
+					order := []*dingov1alpha1.DingoNode{older, newer}
+					if newerFirst {
+						order = []*dingov1alpha1.DingoNode{newer, older}
+					}
+					// The older is never halted by the newer it outranks, even
+					// before the newer has been fenced.
+					reconcileNode(t, r, older)
+					require.True(t, forging(t, c, older),
+						"the older producer keeps running beside the newer")
+					for range 3 {
+						for _, n := range order {
+							reconcileNode(t, r, n)
+						}
+					}
+					assert.True(t, stoppedAtZero(t, c, newer),
+						"the newer producer is scaled to zero")
+					assert.True(t, refusedAsDuplicate(t, c, newer),
+						degradedMessage(t, c, newer))
+					assert.True(t, forging(t, c, older),
+						"the older producer keeps running")
+					assert.False(t, refusedAsDuplicate(t, c, older),
+						degradedMessage(t, c, older))
+				})
+		}
+	}
+}
+
+// One namespace listed is no authority over the other: neither is stopped.
+func TestReconcileRunningAgentSignedPairWithOneNamespaceListedIsNotStopped(
+	t *testing.T,
+) {
+	t.Parallel()
+	for _, listed := range []string{"ns-a", "ns-b"} {
+		t.Run(listed, func(t *testing.T) {
+			t.Parallel()
+			older, newer, objs := runningPair("ns-a", "ns-b")
+			c := conflictClient(t, objs...)
+			r := reconcilerFor(c)
+			r.FenceNamespaces = []string{listed}
+			for range 2 {
+				reconcileNode(t, r, newer)
+				reconcileNode(t, r, older)
+			}
+			for _, n := range []*dingov1alpha1.DingoNode{older, newer} {
+				assert.True(t, refusedAsDuplicate(t, c, n),
+					degradedMessage(t, c, n))
+				assert.True(t, forging(t, c, n),
+					"%s/%s is not stopped", n.Namespace, n.Name)
+			}
+		})
+	}
 }
 
 // An older agent-signed node in another namespace that names the same public

@@ -56,6 +56,7 @@ func main() {
 		secureMetrics        bool
 		tipStallThreshold    time.Duration
 		keyNamespaces        string
+		fenceNamespaces      string
 	)
 	flag.StringVar(
 		&metricsAddr,
@@ -96,6 +97,16 @@ func main() {
 			"set, the operator watches Secret metadata there (it needs list "+
 			"and watch on Secrets in each) so a delivered key bundle applies "+
 			"at once; unset, it applies on the periodic requeue.",
+	)
+	flag.StringVar(
+		&fenceNamespaces,
+		"forger-fence-namespaces",
+		"",
+		"Comma-separated namespaces trusted to fence each other. When two "+
+			"running block producers of one pool are in namespaces that are "+
+			"both listed, the operator scales the newer to zero. Producers in "+
+			"unlisted namespaces are only refused, never stopped: a pool ID "+
+			"is public and authorizes nothing.",
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -140,6 +151,7 @@ func main() {
 
 		TipStallThreshold: tipStallThreshold,
 		WatchKeyBundles:   len(watchNamespaces) > 0,
+		FenceNamespaces:   splitNamespaces(fenceNamespaces),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(

@@ -286,15 +286,17 @@ applies.
 ### Upgrading with agent-signed producers
 
 An earlier release did not fence producers that both sign through
-`spec.blockProducer.signingAgent`. If two such producers of one pool in different
-namespaces were admitted together, both are refused as duplicates after
-upgrading (`DuplicateForger`, Degraded) and neither StatefulSet is stopped: an
-agent bundle holds no KES key, so the operator cannot verify which producer
-holds custody of the pool and does not stop one on another's claim.
+`spec.blockProducer.signingAgent`, so a pair of one pool may be running when you
+upgrade. Within one namespace the operator now scales the newer DingoNode to
+zero and refuses it (`DuplicateForger`); the older keeps running.
 
-Before upgrading, retire one of the pair by deleting its DingoNode, and confirm
-that its pods have terminated. If the upgrade already happened, do this
-immediately: until then both producers keep forging for the pool.
+Across namespaces a pool ID is public and an agent bundle holds no KES key, so
+the operator cannot verify custody and does not stop either producer: both are
+refused as duplicates (Degraded) and keep forging. Either delete one DingoNode
+and confirm its pods have terminated, or have the cluster admin start the
+operator with `--forger-fence-namespaces=ns-a,ns-b`. When both namespaces are
+listed the operator fences the pair as it does within one namespace. Leave
+namespaces you do not control out of the list.
 
 ## Installation
 
