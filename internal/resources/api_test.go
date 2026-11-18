@@ -267,6 +267,42 @@ func TestAPIIngressPeerValidation(t *testing.T) {
 	}
 }
 
+func TestRelayIngressPeerValidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		peer networkingv1.NetworkPolicyPeer
+	}{
+		{name: "empty peer"},
+		{
+			name: "ip block with selectors",
+			peer: networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: "192.0.2.0/24"},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "relay"},
+				},
+			},
+		},
+		{
+			name: "invalid CIDR",
+			peer: networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: "not-a-cidr"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dn := apiNode()
+			dn.Spec.RelayService.IngressFrom =
+				[]networkingv1.NetworkPolicyPeer{tc.peer}
+			require.ErrorContains(
+				t,
+				ValidateAPIs(dn),
+				"relayService.ingressFrom",
+			)
+		})
+	}
+}
+
 func TestAPITLSProjection(t *testing.T) {
 	dn := apiNode()
 	dn.Spec.APIs.UTxORPCTLSSecretRef = "rpc-tls"

@@ -23,6 +23,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 )
 
 // APIAccessLabel grants access to enabled APIs. Cross-namespace clients must
@@ -91,41 +92,15 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 	if err := validateManagedPortEnv(dn); err != nil {
 		return err
 	}
+	if err := validateIngressPeers(
+		"relayService.ingressFrom",
+		dn.Spec.RelayService.IngressFrom,
+	); err != nil {
+		return err
+	}
 	if a := dn.Spec.APIs; a != nil {
-		for i, peer := range a.IngressFrom {
-			selectors := peer.NamespaceSelector != nil ||
-				peer.PodSelector != nil
-			if peer.IPBlock != nil && selectors {
-				return fmt.Errorf(
-					"apis.ingressFrom[%d] cannot combine ipBlock with selectors",
-					i,
-				)
-			}
-			if peer.IPBlock == nil && !selectors {
-				return fmt.Errorf(
-					"apis.ingressFrom[%d] must set ipBlock or a selector",
-					i,
-				)
-			}
-			if peer.IPBlock != nil {
-				if _, _, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
-					return fmt.Errorf(
-						"apis.ingressFrom[%d].ipBlock.cidr is invalid: %w",
-						i,
-						err,
-					)
-				}
-				for j, excluded := range peer.IPBlock.Except {
-					if _, _, err := net.ParseCIDR(excluded); err != nil {
-						return fmt.Errorf(
-							"apis.ingressFrom[%d].ipBlock.except[%d] is invalid: %w",
-							i,
-							j,
-							err,
-						)
-					}
-				}
-			}
+		if err := validateIngressPeers("apis.ingressFrom", a.IngressFrom); err != nil {
+			return err
 		}
 	}
 	used := map[int32]string{
@@ -203,6 +178,52 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 		} {
 			if value, ok := dn.Spec.Environment[key]; ok && value != want {
 				return fmt.Errorf("%s conflicts with utxorpcTLSSecretRef", key)
+			}
+		}
+	}
+	return nil
+}
+
+func validateIngressPeers(
+	path string,
+	peers []networkingv1.NetworkPolicyPeer,
+) error {
+	for i, peer := range peers {
+		selectors := peer.NamespaceSelector != nil || peer.PodSelector != nil
+		if peer.IPBlock != nil && selectors {
+			return fmt.Errorf(
+				"%s[%d] cannot combine ipBlock with selectors",
+				path,
+				i,
+			)
+		}
+		if peer.IPBlock == nil && !selectors {
+			return fmt.Errorf(
+				"%s[%d] must set ipBlock or a selector",
+				path,
+				i,
+			)
+		}
+		if peer.IPBlock == nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
+			return fmt.Errorf(
+				"%s[%d].ipBlock.cidr is invalid: %w",
+				path,
+				i,
+				err,
+			)
+		}
+		for j, excluded := range peer.IPBlock.Except {
+			if _, _, err := net.ParseCIDR(excluded); err != nil {
+				return fmt.Errorf(
+					"%s[%d].ipBlock.except[%d] is invalid: %w",
+					path,
+					i,
+					j,
+					err,
+				)
 			}
 		}
 	}
