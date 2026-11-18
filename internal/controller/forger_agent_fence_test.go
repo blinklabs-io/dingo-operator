@@ -290,7 +290,7 @@ func TestForgerHeldStoppedOlderWaitsDespiteLabelledPod(t *testing.T) {
 	_, ok := errors.AsType[*forgerHeldError](err)
 	require.True(t, ok, "the stopped older is refused while the newer runs: %v",
 		err)
-	assert.Contains(t, err.Error(), "ns-b/bp2")
+	require.ErrorContains(t, err, "ns-b/bp2")
 }
 
 // One namespace listed is no authority over the other: neither is stopped.
