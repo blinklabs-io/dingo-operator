@@ -504,21 +504,44 @@ New StatefulSets name their data claim template `dingo-data`, so claims are
 `dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
 after the chart's StatefulSet adopts its existing claims once that StatefulSet
 is removed; the chart names it after the release when the release name contains
-`dingo`, and `<release>-dingo` otherwise. A DingoNode also takes over a running
-chart StatefulSet of the same name and namespace, such as one an uninstalled
-release left behind with `helm.sh/resource-policy: keep`: the existing object
-becomes the DingoNode's controlled StatefulSet and its pod template is
-replaced with the operator's, keeping the `dingo-data` claim template. A block
-producer is not refused as a duplicate of its own adopted StatefulSet. This
-needs the StatefulSet's immutable selector to match the pod labels the
+`dingo`, and `<release>-dingo` otherwise. Moving a chart release this way needs
+no takeover: uninstall the release, which keeps the claims because Helm does not
+own them, then create the DingoNode. The node is down between the two steps.
+A keys Secret the chart generated is deleted at uninstall, so back up the keys
+and provision the Secret outside the release first.
+
+To avoid that gap, a DingoNode can instead take over a running chart
+StatefulSet of the same name and namespace: the existing object becomes the
+DingoNode's controlled StatefulSet and its pod template is replaced with the
+operator's, keeping the `dingo-data` claim template. Replacing the template
+rolls the pod once. Order matters:
+
+1. Add the `helm.sh/resource-policy: keep` annotation to the StatefulSet
+   through a `helm upgrade` of the release, not by annotating the live object.
+   Helm uninstall reads the annotation from the stored release manifest, so an
+   annotation added only to the live object does not stop the deletion.
+2. Confirm the annotation appears on the StatefulSet in
+   `helm get manifest <release>`.
+3. Uninstall the release, and confirm the StatefulSet still exists.
+4. Create the DingoNode.
+
+If the DingoNode comes first and the release is uninstalled without `keep`,
+Helm deletes the StatefulSet. A block producer is not refused as a duplicate of
+its own adopted StatefulSet, but a keys Secret the chart generated is deleted
+at uninstall unless the same annotation is on it in the release manifest. Before
+the handoff, either confirm that annotation in `helm get manifest`, or back up
+the keys and provision the Secret outside the release.
+
+Adoption needs the StatefulSet's immutable selector to match the pod labels the
 operator renders: `app.kubernetes.io/name: dingo`, `app.kubernetes.io/instance`
 equal to the DingoNode name, `cardano_network` equal to `spec.network`, and
 `cardano_service: dingo`. The chart's `instance` label is the release name, so
 a release whose StatefulSet is named `<release>-dingo` does not match a
-DingoNode of that name. When the selector does not match, the API server
-rejects the update, the StatefulSet is left unchanged and uncontrolled, and each
-reconcile fails with that error. Claim templates
-are immutable, so a
+DingoNode of that name. Check this before creating the DingoNode. When the
+selector does not match, the operator refuses the StatefulSet before writing
+any Service: the Services and the StatefulSet stay as they were, the chart's pod
+keeps serving, and each reconcile fails with a selector error until the
+mismatch is resolved. Claim templates are immutable, so a
 StatefulSet created by an earlier operator version keeps its `data` template and
 `data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
 node whose retained claims exist, it uses their template name, preferring
