@@ -433,20 +433,30 @@ New StatefulSets name their data claim template `dingo-data`, so claims are
 after the chart's StatefulSet adopts its existing claims once that StatefulSet
 is removed; the chart names it after the release when the release name contains
 `dingo`, and `<release>-dingo` otherwise. A DingoNode also takes over a running
-chart StatefulSet of the same name and namespace, such as one an uninstalled
-release left behind with `helm.sh/resource-policy: keep`: the existing object
-becomes the DingoNode's controlled StatefulSet and its pod template is
-replaced with the operator's, keeping the `dingo-data` claim template. A block
-producer is not refused as a duplicate of its own adopted StatefulSet. This
-needs the StatefulSet's immutable selector to match the pod labels the
+chart StatefulSet of the same name and namespace: the existing object becomes
+the DingoNode's controlled StatefulSet and its pod template is replaced with
+the operator's, keeping the `dingo-data` claim template. Replacing the
+template rolls the pod. Order matters. First set `helm.sh/resource-policy:
+keep` on the StatefulSet and uninstall the release, and confirm the
+StatefulSet still exists; only then create the DingoNode. If the DingoNode
+comes first and the release is uninstalled without `keep`, Helm deletes the
+StatefulSet. A block producer is not refused as a duplicate of its own adopted
+StatefulSet, but a keys Secret the chart generated is deleted at uninstall
+unless it is kept too, so preserve or provision a valid keys Secret before the
+handoff.
+
+Adoption needs the StatefulSet's immutable selector to match the pod labels the
 operator renders: `app.kubernetes.io/name: dingo`, `app.kubernetes.io/instance`
 equal to the DingoNode name, `cardano_network` equal to `spec.network`, and
 `cardano_service: dingo`. The chart's `instance` label is the release name, so
 a release whose StatefulSet is named `<release>-dingo` does not match a
-DingoNode of that name. When the selector does not match, the API server
-rejects the update, the StatefulSet is left unchanged and uncontrolled, and each
-reconcile fails with that error. Claim templates
-are immutable, so a
+DingoNode of that name. Check this before creating the DingoNode. The operator
+updates the node's Services before its StatefulSet. When the selector does not
+match, the Services already select the operator's node label, which the chart's
+pod lacks, so traffic to that pod stops; the API server then rejects the
+StatefulSet's template, leaves the StatefulSet unchanged and uncontrolled, and
+each reconcile fails with that error. Nothing restores the Services' previous
+selectors. Claim templates are immutable, so a
 StatefulSet created by an earlier operator version keeps its `data` template and
 `data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
 node whose retained claims exist, it uses their template name, preferring
