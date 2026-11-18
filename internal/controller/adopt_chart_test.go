@@ -110,7 +110,7 @@ func chartPodSpec(keysSecret string) corev1.PodSpec {
 			Name:  "dingo",
 			Image: "ghcr.io/blinklabs-io/dingo:latest",
 			VolumeMounts: []corev1.VolumeMount{{
-				Name: "dingo-data", MountPath: "/data",
+				Name: "dingo-data", MountPath: "/var/lib/dingo",
 			}},
 		}},
 	}
@@ -175,8 +175,9 @@ func relayNode(name, ns, network string) *dingov1alpha1.DingoNode {
 }
 
 // A DingoNode created beside a StatefulSet a chart release left running takes
-// that StatefulSet over: same object, same pod and claims, no restart of the
-// claim, only a template roll onto the operator's labels.
+// that StatefulSet over. The object and its claim template are kept; the pod
+// template is replaced with the operator's, which rolls the pod. Envtest runs
+// no StatefulSet controller, so neither a pod nor a claim is created here.
 func TestReconcileAdoptsChartStatefulSet(t *testing.T) {
 	t.Parallel()
 	c, ctx := startEnv(t)
@@ -226,13 +227,19 @@ func TestReconcileAdoptsChartStatefulSet(t *testing.T) {
 	assert.Equal(t, "dingo-data", got.Spec.VolumeClaimTemplates[0].Name)
 	assert.Equal(t, chart.Spec.VolumeClaimTemplates[0].Labels,
 		got.Spec.VolumeClaimTemplates[0].Labels)
-	var mounted bool
+	var mountedAt string
 	for _, ctr := range got.Spec.Template.Spec.Containers {
+		if ctr.Name != "dingo" {
+			continue
+		}
 		for _, m := range ctr.VolumeMounts {
-			mounted = mounted || m.Name == "dingo-data"
+			if m.Name == "dingo-data" {
+				mountedAt = m.MountPath
+			}
 		}
 	}
-	assert.True(t, mounted, "no container mounts the dingo-data claim")
+	assert.Equal(t, "/data", mountedAt,
+		"the dingo container must mount dingo-data at the operator's data path")
 
 	// A second pass changes nothing it should not.
 	reconcile(t, ctx, reconcilerFor(c), "dingo", ns)
@@ -337,6 +344,12 @@ func TestReconcileAdoptsChartBlockProducer(t *testing.T) {
 				v.Secret.SecretName == "pool-keys")
 		}
 		assert.True(t, staged)
+
+		// The template is the operator's, not the chart's left in place.
+		assert.Equal(t, resources.ManagedByName,
+			got.Spec.Template.Labels["app.kubernetes.io/managed-by"])
+		assert.Equal(t, "dingo",
+			got.Spec.Template.Labels[resources.NodeLabel])
 
 		var pods corev1.PodList
 		require.NoError(t, c.List(ctx, &pods, client.InNamespace(ns)))
