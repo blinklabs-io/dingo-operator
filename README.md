@@ -290,9 +290,11 @@ An earlier release did not fence producers that both sign through
 namespaces were admitted together, both are refused as duplicates after
 upgrading (`DuplicateForger`, Degraded) and neither StatefulSet is stopped: an
 agent bundle holds no KES key, so the operator cannot verify which producer
-holds custody of the pool and does not stop one on another's claim. Stop one of
-them by hand, for example by deleting its DingoNode or scaling its StatefulSet
-to zero.
+holds custody of the pool and does not stop one on another's claim.
+
+Before upgrading, retire one of the pair by deleting its DingoNode, and confirm
+that its pods have terminated. If the upgrade already happened, do this
+immediately: until then both producers keep forging for the pool.
 
 ## Installation
 
