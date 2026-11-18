@@ -459,13 +459,11 @@ operator renders: `app.kubernetes.io/name: dingo`, `app.kubernetes.io/instance`
 equal to the DingoNode name, `cardano_network` equal to `spec.network`, and
 `cardano_service: dingo`. The chart's `instance` label is the release name, so
 a release whose StatefulSet is named `<release>-dingo` does not match a
-DingoNode of that name. Check this before creating the DingoNode. The operator
-updates the node's Services before its StatefulSet. When the selector does not
-match, the Services already select the operator's node label, which the chart's
-pod lacks, so traffic to that pod stops; the API server then rejects the
-StatefulSet's template, leaves the StatefulSet unchanged and uncontrolled, and
-each reconcile fails with that error. Nothing restores the Services' previous
-selectors. Claim templates are immutable, so a
+DingoNode of that name. Check this before creating the DingoNode. When the
+selector does not match, the operator refuses the StatefulSet before writing
+any Service: the Services and the StatefulSet stay as they were, the chart's pod
+keeps serving, and each reconcile fails with a selector error until the
+mismatch is resolved. Claim templates are immutable, so a
 StatefulSet created by an earlier operator version keeps its `data` template and
 `data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
 node whose retained claims exist, it uses their template name, preferring

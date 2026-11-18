@@ -261,6 +261,22 @@ func TestReconcileChartStatefulSetNetworkMismatch(t *testing.T) {
 
 	chart := chartStatefulSet("dingo", ns, "preprod", "")
 	require.NoError(t, c.Create(ctx, chart))
+	// The chart's Services select its pods; the refusal must leave them
+	// routing to the running pod.
+	svcNames := []string{
+		"dingo", "dingo-headless", "dingo-relay", "dingo-private",
+		"dingo-metrics",
+	}
+	chartSelector := chartMatchLabels("dingo", "preprod")
+	for _, name := range svcNames {
+		require.NoError(t, c.Create(ctx, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.ServiceSpec{
+				Selector: chartSelector,
+				Ports:    []corev1.ServicePort{{Name: "p2p", Port: 3001}},
+			},
+		}))
+	}
 	dn := relayNode("dingo", ns, "preview")
 	require.NoError(t, c.Create(ctx, dn))
 
@@ -286,6 +302,15 @@ func TestReconcileChartStatefulSetNetworkMismatch(t *testing.T) {
 		assert.Empty(t, got.OwnerReferences)
 		assert.Equal(t, chart.Spec.Selector, got.Spec.Selector)
 		assert.Equal(t, chart.Spec.Template.Labels, got.Spec.Template.Labels)
+
+		for _, name := range svcNames {
+			var svc corev1.Service
+			require.NoError(t, c.Get(ctx, types.NamespacedName{
+				Name: name, Namespace: ns,
+			}, &svc))
+			assert.Equal(t, chartSelector, svc.Spec.Selector,
+				"pass %d: refused adoption repointed Service %s", pass, name)
+		}
 	}
 }
 
