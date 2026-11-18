@@ -270,12 +270,14 @@ func TestAPIIngressPeerValidation(t *testing.T) {
 func TestRelayIngressPeerValidation(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		peer networkingv1.NetworkPolicyPeer
+		name      string
+		peer      networkingv1.NetworkPolicyPeer
+		wantError string
 	}{
-		{name: "empty peer"},
+		{name: "empty peer", wantError: "relayService.ingressFrom"},
 		{
-			name: "ip block with selectors",
+			name:      "ip block with selectors",
+			wantError: "relayService.ingressFrom",
 			peer: networkingv1.NetworkPolicyPeer{
 				IPBlock: &networkingv1.IPBlock{CIDR: "192.0.2.0/24"},
 				PodSelector: &metav1.LabelSelector{
@@ -284,9 +286,54 @@ func TestRelayIngressPeerValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "invalid CIDR",
+			name:      "invalid CIDR",
+			wantError: "relayService.ingressFrom",
 			peer: networkingv1.NetworkPolicyPeer{
 				IPBlock: &networkingv1.IPBlock{CIDR: "not-a-cidr"},
+			},
+		},
+		{
+			name:      "invalid pod selector",
+			wantError: ".podSelector",
+			peer: networkingv1.NetworkPolicyPeer{
+				PodSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key: "app", Operator: metav1.LabelSelectorOpIn,
+				}}},
+			},
+		},
+		{
+			name:      "invalid namespace selector",
+			wantError: ".namespaceSelector",
+			peer: networkingv1.NetworkPolicyPeer{
+				NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key: "relay-zone", Operator: metav1.LabelSelectorOpIn,
+				}}},
+			},
+		},
+		{
+			name:      "unrelated exclusion",
+			wantError: "strict subnet",
+			peer: networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{
+				CIDR: "192.0.2.0/24", Except: []string{"198.51.100.0/24"},
+			}},
+		},
+		{
+			name:      "equal exclusion",
+			wantError: "strict subnet",
+			peer: networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{
+				CIDR: "192.0.2.0/24", Except: []string{"192.0.2.0/24"},
+			}},
+		},
+		{
+			name: "strict subnet exclusion",
+			peer: networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{
+				CIDR: "192.0.2.0/24", Except: []string{"192.0.2.128/25"},
+			}},
+		},
+		{
+			name: "empty selector",
+			peer: networkingv1.NetworkPolicyPeer{
+				PodSelector: &metav1.LabelSelector{},
 			},
 		},
 	} {
@@ -294,11 +341,12 @@ func TestRelayIngressPeerValidation(t *testing.T) {
 			dn := apiNode()
 			dn.Spec.RelayService.IngressFrom =
 				[]networkingv1.NetworkPolicyPeer{tc.peer}
-			require.ErrorContains(
-				t,
-				ValidateAPIs(dn),
-				"relayService.ingressFrom",
-			)
+			err := ValidateAPIs(dn)
+			if tc.wantError == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantError)
 		})
 	}
 }

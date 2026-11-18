@@ -24,6 +24,8 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 // APIAccessLabel grants access to enabled APIs. Cross-namespace clients must
@@ -188,7 +190,9 @@ func validateIngressPeers(
 	path string,
 	peers []networkingv1.NetworkPolicyPeer,
 ) error {
+	parts := strings.Split(path, ".")
 	for i, peer := range peers {
+		peerPath := field.NewPath(parts[0], parts[1:]...).Index(i)
 		selectors := peer.NamespaceSelector != nil || peer.PodSelector != nil
 		if peer.IPBlock != nil && selectors {
 			return fmt.Errorf(
@@ -204,10 +208,31 @@ func validateIngressPeers(
 				i,
 			)
 		}
+		if peer.NamespaceSelector != nil {
+			errs := metav1validation.ValidateLabelSelector(
+				peer.NamespaceSelector,
+				metav1validation.LabelSelectorValidationOptions{},
+				peerPath.Child("namespaceSelector"),
+			)
+			if len(errs) > 0 {
+				return errs.ToAggregate()
+			}
+		}
+		if peer.PodSelector != nil {
+			errs := metav1validation.ValidateLabelSelector(
+				peer.PodSelector,
+				metav1validation.LabelSelectorValidationOptions{},
+				peerPath.Child("podSelector"),
+			)
+			if len(errs) > 0 {
+				return errs.ToAggregate()
+			}
+		}
 		if peer.IPBlock == nil {
 			continue
 		}
-		if _, _, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
+		_, parent, err := net.ParseCIDR(peer.IPBlock.CIDR)
+		if err != nil {
 			return fmt.Errorf(
 				"%s[%d].ipBlock.cidr is invalid: %w",
 				path,
@@ -215,14 +240,27 @@ func validateIngressPeers(
 				err,
 			)
 		}
+		parentOnes, parentBits := parent.Mask.Size()
 		for j, excluded := range peer.IPBlock.Except {
-			if _, _, err := net.ParseCIDR(excluded); err != nil {
+			excludedIP, excludedNet, err := net.ParseCIDR(excluded)
+			if err != nil {
 				return fmt.Errorf(
 					"%s[%d].ipBlock.except[%d] is invalid: %w",
 					path,
 					i,
 					j,
 					err,
+				)
+			}
+			excludedOnes, excludedBits := excludedNet.Mask.Size()
+			if excludedBits != parentBits || excludedOnes <= parentOnes ||
+				!parent.Contains(excludedIP) {
+				return fmt.Errorf(
+					"%s[%d].ipBlock.except[%d] must be a strict subnet of %s",
+					path,
+					i,
+					j,
+					peer.IPBlock.CIDR,
 				)
 			}
 		}
