@@ -436,14 +436,23 @@ is removed; the chart names it after the release when the release name contains
 chart StatefulSet of the same name and namespace: the existing object becomes
 the DingoNode's controlled StatefulSet and its pod template is replaced with
 the operator's, keeping the `dingo-data` claim template. Replacing the
-template rolls the pod. Order matters. First set `helm.sh/resource-policy:
-keep` on the StatefulSet and uninstall the release, and confirm the
-StatefulSet still exists; only then create the DingoNode. If the DingoNode
-comes first and the release is uninstalled without `keep`, Helm deletes the
-StatefulSet. A block producer is not refused as a duplicate of its own adopted
-StatefulSet, but a keys Secret the chart generated is deleted at uninstall
-unless it is kept too, so preserve or provision a valid keys Secret before the
-handoff.
+template rolls the pod. Order matters:
+
+1. Add the `helm.sh/resource-policy: keep` annotation to the StatefulSet
+   through a `helm upgrade` of the release, not by annotating the live object.
+   Helm uninstall reads the annotation from the stored release manifest, so an
+   annotation added only to the live object does not stop the deletion.
+2. Confirm the annotation appears on the StatefulSet in
+   `helm get manifest <release>`.
+3. Uninstall the release, and confirm the StatefulSet still exists.
+4. Create the DingoNode.
+
+If the DingoNode comes first and the release is uninstalled without `keep`,
+Helm deletes the StatefulSet. A block producer is not refused as a duplicate of
+its own adopted StatefulSet, but a keys Secret the chart generated is deleted
+at uninstall unless the same annotation is on it in the release manifest. Before
+the handoff, either confirm that annotation in `helm get manifest`, or back up
+the keys and provision the Secret outside the release.
 
 Adoption needs the StatefulSet's immutable selector to match the pod labels the
 operator renders: `app.kubernetes.io/name: dingo`, `app.kubernetes.io/instance`
