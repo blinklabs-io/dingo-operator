@@ -238,10 +238,10 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 }
 
 // holdsStoppedLocalSigner reports whether a stopped StatefulSet must stay at
-// zero replicas: dn signs through an agent, so the fence admits it once its
-// workload is down, but its template is held at a render that signs with a
-// local KES key. Restoring replicas would start that local signer beside the
-// agent-signed producers of its pool, so the replicas return only with the
+// zero replicas: dn now signs through an agent, possibly for another pool, but
+// its template is held at a render that signs with a local KES key. The fence
+// judged dn by its spec, not by the pool that template runs, so restoring
+// replicas could start a second forger of that pool. They return with the
 // agent template.
 func holdsStoppedLocalSigner(
 	dn *dingov1alpha1.DingoNode,

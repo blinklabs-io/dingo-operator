@@ -169,10 +169,8 @@ operators.
   NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
   pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
-- **Safe HA** — `SingleActive` is the only supported strategy: one forger per
-  pool, with reschedule on failure. Producers that all sign through the same
-  `spec.blockProducer.signingAgent` deployment are the exception: the producer
-  fence described below does not apply to them. `ActiveStandby` is rejected by
+- **Safe HA** — `SingleActive` is the only supported strategy: exactly one
+  forger, with reschedule on failure. `ActiveStandby` is rejected by
   validation until fenced failover is implemented. A block producer gets
   a PodDisruptionBudget that keeps its one pod available, so `kubectl drain` of
   its node does not complete. Set
@@ -258,13 +256,19 @@ keys Secret. Besides that held template, only two kinds of
 evidence scale a running producer to zero: an older valid DingoNode
 naming the same pool or keys, and the workload of a live DingoNode that shares
 them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
-controls, matched by UID. Across namespaces either counts only when that
+controls, matched by UID. The workload of a newer valid DingoNode does not
+stop a producer already running beside it in the same namespace, or in two
+namespaces both listed in the operator's `--forger-fence-namespaces`: the newer
+one is stopped instead. Across namespaces either kind counts only when that
 DingoNode's keys Secret holds the KES signing key its opcert certifies for the
-shared pool: a pool ID, or an opcert copied from a block header, is public, so
-a DingoNode in another namespace that only names the pool refuses without
-halting. Owner references are set by whoever creates the object, so this
-trusts anyone who may create pods or StatefulSets in the producer's namespace,
-or in the namespace of a DingoNode whose keys Secret holds the pool's keys. A
+shared pool, or when both namespaces are listed: a pool ID, or an opcert copied
+from a block header, is public, so a DingoNode in another namespace that only
+names the pool refuses without halting. A refusal that does not halt never
+hides one that does. Owner references are set by whoever creates the object,
+so this trusts anyone who may create pods or StatefulSets in the producer's
+namespace, or in the namespace of a DingoNode whose keys Secret holds the
+pool's keys, and anyone who may create or edit a DingoNode in a listed
+namespace: an edited DingoNode keeps its age. A
 producer's own pods are only those controlled, by UID, by the StatefulSet it
 controls; a pod that only carries its name label is another workload. A
 workload no live DingoNode
@@ -281,29 +285,26 @@ is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name
 count, and if its workload is running the reconcile fails closed.
 
-Two block producers that both sign through `spec.blockProducer.signingAgent` are
-not fenced against each other. For such a pair, the same pool on the same
-network, the same keys Secret name in a namespace and the same keys checksum
-are not conflicts: neither is refused with `DuplicateForger`, held or scaled to
-zero, so a pool can have a second producer that keeps forging when one node is
-lost. This holds because the Bursa KES agent's shared slot guard signs at most
-one header per pool and slot across agent replicas, and an agent-signed producer
-holds no KES key to sign a block on its own. The operator cannot verify that
-two producers share one agent store: the guarantee depends on them signing
-through the same agent deployment, and two producers pointed at independent
-agents are not protected from a double forge. Every other pair keeps the fence
-described above, including cross-namespace, held-template, restage and
-invalid-spec halts: when either producer has no `signingAgent`, a local
-`kes.skey` is a KES key that can sign, so the older still keeps the keys. A
-workload counts as agent-signed from what it carries, not from the DingoNode
-spec: the `dingo` container has a literal `CARDANO_SHELLEY_KES_AGENT_ADDRESS`
-and no `CARDANO_SHELLEY_KES_KEY`, with no `envFrom`, command or arguments that
-could set either. A node whose spec names an agent but whose StatefulSet
-template or running pod still has a local KES key, as when the template is held
-at its earlier render, is fenced as a local producer until that workload stops.
-Stopped, it stays at zero replicas while its template is held at that render,
-for one while its agent client certificate Secret is incomplete; the replicas
-return with the agent-signed template.
+A producer whose spec now names a signing agent but whose held template still
+signs with a local KES key stays at zero replicas until the agent template
+applies.
+
+### Upgrading with agent-signed producers
+
+An earlier release did not fence producers that both sign through
+`spec.blockProducer.signingAgent`, so a pair of one pool may be running when you
+upgrade. Within one namespace the operator now scales the newer DingoNode to
+zero and refuses it (`DuplicateForger`); the older keeps running.
+
+Across namespaces a pool ID is public and an agent bundle holds no KES key, so
+the operator cannot verify custody and does not stop either producer: both are
+refused as duplicates (Degraded) and keep forging. Either delete one DingoNode
+and confirm its pods have terminated, or have the cluster admin start the
+operator with `--forger-fence-namespaces=ns-a,ns-b`. When both namespaces are
+listed the operator fences the pair as it does within one namespace, for every
+producer pair, agent-signed or not. Anyone who may create or edit a DingoNode
+in a listed namespace can then stop a producer in another listed namespace, so
+list only namespaces one party controls.
 
 ## Installation
 
@@ -440,21 +441,44 @@ New StatefulSets name their data claim template `dingo-data`, so claims are
 `dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
 after the chart's StatefulSet adopts its existing claims once that StatefulSet
 is removed; the chart names it after the release when the release name contains
-`dingo`, and `<release>-dingo` otherwise. A DingoNode also takes over a running
-chart StatefulSet of the same name and namespace, such as one an uninstalled
-release left behind with `helm.sh/resource-policy: keep`: the existing object
-becomes the DingoNode's controlled StatefulSet and its pod template is
-replaced with the operator's, keeping the `dingo-data` claim template. A block
-producer is not refused as a duplicate of its own adopted StatefulSet. This
-needs the StatefulSet's immutable selector to match the pod labels the
+`dingo`, and `<release>-dingo` otherwise. Moving a chart release this way needs
+no takeover: uninstall the release, which keeps the claims because Helm does not
+own them, then create the DingoNode. The node is down between the two steps.
+A keys Secret the chart generated is deleted at uninstall, so back up the keys
+and provision the Secret outside the release first.
+
+To avoid that gap, a DingoNode can instead take over a running chart
+StatefulSet of the same name and namespace: the existing object becomes the
+DingoNode's controlled StatefulSet and its pod template is replaced with the
+operator's, keeping the `dingo-data` claim template. Replacing the template
+rolls the pod once. Order matters:
+
+1. Add the `helm.sh/resource-policy: keep` annotation to the StatefulSet
+   through a `helm upgrade` of the release, not by annotating the live object.
+   Helm uninstall reads the annotation from the stored release manifest, so an
+   annotation added only to the live object does not stop the deletion.
+2. Confirm the annotation appears on the StatefulSet in
+   `helm get manifest <release>`.
+3. Uninstall the release, and confirm the StatefulSet still exists.
+4. Create the DingoNode.
+
+If the DingoNode comes first and the release is uninstalled without `keep`,
+Helm deletes the StatefulSet. A block producer is not refused as a duplicate of
+its own adopted StatefulSet, but a keys Secret the chart generated is deleted
+at uninstall unless the same annotation is on it in the release manifest. Before
+the handoff, either confirm that annotation in `helm get manifest`, or back up
+the keys and provision the Secret outside the release.
+
+Adoption needs the StatefulSet's immutable selector to match the pod labels the
 operator renders: `app.kubernetes.io/name: dingo`, `app.kubernetes.io/instance`
 equal to the DingoNode name, `cardano_network` equal to `spec.network`, and
 `cardano_service: dingo`. The chart's `instance` label is the release name, so
 a release whose StatefulSet is named `<release>-dingo` does not match a
-DingoNode of that name. When the selector does not match, the API server
-rejects the update, the StatefulSet is left unchanged and uncontrolled, and each
-reconcile fails with that error. Claim templates
-are immutable, so a
+DingoNode of that name. Check this before creating the DingoNode. When the
+selector does not match, the operator refuses the StatefulSet before writing
+any Service: the Services and the StatefulSet stay as they were, the chart's pod
+keeps serving, and each reconcile fails with a selector error until the
+mismatch is resolved. Claim templates are immutable, so a
 StatefulSet created by an earlier operator version keeps its `data` template and
 `data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
 node whose retained claims exist, it uses their template name, preferring

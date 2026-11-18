@@ -38,8 +38,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -111,6 +114,10 @@ type DingoNodeReconciler struct {
 	// The manager's Secret cache must be scoped to the namespaces the operator
 	// may list (KeyBundleCacheOptions); leave it false otherwise.
 	WatchKeyBundles bool
+	// FenceNamespaces lists the namespaces the cluster admin trusts to fence
+	// each other: a running duplicate pair whose namespaces are both listed
+	// is resolved by stopping the newer producer, as within one namespace.
+	FenceNamespaces []string
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex
@@ -459,6 +466,38 @@ func (r *DingoNodeReconciler) liveConfigChecksum(
 	return sts.Spec.Template.Annotations[resources.ConfigChecksumAnnotation], nil
 }
 
+// checkStatefulSetSelector refuses an existing StatefulSet whose immutable
+// selector the operator's pod template cannot satisfy. The error matches the
+// API server's rejection of that template.
+func (r *DingoNodeReconciler) checkStatefulSetSelector(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	opts resources.RenderOptions,
+) error {
+	sts := &appsv1.StatefulSet{}
+	key := client.ObjectKey{Name: dn.Name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, sts); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	sel, err := metav1.LabelSelectorAsSelector(sts.Spec.Selector)
+	if err != nil {
+		return err
+	}
+	tmplLabels := resources.BuildStatefulSet(dn, opts).Spec.Template.Labels
+	if sel.Matches(labels.Set(tmplLabels)) {
+		return nil
+	}
+	return apierrors.NewInvalid(
+		schema.GroupKind{Group: "apps", Kind: "StatefulSet"},
+		sts.Name,
+		field.ErrorList{field.Invalid(
+			field.NewPath("spec", "template", "metadata", "labels"),
+			tmplLabels,
+			"`selector` does not match template `labels`",
+		)},
+	)
+}
+
 // reconcileResources applies all child objects for the node.
 func (r *DingoNodeReconciler) reconcileResources(
 	ctx context.Context,
@@ -704,6 +743,12 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 	}
 
+	// Before any Service write: Services repointed at a template the
+	// StatefulSet then refuses would cut the running pod off, and nothing
+	// restores them.
+	if err := r.checkStatefulSetSelector(ctx, dn, opts); err != nil {
+		return fmt.Errorf("apply statefulset: %w", err)
+	}
 	if err := r.upsertServiceAccount(ctx, dn); err != nil {
 		return fmt.Errorf("apply serviceaccount: %w", err)
 	}

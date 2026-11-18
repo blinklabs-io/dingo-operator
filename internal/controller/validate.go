@@ -263,12 +263,6 @@ func forgerConflict(
 			validateSpec(o) != nil {
 			continue
 		}
-		// Two producers that sign through an agent hold no KES key, and the
-		// agent signs at most one header per pool and slot. A workload of o
-		// that still holds a local KES key is caught by heldBy, which reads it.
-		if resources.UsesSigningAgent(dn) && resources.UsesSigningAgent(o) {
-			continue
-		}
 		if pool != "" &&
 			pool == normalizedPoolID(o.Spec.BlockProducer.PoolID) &&
 			sameNetwork(network, networkKey(o)) {
