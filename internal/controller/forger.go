@@ -210,6 +210,13 @@ func (r *DingoNodeReconciler) nodeIdentity(
 	return id, nil
 }
 
+// forgesWithLocalKES reports whether a pod spec mounts block producer keys
+// without signing through an agent.
+func forgesWithLocalKES(spec corev1.PodSpec) bool {
+	_, keyed := resources.KeysSecretName(spec)
+	return keyed && !resources.PodSignsThroughAgent(spec)
+}
+
 // forgerHeld returns an error when dn may not run its keys yet: an older live
 // block producer holds them (by spec, or by the cold key in the Secret), or a
 // newer one or a DingoNode that is gone or being deleted still runs them. The
@@ -290,6 +297,21 @@ func (r *DingoNodeReconciler) heldBy(
 			held := heldf
 			if !backed {
 				held = unverifiedHeldf
+				// Two agent-signed producers hold no KES key to show custody
+				// of the pool, so neither is ever backed by the other. A
+				// DingoNode may always stop its own workload, so the newer one
+				// does when the older runs: that gives no one authority over
+				// another namespace, and an older producer that never ran
+				// holds nothing.
+				if resources.UsesSigningAgent(dn) && resources.UsesSigningAgent(o) {
+					up, err := r.workloadUp(ctx, o)
+					if err != nil {
+						return err
+					}
+					if up == workloadVerified {
+						held = heldf
+					}
+				}
 			}
 			return held(
 				"block producer %s/%s already forges with the same %s; only "+
