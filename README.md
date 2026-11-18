@@ -432,7 +432,21 @@ New StatefulSets name their data claim template `dingo-data`, so claims are
 `dingo-data-<name>-<ordinal>`, matching the dingo Helm chart. A DingoNode named
 after the chart's StatefulSet adopts its existing claims once that StatefulSet
 is removed; the chart names it after the release when the release name contains
-`dingo`, and `<release>-dingo` otherwise. Claim templates are immutable, so a
+`dingo`, and `<release>-dingo` otherwise. A DingoNode also takes over a running
+chart StatefulSet of the same name and namespace, such as one an uninstalled
+release left behind with `helm.sh/resource-policy: keep`: the existing object
+becomes the DingoNode's controlled StatefulSet and its pod template is
+replaced with the operator's, keeping the `dingo-data` claim template. A block
+producer is not refused as a duplicate of its own adopted StatefulSet. This
+needs the StatefulSet's immutable selector to match the pod labels the
+operator renders: `app.kubernetes.io/name: dingo`, `app.kubernetes.io/instance`
+equal to the DingoNode name, `cardano_network` equal to `spec.network`, and
+`cardano_service: dingo`. The chart's `instance` label is the release name, so
+a release whose StatefulSet is named `<release>-dingo` does not match a
+DingoNode of that name. When the selector does not match, the API server
+rejects the update, the StatefulSet is left unchanged and uncontrolled, and each
+reconcile fails with that error. Claim templates
+are immutable, so a
 StatefulSet created by an earlier operator version keeps its `data` template and
 `data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
 node whose retained claims exist, it uses their template name, preferring
