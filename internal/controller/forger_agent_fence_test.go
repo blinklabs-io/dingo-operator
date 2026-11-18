@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -231,6 +233,64 @@ func TestReconcileRunningAgentSignedPairIsFencedWhereTrusted(t *testing.T) {
 				})
 		}
 	}
+}
+
+// A third producer of the pool in an unlisted namespace refuses without
+// halting. Whatever order the DingoNodes are listed in, and whatever its age,
+// that refusal must not stand in for the halting one the older of a trusted
+// pair gives the newer: the older keeps running beside a newer it outranks.
+func TestForgerHeldTrustedPairHaltsBesideUntrustedClaim(t *testing.T) {
+	t.Parallel()
+	for _, age := range []time.Duration{2 * time.Hour, 0} {
+		t.Run(age.String(), func(t *testing.T) {
+			t.Parallel()
+			older, newer, objs := runningPair("ns-a", "ns-b")
+			squat := agentForger(
+				"squat", "ns-c", conflictPoolID, "squat-keys", age,
+			)
+			objs = append(objs, squat,
+				ownedWorkload(squat, squat, conflictPoolID, 1))
+			r := reconcilerFor(conflictClient(t, objs...))
+			r.FenceNamespaces = []string{"ns-a", "ns-b"}
+			all := []dingov1alpha1.DingoNode{*squat, *older, *newer}
+			err := r.forgerHeld(context.Background(), newer, all)
+			held, ok := errors.AsType[*forgerHeldError](err)
+			require.True(t, ok, "%v", err)
+			assert.True(t, held.halt, held.msg)
+			assert.Contains(t, held.msg, "ns-a/bp")
+		})
+	}
+}
+
+// Only the workload a DingoNode controls shows it already runs. A stopped
+// older producer that a pod merely labelled with its name makes look up must
+// wait for the newer of a trusted pair to stop, not start beside it.
+func TestForgerHeldStoppedOlderWaitsDespiteLabelledPod(t *testing.T) {
+	t.Parallel()
+	older := agentForger("bp", "ns-a", conflictPoolID, "keys-a", time.Hour)
+	newer := agentForger("bp2", "ns-b", conflictPoolID, "keys-b", 0)
+	// The newer's workload mounts no keys, so only heldBy can see it.
+	running := resources.BuildStatefulSet(newer, resources.RenderOptions{
+		Replicas: 1,
+	})
+	running.UID = types.UID("sts-ns-b-bp2")
+	running.OwnerReferences = ownedWorkload(
+		newer, newer, conflictPoolID, 1,
+	).OwnerReferences
+	stray := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "bp-0", Namespace: "ns-a",
+		Labels: map[string]string{resources.NodeLabel: older.Name},
+	}}
+	r := reconcilerFor(conflictClient(t, older, newer, stray, running,
+		ownedWorkload(older, older, conflictPoolID, 0),
+	))
+	r.FenceNamespaces = []string{"ns-a", "ns-b"}
+	all := []dingov1alpha1.DingoNode{*older, *newer}
+	err := r.forgerHeld(context.Background(), older, all)
+	_, ok := errors.AsType[*forgerHeldError](err)
+	require.True(t, ok, "the stopped older is refused while the newer runs: %v",
+		err)
+	assert.Contains(t, err.Error(), "ns-b/bp2")
 }
 
 // One namespace listed is no authority over the other: neither is stopped.

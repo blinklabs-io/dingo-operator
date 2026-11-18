@@ -103,10 +103,11 @@ func main() {
 		"forger-fence-namespaces",
 		"",
 		"Comma-separated namespaces trusted to fence each other. When two "+
-			"running block producers of one pool are in namespaces that are "+
-			"both listed, the operator scales the newer to zero. Producers in "+
-			"unlisted namespaces are only refused, never stopped: a pool ID "+
-			"is public and authorizes nothing.",
+			"block producers of one pool are in namespaces that are both "+
+			"listed, the newer is refused and scaled to zero as within one "+
+			"namespace. Across unlisted namespaces a claim that names only "+
+			"the pool ID does not stop a producer: a pool ID is public. List "+
+			"only namespaces one party controls.",
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)

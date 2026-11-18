@@ -576,13 +576,19 @@ keys Secret. Besides that held template, only two kinds of
 evidence scale a running producer to zero: an older valid DingoNode
 naming the same pool or keys, and the workload of a live DingoNode that shares
 them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
-controls, matched by UID. Across namespaces either counts only when that
+controls, matched by UID. The workload of a newer valid DingoNode does not
+stop a producer already running beside it in the same namespace, or in two
+namespaces both listed in the operator's `--forger-fence-namespaces`: the newer
+one is stopped instead. Across namespaces either kind counts only when that
 DingoNode's keys Secret holds the KES signing key its opcert certifies for the
-shared pool: a pool ID, or an opcert copied from a block header, is public, so
-a DingoNode in another namespace that only names the pool refuses without
-halting. Owner references are set by whoever creates the object, so this
-trusts anyone who may create pods or StatefulSets in the producer's namespace,
-or in the namespace of a DingoNode whose keys Secret holds the pool's keys. A
+shared pool, or when both namespaces are listed: a pool ID, or an opcert copied
+from a block header, is public, so a DingoNode in another namespace that only
+names the pool refuses without halting. A refusal that does not halt never
+hides one that does. Owner references are set by whoever creates the object,
+so this trusts anyone who may create pods or StatefulSets in the producer's
+namespace, or in the namespace of a DingoNode whose keys Secret holds the
+pool's keys, and anyone who may create or edit a DingoNode in a listed
+namespace: an edited DingoNode keeps its age. A
 producer's own pods are only those controlled, by UID, by the StatefulSet it
 controls; a pod that only carries its name label is another workload. A
 workload no live DingoNode
