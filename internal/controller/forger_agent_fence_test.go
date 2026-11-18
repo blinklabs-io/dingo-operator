@@ -93,7 +93,7 @@ func TestReconcileAgentSignedForgersAreFenced(t *testing.T) {
 			assert.True(t, refusedAsDuplicate(t, c, tt.newer),
 				degradedMessage(t, c, tt.newer))
 			if tt.sameNS {
-				assert.False(t, forging(t, c, tt.newer),
+				assert.True(t, stoppedAtZero(t, c, tt.newer),
 					"a running newer producer is scaled to zero")
 				reconcileNode(t, r, tt.older)
 				assert.True(t, forging(t, c, tt.older))
@@ -156,7 +156,8 @@ func TestReconcileRunningAgentSignedForgersAcrossNamespacesSelfFence(
 		reconcileNode(t, r, newer)
 		reconcileNode(t, r, older)
 	}
-	assert.False(t, forging(t, c, newer), "the newer stops its own workload")
+	assert.True(t, stoppedAtZero(t, c, newer),
+		"the newer stops its own workload")
 	assert.True(t, refusedAsDuplicate(t, c, newer),
 		degradedMessage(t, c, newer))
 	assert.True(t, forging(t, c, older), "the older keeps forging")
@@ -200,8 +201,22 @@ func TestReconcileStoppedLocalTemplateForOtherPoolStaysStopped(t *testing.T) {
 		))
 		require.True(t, forgesWithLocalKES(sts.Spec.Template.Spec),
 			"the template is held at the local-KES render")
-		assert.False(t, forging(t, c, switching),
+		assert.True(t, stoppedAtZero(t, c, switching),
 			"a held local-KES template must not restart")
 	}
 	assert.True(t, forging(t, c, runner))
+}
+
+// stoppedAtZero reports whether n's StatefulSet still exists with zero
+// replicas. Unlike !forging, it fails when the StatefulSet was deleted
+// instead of stopped.
+func stoppedAtZero(
+	t *testing.T, c client.Client, n *dingov1alpha1.DingoNode,
+) bool {
+	t.Helper()
+	var sts appsv1.StatefulSet
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(n), &sts,
+	), "the StatefulSet must remain")
+	return sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0
 }
