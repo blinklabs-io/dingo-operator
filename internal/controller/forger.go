@@ -111,9 +111,11 @@ type forgerIdentity struct {
 	pools     []string
 	keyed     []string
 	namespace string
-	secret    string
-	checksum  string
-	network   string
+	// secrets are the keys Secrets of the node: one, or one per pool of a
+	// pool list.
+	secrets  []string
+	checksum string
+	network  string
 }
 
 // backedBy reports whether b's claim on a's keys may halt a. A writer in a's
@@ -145,8 +147,12 @@ func (a forgerIdentity) sharedWith(b forgerIdentity) string {
 			}
 		}
 	}
-	if a.secret != "" && a.namespace == b.namespace && a.secret == b.secret {
-		return fmt.Sprintf("keys Secret %q", a.secret)
+	if a.namespace == b.namespace {
+		for _, s := range a.secrets {
+			if s != "" && slices.Contains(b.secrets, s) {
+				return fmt.Sprintf("keys Secret %q", s)
+			}
+		}
 	}
 	return ""
 }
@@ -214,13 +220,45 @@ func (r *DingoNodeReconciler) nodeIdentity(
 	dn *dingov1alpha1.DingoNode,
 ) (forgerIdentity, error) {
 	id := forgerIdentity{namespace: dn.Namespace, network: networkKey(dn)}
-	if bp := dn.Spec.BlockProducer; bp != nil {
-		id.secret = bp.Keys.SecretRef
+	bp := dn.Spec.BlockProducer
+	if bp != nil && len(bp.Pools) > 0 {
+		// Every listed pool is claimed, a pool left out of the pod for its
+		// keys included: dropping it must not free the pool for another node
+		// while the Secret and the spec still name it. The spec's claims come
+		// first, so a failed Secret read still returns all of them.
+		for _, p := range bp.Pools {
+			if pool := normalizedPoolID(p.PoolID); pool != "" {
+				id.pools = append(id.pools, pool)
+			}
+			id.secrets = append(id.secrets, p.Keys.SecretRef)
+		}
+		for _, p := range bp.Pools {
+			pool, _, keyed, err := r.keysPoolID(
+				ctx, id.namespace, p.Keys.SecretRef,
+			)
+			if err != nil {
+				return id, err
+			}
+			if pool != "" {
+				id.pools = append(id.pools, pool)
+			}
+			if keyed {
+				id.keyed = append(id.keyed, pool)
+			}
+		}
+		return id, nil
+	}
+	if bp != nil {
+		id.secrets = []string{bp.Keys.SecretRef}
 		if p := normalizedPoolID(bp.PoolID); p != "" {
 			id.pools = append(id.pools, p)
 		}
 	}
-	p, sum, keyed, err := r.keysPoolID(ctx, id.namespace, id.secret)
+	var secret string
+	if len(id.secrets) > 0 {
+		secret = id.secrets[0]
+	}
+	p, sum, keyed, err := r.keysPoolID(ctx, id.namespace, secret)
 	if err != nil {
 		return id, err
 	}
@@ -234,11 +272,11 @@ func (r *DingoNodeReconciler) nodeIdentity(
 	return id, nil
 }
 
-// forgesWithLocalKES reports whether a pod spec mounts block producer keys
-// without signing through an agent.
+// forgesWithLocalKES reports whether a pod spec mounts block producer keys,
+// one Secret or one per pool, without signing through an agent.
 func forgesWithLocalKES(spec corev1.PodSpec) bool {
-	_, keyed := resources.KeysSecretName(spec)
-	return keyed && !resources.PodSignsThroughAgent(spec)
+	return len(resources.KeysSecretNames(spec)) > 0 &&
+		!resources.PodSignsThroughAgent(spec)
 }
 
 // forgerHeld returns an error when dn may not run its keys yet: an older live
@@ -587,7 +625,7 @@ func (r *DingoNodeReconciler) restagesOtherPool(
 	tmpl := sts.Spec.Template
 	secret, ok := resources.KeysSecretName(tmpl.Spec)
 	if !ok {
-		return false, nil
+		return r.restagesOtherPoolOfList(ctx, sts)
 	}
 	pool, sum, _, err := r.keysPoolID(ctx, sts.Namespace, secret)
 	if err != nil || sum == "" {
@@ -600,6 +638,38 @@ func (r *DingoNodeReconciler) restagesOtherPool(
 	return staged == "" || staged != pool, nil
 }
 
+// restagesOtherPoolOfList is restagesOtherPool for a template of a pool list:
+// it mounts one Secret per pool, in pool ID order, and records the pools it
+// was rendered for. A Secret that now holds another pool's opcert would have a
+// recreated pod forge for that pool, since Dingo takes the pool from the
+// opcert. A template whose record does not match its Secrets cannot show which
+// pools it stages.
+func (r *DingoNodeReconciler) restagesOtherPoolOfList(
+	ctx context.Context,
+	sts *appsv1.StatefulSet,
+) (bool, error) {
+	secrets := resources.KeysSecretNames(sts.Spec.Template.Spec)
+	if len(secrets) == 0 {
+		return false, nil
+	}
+	staged := resources.SplitKeysPools(
+		sts.Spec.Template.Annotations[resources.KeysPoolAnnotation],
+	)
+	if len(staged) != len(secrets) {
+		return true, nil
+	}
+	for i, secret := range secrets {
+		pool, sum, _, err := r.keysPoolID(ctx, sts.Namespace, secret)
+		if err != nil {
+			return false, err
+		}
+		if sum != "" && normalizedPoolID(staged[i]) != pool {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // rollsPastUnknownPool reports whether dn may proceed while another producer's
 // pod of unknown staged pool runs. dn must already run a pod controlled by the
 // StatefulSet dn controls, and each such pod must have staged the pool dn's
@@ -608,7 +678,8 @@ func (r *DingoNodeReconciler) restagesOtherPool(
 // may have staged the pool dn's keys now name, and dn's roll would then start
 // a second forger of it. Two such producers hold each other; each whose keys
 // moved to another pool is halted (restagesOtherPool), and the first whose
-// rival pod stops rolls.
+// rival pod stops rolls. A pool-list node's pod must have staged every pool
+// the node lists: a pool new to it may be the one the other pod forges.
 func (r *DingoNodeReconciler) rollsPastUnknownPool(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -638,10 +709,23 @@ func (r *DingoNodeReconciler) rollsPastUnknownPool(
 			continue
 		}
 		runs = true
-		pool := normalizedPoolID(p.Annotations[resources.KeysPoolAnnotation])
-		if pool != "" {
-			if !slices.Contains(mine.pools, pool) {
-				return false, nil
+		if recorded := resources.SplitKeysPools(
+			p.Annotations[resources.KeysPoolAnnotation],
+		); len(recorded) > 0 {
+			staged := make([]string, 0, len(recorded))
+			for _, pool := range recorded {
+				pool = normalizedPoolID(pool)
+				if !slices.Contains(mine.pools, pool) {
+					return false, nil
+				}
+				staged = append(staged, pool)
+			}
+			if resources.UsesPoolList(dn) {
+				for _, pool := range poolIDs(dn.Spec.BlockProducer) {
+					if !slices.Contains(staged, pool) {
+						return false, nil
+					}
+				}
 			}
 			continue
 		}
@@ -676,25 +760,34 @@ func (r *DingoNodeReconciler) orphanHolds(
 	stagedSum string,
 	spec corev1.PodSpec,
 ) (unknown bool, err error) {
-	secret, ok := resources.KeysSecretName(spec)
-	if !ok {
+	secrets := resources.KeysSecretNames(spec)
+	if len(secrets) == 0 {
 		return false, nil
 	}
 	theirs := forgerIdentity{
 		namespace: namespace,
-		secret:    secret,
+		secrets:   secrets,
 		network:   podNetwork(spec),
 	}
-	recorded := normalizedPoolID(annotations[resources.KeysPoolAnnotation])
-	if recorded != "" {
-		theirs.pools = append(theirs.pools, recorded)
+	recorded := resources.SplitKeysPools(
+		annotations[resources.KeysPoolAnnotation],
+	)
+	for _, pool := range recorded {
+		theirs.pools = append(theirs.pools, normalizedPoolID(pool))
 	}
-	p, sum, _, err := r.keysPoolID(ctx, namespace, secret)
-	if err != nil {
-		return false, err
-	}
-	if p != "" {
-		theirs.pools = append(theirs.pools, p)
+	var sum string
+	for _, secret := range secrets {
+		p, secretSum, _, err := r.keysPoolID(ctx, namespace, secret)
+		if err != nil {
+			return false, err
+		}
+		if p != "" {
+			theirs.pools = append(theirs.pools, p)
+		}
+		// Only a single-pool pod is judged by its Secret's checksum.
+		if len(secrets) == 1 {
+			sum = secretSum
+		}
 	}
 	what := mine.sharedWith(theirs)
 	if what == "" && stagedSum != "" && stagedSum == mine.checksum &&
@@ -702,7 +795,7 @@ func (r *DingoNodeReconciler) orphanHolds(
 		what = "keys bundle"
 	}
 	if what == "" {
-		return recorded == "" && stagedSum != "" && stagedSum != sum &&
+		return len(recorded) == 0 && stagedSum != "" && stagedSum != sum &&
 			sameNetwork(mine.network, theirs.network), nil
 	}
 	return false, unverifiedHeldf(

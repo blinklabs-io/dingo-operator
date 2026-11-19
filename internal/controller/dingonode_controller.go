@@ -178,6 +178,12 @@ type onChainAttempt struct {
 	poolID     string
 	// ok reports whether counter/observedAt/poolID are set.
 	ok bool
+	// counters holds, by pool ID, the counters a pool list's attempt read.
+	// poolID is then the sorted list of the pools asked about.
+	counters map[string]int64
+	// list marks an attempt of a pool list. A one-pool list's poolID equals
+	// poolId's, so the mode is what tells the two apart.
+	list bool
 }
 
 // +kubebuilder:rbac:groups=dingo.blinklabs.io,resources=dingonodes,verbs=get;list;watch;create;update;patch;delete
@@ -568,8 +574,19 @@ func (r *DingoNodeReconciler) reconcileResources(
 	// externally-delivered key/opcert swap takes effect. The Secret is read via
 	// the uncached APIReader (get-only, no informer/watch) to avoid holding the
 	// cluster-wide Secret cache this operator must not have.
+	if !resources.UsesPoolList(dn) {
+		// status.pools describes a pool list; a node without one has none.
+		dn.Status.Pools = nil
+	}
+	if resources.UsesPoolList(dn) && r.APIReader != nil {
+		keep, msg, err := r.reconcilePoolKeys(ctx, dn, &opts)
+		if err != nil {
+			return err
+		}
+		keepTemplate, holdMessage = keep, msg
+	}
 	if bp := dn.Spec.BlockProducer; resources.IsBlockProducer(dn) &&
-		r.APIReader != nil && bp != nil {
+		!resources.UsesPoolList(dn) && r.APIReader != nil && bp != nil {
 		secret := &corev1.Secret{}
 		key := types.NamespacedName{
 			Name:      bp.Keys.SecretRef,
@@ -1092,6 +1109,12 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// exactly when /readyz fails -- a node behind, stalled or catching up is
 	// when its remaining KES periods matter most. The headless Service sets
 	// PublishNotReadyAddresses, so an unready node stays scrapable.
+	// A pool list's unlabelled series are attributed by the pod that answered,
+	// read before and after the scrape.
+	var scraped scrapedPodRead
+	if isBP && resources.UsesPoolList(dn) {
+		scraped = r.readScrapedPod(ctx, dn)
+	}
 	var statuses []*forgestatus.Status
 	var scrapeFailed bool
 	for replica := range desiredReplicas(dn) {
@@ -1172,6 +1195,11 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// Block producers have one replica in v1; keep KES status tied to that
 	// replica's keys rather than an aggregate pipeline observation.
 	st := statuses[0]
+	if resources.UsesPoolList(dn) {
+		running, known := r.runningPools(ctx, dn, scraped)
+		r.observePools(dn, st, running, known)
+		return
+	}
 	r.observeLoadedOpCert(dn, st)
 	if !st.HasKESData {
 		setRotationDueUnknown(
@@ -1381,6 +1409,11 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 		return
 	}
 
+	if resources.UsesPoolList(dn) {
+		r.refreshPoolOnChainCounters(ctx, dn)
+		return
+	}
+
 	logger := log.FromContext(ctx)
 	key := client.ObjectKeyFromObject(dn)
 
@@ -1420,7 +1453,7 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 	// Observed condition about a pool that is no longer configured.
 	if last, ok := r.lastOnChainAttempt(key); ok &&
 		time.Since(last.at) < onChainCounterRefreshInterval {
-		if last.ok && last.poolID != wantPool {
+		if last.list || (last.ok && last.poolID != wantPool) {
 			r.forgetOnChainAttempt(key)
 		} else {
 			r.applyOnChainAttempt(dn, last, wantPool)

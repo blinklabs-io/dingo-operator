@@ -357,10 +357,10 @@ type NodeToClientSpec struct {
 // BlockProducerSpec holds block-producer-only configuration. Required when
 // spec.role is blockProducer.
 type BlockProducerSpec struct {
-	// PoolID (bech32 or hex) must be set for a block producer; without it the
-	// controller marks the node Degraded and does not reconcile it. It is
-	// cross-checked against the keys and selects the pool for the on-chain
-	// opcert counter lookup.
+	// PoolID (bech32 or hex) must be set for a block producer without pools;
+	// without it the controller marks the node Degraded and does not
+	// reconcile it. It is cross-checked against the keys and selects the pool
+	// for the on-chain opcert counter lookup. Mutually exclusive with pools.
 	// +optional
 	PoolID string `json:"poolId,omitempty"`
 	// +kubebuilder:default=129600
@@ -377,8 +377,23 @@ type BlockProducerSpec struct {
 	// +kubebuilder:default=1000
 	// +optional
 	ForgeStaleGapThresholdSlots int64 `json:"forgeStaleGapThresholdSlots,omitempty"`
+	// Keys is omitted when pools is set; each pool names its own keys.
 	// +optional
-	Keys KeysSpec `json:"keys"`
+	Keys KeysSpec `json:"keys,omitzero"`
+	// Pools lists every pool this node forges for, in place of poolId and
+	// keys. Each entry has its own keys Secret and agent profile; all share
+	// signingAgent, which is required. The operator renders them as Dingo's
+	// blockProducerPools (YAML only, Dingo v0.94.0 or later), validates each
+	// pool's bundle on its own and leaves a pool whose bundle fails
+	// validation out of the node's configuration, so the other pools keep
+	// forging; with every bundle invalid the node is refused as a whole. A
+	// new opcert in one pool's Secret is loaded into the running node
+	// without a roll; adding, removing or dropping a pool rolls the pod.
+	// Rotation mode Auto is not supported with pools, and more than one pool
+	// is refused with Leios (a vote key, runMode leios or the Musashi
+	// network).
+	// +optional
+	Pools []BlockProducerPool `json:"pools,omitempty"`
 	// +optional
 	Rotation RotationSpec `json:"rotation,omitempty"`
 	// +optional
@@ -403,6 +418,22 @@ type BlockProducerSpec struct {
 	// refused.
 	// +optional
 	SigningAgent *SigningAgentSpec `json:"signingAgent,omitempty"`
+}
+
+// BlockProducerPool is one pool of a block producer that forges for several.
+type BlockProducerPool struct {
+	// PoolID (bech32 or hex) identifies the pool. The pool's opcert must be
+	// signed by the cold key that hashes to it.
+	// +kubebuilder:validation:MinLength=1
+	PoolID string `json:"poolId"`
+	// Keys references the pool's vrf.skey and opcert (kes.skey is not used:
+	// the signing agent holds the KES key).
+	Keys KeysSpec `json:"keys"`
+	// AgentProfile names the signing agent profile that holds this pool's KES
+	// key. Pools that share the agent address need distinct profiles.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	AgentProfile string `json:"agentProfile"`
 }
 
 // SigningAgentSpec configures the link from a block producer to a remote
@@ -840,6 +871,39 @@ type OpCertStatus struct {
 	InPlaceReload *InPlaceReloadStatus `json:"inPlaceReload,omitempty"`
 }
 
+// PoolStatus reports one pool of a block producer that forges for several
+// (spec.blockProducer.pools).
+type PoolStatus struct {
+	// PoolID is the pool's hex cold-key hash.
+	PoolID string `json:"poolId"`
+	// KeysValid reports whether the pool's key bundle passed validation and is
+	// part of the node's configuration.
+	KeysValid bool `json:"keysValid"`
+	// KeysReason and KeysMessage say why the bundle was accepted or why the
+	// pool was left out of the node's configuration.
+	// +optional
+	KeysReason string `json:"keysReason,omitempty"`
+	// +optional
+	KeysMessage string `json:"keysMessage,omitempty"`
+	// OnDiskCounter is the issue number of the pool's accepted opcert.
+	// +optional
+	OnDiskCounter int64 `json:"onDiskCounter,omitempty"`
+	// OnChainCounter is the highest opcert issue number the chain has
+	// accepted for the pool; see status.opcert.onChainCounter.
+	// +optional
+	OnChainCounter int64 `json:"onChainCounter,omitempty"`
+	// OnChainCounterAt is when onChainCounter was last read successfully.
+	// +optional
+	OnChainCounterAt *metav1.Time `json:"onChainCounterAt,omitempty"`
+	// LoadedCounter is the issue number of the opcert the node reports it is
+	// forging with for this pool. Unset means not observed.
+	// +optional
+	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
+	// KES is the pool's KES state as the node reports it.
+	// +optional
+	KES KESStatus `json:"kes,omitempty"`
+}
+
 // InPlaceReloadStatus records a key bundle approved for loading into the
 // running node without a roll.
 type InPlaceReloadStatus struct {
@@ -898,6 +962,12 @@ type DingoNodeStatus struct {
 	OpCert OpCertStatus `json:"opcert,omitempty"`
 	// +optional
 	HA HAStatus `json:"ha,omitempty"`
+	// Pools reports each pool of spec.blockProducer.pools. status.kes holds
+	// the pool with the fewest KES periods remaining.
+	// +listType=map
+	// +listMapKey=poolId
+	// +optional
+	Pools []PoolStatus `json:"pools,omitempty"`
 	// Tip tracks tip slot progress; see the LedgerPipelineHealthy condition.
 	// +optional
 	Tip TipStatus `json:"tip,omitempty"`

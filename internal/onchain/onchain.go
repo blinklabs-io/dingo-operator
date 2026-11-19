@@ -107,6 +107,21 @@ type Fetcher interface {
 	Fetch(ctx context.Context, q Query) (Counter, error)
 }
 
+// PoolsFetcher is implemented by a Fetcher that reads the counters of several
+// pools with one query: the chain answers with every pool's counter, so one
+// dial serves a node that forges for several pools.
+type PoolsFetcher interface {
+	// FetchPools returns the counters of the pools the chain has one for; a
+	// pool the chain has no counter for is absent from the result. The error
+	// is set when the query failed, or when a counter was implausible (the
+	// result then still holds the pools that were usable).
+	FetchPools(
+		ctx context.Context,
+		q Query,
+		pools []common.Blake2b224,
+	) (map[common.Blake2b224]Counter, error)
+}
+
 // NtCFetcher is the default Fetcher: it dials the node's node-to-client TCP
 // listener and runs a local-state-query.
 type NtCFetcher struct {
@@ -133,9 +148,64 @@ func (f *NtCFetcher) Fetch(
 	ctx context.Context,
 	q Query,
 ) (Counter, error) {
-	var zero Counter
+	counters, err := f.fetchRaw(ctx, q)
+	if err != nil {
+		return Counter{}, err
+	}
+	raw, ok := counters[q.PoolID]
+	if !ok {
+		// The node answered; the chain simply has no counter for this pool.
+		return Counter{Found: false}, nil
+	}
+	return counterFromRaw(raw)
+}
+
+// FetchPools reads the counters of several pools with one query; q.PoolID is
+// not used.
+func (f *NtCFetcher) FetchPools(
+	ctx context.Context,
+	q Query,
+	pools []common.Blake2b224,
+) (map[common.Blake2b224]Counter, error) {
+	counters, err := f.fetchRaw(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return countersFor(counters, pools)
+}
+
+// countersFor picks the listed pools out of the chain's counter map. A pool
+// the chain has no counter for is absent from the result; an implausible
+// counter is reported in the error and left out, so one bad value does not
+// hide the other pools'.
+func countersFor(
+	raw map[common.Blake2b224]uint64,
+	pools []common.Blake2b224,
+) (map[common.Blake2b224]Counter, error) {
+	out := make(map[common.Blake2b224]Counter, len(pools))
+	var errs []error
+	for _, pool := range pools {
+		v, ok := raw[pool]
+		if !ok {
+			continue
+		}
+		c, err := counterFromRaw(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("pool %s: %w", pool, err))
+			continue
+		}
+		out[pool] = c
+	}
+	return out, errors.Join(errs...)
+}
+
+// fetchRaw dials the node and returns the chain's counter map.
+func (f *NtCFetcher) fetchRaw(
+	ctx context.Context,
+	q Query,
+) (map[common.Blake2b224]uint64, error) {
 	if q.Address == "" {
-		return zero, errors.New("node-to-client address is empty")
+		return nil, errors.New("node-to-client address is empty")
 	}
 	ctx, cancel := context.WithTimeout(ctx, f.maxDuration())
 	defer cancel()
@@ -143,31 +213,31 @@ func (f *NtCFetcher) Fetch(
 	dialer := net.Dialer{Timeout: f.timeout(f.DialTimeout, DefaultDialTimeout)}
 	conn, err := dialer.DialContext(ctx, "tcp", q.Address)
 	if err != nil {
-		return zero, fmt.Errorf("dial node-to-client %s: %w", q.Address, err)
+		return nil, fmt.Errorf("dial node-to-client %s: %w", q.Address, err)
 	}
 
 	type outcome struct {
-		counter Counter
-		err     error
+		counters map[common.Blake2b224]uint64
+		err      error
 	}
 	// Buffered so the worker can always deliver and exit, even after Fetch has
 	// already given up on the context deadline below.
 	done := make(chan outcome, 1)
 	go func() {
 		c, err := f.query(conn, q)
-		done <- outcome{counter: c, err: err}
+		done <- outcome{counters: c, err: err}
 	}()
 
 	select {
 	case res := <-done:
-		return res.counter, res.err
+		return res.counters, res.err
 	case <-ctx.Done():
 		// The gouroboros handshake and query calls are blocking and take no
 		// context. Closing the raw connection is what unblocks whichever read
 		// the worker is parked on, so it finishes and exits rather than leaking
 		// for as long as the peer keeps the socket open.
 		_ = conn.Close()
-		return zero, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"node-to-client query to %s: %w", q.Address, ctx.Err(),
 		)
 	}
@@ -175,8 +245,10 @@ func (f *NtCFetcher) Fetch(
 
 // query performs the handshake and the counter lookup on an established
 // connection. It always disposes of conn.
-func (f *NtCFetcher) query(conn net.Conn, q Query) (Counter, error) {
-	var zero Counter
+func (f *NtCFetcher) query(
+	conn net.Conn,
+	q Query,
+) (map[common.Blake2b224]uint64, error) {
 	lsqCfg := localstatequery.NewConfig(
 		localstatequery.WithAcquireTimeout(
 			f.timeout(f.AcquireTimeout, DefaultAcquireTimeout),
@@ -196,7 +268,7 @@ func (f *NtCFetcher) query(conn net.Conn, q Query) (Counter, error) {
 	)
 	if err != nil {
 		_ = conn.Close()
-		return zero, fmt.Errorf("node-to-client handshake: %w", err)
+		return nil, fmt.Errorf("node-to-client handshake: %w", err)
 	}
 	// Drain the asynchronous error channel. It is buffered, and a full buffer
 	// would block the muxer's error goroutine, which in turn would keep Close
@@ -210,20 +282,15 @@ func (f *NtCFetcher) query(conn net.Conn, q Query) (Counter, error) {
 
 	lsq := oConn.LocalStateQuery()
 	if lsq == nil || lsq.Client == nil {
-		return zero, errors.New(
+		return nil, errors.New(
 			"node did not offer the local-state-query mini-protocol",
 		)
 	}
 	counters, err := lsq.Client.GetOpCertCounters()
 	if err != nil {
-		return zero, fmt.Errorf("query on-chain opcert counters: %w", err)
+		return nil, fmt.Errorf("query on-chain opcert counters: %w", err)
 	}
-	raw, ok := counters[q.PoolID]
-	if !ok {
-		// The node answered; the chain simply has no counter for this pool.
-		return Counter{Found: false}, nil
-	}
-	return counterFromRaw(raw)
+	return counters, nil
 }
 
 // counterFromRaw narrows a counter read off the wire to the int64 the status

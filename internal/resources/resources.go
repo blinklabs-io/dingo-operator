@@ -411,6 +411,13 @@ type RenderOptions struct {
 	KeysCounter string
 	// ConfigChecksum triggers a rollout when the config bundle changes.
 	ConfigChecksum string
+	// Pools are the pools of spec.blockProducer.pools whose bundles validated,
+	// rendered into the node. A pool-list node with none renders as a node
+	// that does not forge.
+	Pools []RenderPool
+	// PoolsConfigChecksum triggers a rollout when the rendered pool list
+	// changes. It is rendered only where the pool list is mounted.
+	PoolsConfigChecksum string
 	// SigningAgentCertChecksum triggers a rollout when the signing agent
 	// client certificate pair changes. It is rendered only where that Secret
 	// is mounted.
@@ -515,28 +522,33 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		})
 	}
 	if mountsBlockProducerKeys(dn, opts) && bp != nil {
+		poolList := UsesPoolList(dn)
 		env = append(
 			env,
 			corev1.EnvVar{Name: "CARDANO_BLOCK_PRODUCER", Value: "true"},
-			corev1.EnvVar{
+		)
+		// A pool list sets each pool's keys and agent in the rendered Dingo
+		// configuration, which Dingo refuses beside any of these.
+		if !poolList {
+			env = append(env, corev1.EnvVar{
 				Name:  "CARDANO_SHELLEY_VRF_KEY",
 				Value: keysMountPath + "/vrf.skey",
-			},
-		)
-		// With a remote signing agent no kes.skey is staged, and Dingo
-		// refuses CARDANO_SHELLEY_KES_KEY alongside an agent address.
-		if bp.SigningAgent == nil {
+			})
+			// With a remote signing agent no kes.skey is staged, and Dingo
+			// refuses CARDANO_SHELLEY_KES_KEY alongside an agent address.
+			if bp.SigningAgent == nil {
+				env = append(env, corev1.EnvVar{
+					Name:  KESKeyEnv,
+					Value: keysMountPath + "/kes.skey",
+				})
+			}
 			env = append(env, corev1.EnvVar{
-				Name:  KESKeyEnv,
-				Value: keysMountPath + "/kes.skey",
+				Name:  "CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE",
+				Value: keysMountPath + "/opcert.cert",
 			})
 		}
 		env = append(
 			env,
-			corev1.EnvVar{
-				Name:  "CARDANO_SHELLEY_OPERATIONAL_CERTIFICATE",
-				Value: keysMountPath + "/opcert.cert",
-			},
 			corev1.EnvVar{
 				Name:  "DINGO_SLOTS_PER_KES_PERIOD",
 				Value: strconv.FormatInt(bp.SlotsPerKESPeriod, 10),
@@ -554,15 +566,26 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 				Value: strconv.FormatInt(bp.ForgeStaleGapThresholdSlots, 10),
 			},
 		)
-		if bp.SigningAgent != nil {
+		if bp.SigningAgent != nil && !poolList {
 			env = append(env, signingAgentEnv(bp.SigningAgent)...)
 		}
 	}
 	// The optional Leios vote key shares the key-mount gate, so a keyless
 	// standby never gets a vote signing key.
 	voteKey := mountsBlockProducerKeys(dn, opts) && opts.MountVoteKey
+	voteKeyPath := VoteKeyPath
+	if rendersPools(dn, opts) {
+		// Dingo takes one vote key, and refuses it with several pools, so only
+		// the single pool of the list can have one.
+		voteKey = false
+		if len(dn.Spec.BlockProducer.Pools) == 1 && len(opts.Pools) == 1 &&
+			opts.Pools[0].HasVote {
+			voteKey = true
+			voteKeyPath = PoolKeysDir(opts.Pools[0].PoolID) + "/" + VoteKeyFile
+		}
+	}
 	if voteKey {
-		env = append(env, corev1.EnvVar{Name: VoteKeyEnv, Value: VoteKeyPath})
+		env = append(env, corev1.EnvVar{Name: VoteKeyEnv, Value: voteKeyPath})
 	}
 	if reloadsKeysInPlace(dn, opts) {
 		env = append(env, corev1.EnvVar{
@@ -692,6 +715,9 @@ func BuildStatefulSet(
 	}
 	if opts.ConfigChecksum != "" {
 		podAnnotations[ConfigChecksumAnnotation] = opts.ConfigChecksum
+	}
+	if opts.PoolsConfigChecksum != "" && rendersPools(dn, opts) {
+		podAnnotations[PoolsConfigChecksumAnnotation] = opts.PoolsConfigChecksum
 	}
 	if opts.SigningAgentCertChecksum != "" &&
 		signingAgentCertSecret(dn, opts) != "" {
@@ -884,6 +910,9 @@ func volumeMounts(
 			ReadOnly:  true,
 		})
 	}
+	if rendersPools(dn, opts) {
+		mounts = append(mounts, poolsConfigMount())
+	}
 	if signingAgentCertSecret(dn, opts) != "" {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      signingAgentTLSVolume,
@@ -944,7 +973,21 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 		})
 	}
 	bp := dn.Spec.BlockProducer
-	if mountsBlockProducerKeys(dn, opts) && bp != nil {
+	if rendersPools(dn, opts) {
+		vols = append(vols, poolSourceVolumes(opts)...)
+		vols = append(
+			vols,
+			corev1.Volume{
+				Name: keysVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{
+						Medium: corev1.StorageMediumMemory,
+					},
+				},
+			},
+			poolsConfigVolume(dn),
+		)
+	} else if mountsBlockProducerKeys(dn, opts) && bp != nil {
 		vols = append(
 			vols,
 			corev1.Volume{
@@ -1010,6 +1053,10 @@ func mountsBlockProducerKeys(
 	dn *dingov1alpha1.DingoNode,
 	opts RenderOptions,
 ) bool {
+	// A pool list with no usable pool has no keys to mount.
+	if UsesPoolList(dn) && len(opts.Pools) == 0 {
+		return false
+	}
 	return IsBlockProducer(dn) && opts.MountKeys && dn.Spec.BlockProducer != nil
 }
 

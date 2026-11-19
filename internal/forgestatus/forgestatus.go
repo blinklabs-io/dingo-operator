@@ -47,7 +47,8 @@ const (
 	metricPipelineHalted = "dingo_ledger_pipeline_halted"
 	// The issue counter of the opcert the forger has loaded, which changes
 	// when Dingo reloads its credentials in place. It is NaN while no opcert
-	// is loaded. Dingo also exports dingo_forge_opcert_counter_onchain, the
+	// is loaded. Dingo labels it with pool_id, per pool, when the node forges
+	// for several. Dingo also exports dingo_forge_opcert_counter_onchain, the
 	// ledger's counter, which is a different value and is not read here.
 	metricOpCertCounter = "dingo_forge_opcert_counter_loaded"
 )
@@ -81,6 +82,31 @@ type Status struct {
 	// HasOpCertCounter reports whether the gauge was present.
 	OpCertCounter    int64
 	HasOpCertCounter bool
+	// OpCertUnloaded is set when dingo_forge_opcert_counter_loaded is NaN: the
+	// node has no opcert loaded, and HasOpCertCounter stays false.
+	OpCertUnloaded bool
+	// Pools holds the series Dingo labels with pool_id, keyed by the label
+	// value (a bech32 pool ID). Dingo labels them only while it forges for
+	// more than one pool; it is nil for a node that forges for one.
+	Pools map[string]*PoolMetrics
+}
+
+// PoolMetrics is the forge/KES state of one pool of a node that forges for
+// several.
+type PoolMetrics struct {
+	CurrentKESPeriod      int64
+	RemainingKESPeriods   int64
+	OpCertStartKESPeriod  int64
+	OpCertExpiryKESPeriod int64
+	// HasKESData is true when the pool's KES period gauges were present.
+	HasKESData bool
+	// OpCertCounter is the issue counter of the opcert loaded for the pool;
+	// HasOpCertCounter reports whether it was a number.
+	OpCertCounter    int64
+	HasOpCertCounter bool
+	// OpCertUnloaded is set when the loaded counter is NaN: the node has no
+	// opcert loaded for the pool.
+	OpCertUnloaded bool
 }
 
 // Fetcher retrieves forge status from a node's metrics endpoint.
@@ -145,6 +171,10 @@ func Parse(r io.Reader) (*Status, error) {
 		if err != nil {
 			continue
 		}
+		if pool, ok := poolLabel(line); ok {
+			s.addPoolSample(pool, name, v)
+			continue
+		}
 		switch name {
 		case metricCurrentKESPeriod:
 			s.CurrentKESPeriod = int64(v)
@@ -169,7 +199,9 @@ func Parse(r io.Reader) (*Status, error) {
 			s.PipelineHalted = v != 0
 		case metricOpCertCounter:
 			// NaN: no opcert is loaded.
-			if !math.IsNaN(v) {
+			if math.IsNaN(v) {
+				s.OpCertUnloaded = true
+			} else {
 				s.OpCertCounter = int64(v)
 				s.HasOpCertCounter = true
 			}
@@ -179,6 +211,67 @@ func Parse(r io.Reader) (*Status, error) {
 		return nil, fmt.Errorf("scan metrics: %w", err)
 	}
 	return s, nil
+}
+
+// addPoolSample records one pool_id-labelled sample. Series the operator does
+// not read per pool are ignored.
+func (s *Status) addPoolSample(pool, name string, v float64) {
+	var pm *PoolMetrics
+	get := func() *PoolMetrics {
+		if pm == nil {
+			if s.Pools == nil {
+				s.Pools = make(map[string]*PoolMetrics)
+			}
+			if pm = s.Pools[pool]; pm == nil {
+				pm = &PoolMetrics{}
+				s.Pools[pool] = pm
+			}
+		}
+		return pm
+	}
+	switch name {
+	case metricCurrentKESPeriod:
+		get().CurrentKESPeriod = int64(v)
+		get().HasKESData = true
+	case metricRemainingKESPeriods:
+		get().RemainingKESPeriods = int64(v)
+		get().HasKESData = true
+	case metricOpCertStartKESPeriod:
+		get().OpCertStartKESPeriod = int64(v)
+	case metricOpCertExpiryKESPeriod:
+		get().OpCertExpiryKESPeriod = int64(v)
+	case metricOpCertCounter:
+		// NaN: the node has no opcert loaded for the pool.
+		if math.IsNaN(v) {
+			get().OpCertUnloaded = true
+		} else {
+			get().OpCertCounter = int64(v)
+			get().HasOpCertCounter = true
+		}
+	}
+}
+
+// poolLabel returns the pool_id label of a sample line.
+func poolLabel(line string) (string, bool) {
+	open := strings.IndexByte(line, '{')
+	closeIdx := strings.IndexByte(line, '}')
+	if open < 0 || closeIdx < open {
+		return "", false
+	}
+	labels := line[open+1 : closeIdx]
+	const key = `pool_id="`
+	for rest := labels; ; {
+		i := strings.Index(rest, key)
+		if i < 0 {
+			return "", false
+		}
+		// The label name must start the block or follow a comma.
+		if i == 0 || rest[i-1] == ',' || rest[i-1] == ' ' {
+			value, _, found := strings.Cut(rest[i+len(key):], `"`)
+			return value, found && value != ""
+		}
+		rest = rest[i+len(key):]
+	}
 }
 
 // splitMetricLine splits a Prometheus sample line into its metric name (without

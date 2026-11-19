@@ -76,14 +76,20 @@ func stripSecretMetadata(obj any) (any, error) {
 }
 
 // keyBundleRefs returns the Secrets a DingoNode reads during reconcile: the
-// keys Secret, the signing agent's client certificate, and the Bursa cold
-// signer's mTLS credentials.
+// keys Secret (one per pool of a pool list), the signing agent's client
+// certificate, and the Bursa cold signer's mTLS credentials.
 func keyBundleRefs(dn *dingov1alpha1.DingoNode) []string {
 	bp := dn.Spec.BlockProducer
 	if bp == nil {
 		return nil
 	}
 	refs := []string{bp.Keys.SecretRef}
+	if len(bp.Pools) > 0 {
+		refs = refs[:0]
+		for _, p := range bp.Pools {
+			refs = append(refs, p.Keys.SecretRef)
+		}
+	}
 	if bp.SigningAgent != nil && bp.SigningAgent.ClientCertSecretRef != "" {
 		refs = append(refs, bp.SigningAgent.ClientCertSecretRef)
 	}

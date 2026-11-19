@@ -136,6 +136,67 @@ operators.
       # controlClientCertSecretRef: kes-agent-control
       # controlProfile: pool-a
   ```
+- **Several pools per node** — `spec.blockProducer.pools` lists the pools one
+  node forges for (Dingo v0.94.0 or later, which the operator checks). Each
+  entry has a `poolId` (bech32 or hex), `keys.secretRef` (that pool's `vrf.skey`
+  and opcert) and an `agentProfile`; all share `spec.blockProducer.signingAgent`,
+  which is required, since a pool list holds no local KES keys. It replaces
+  `poolId` and `keys`: setting either beside `pools` is refused, as are
+  duplicate pool IDs and duplicate agent profiles. The operator renders the
+  list as Dingo's `blockProducerPools` in a ConfigMap (`<name>-pools`) mounted
+  at `/etc/dingo/dingo.yaml`, the file the Dingo image reads when it is given
+  no `--config`, stages each pool's keys under `/keys/<pool id>/`, and sets
+  none of Dingo's single-pool variables (`CARDANO_SHELLEY_VRF_KEY`,
+  `_KES_KEY`, `_OPERATIONAL_CERTIFICATE` and the `_KES_AGENT_*` settings, with
+  or without the `CARDANO_` prefix), which Dingo refuses beside a pool list;
+  `spec.environment` may not set them either. More than one pool is refused
+  with Leios: a vote key in any pool's Secret leaves that pool out, and
+  `DINGO_RUN_MODE=leios` (or `CARDANO_DINGO_RUN_MODE`, which Dingo reads
+  first) or the Musashi network refuses the spec.
+
+  Each pool's bundle is validated on its own, against its own pool ID and
+  counters. A pool whose bundle fails (a missing Secret included) is left out of
+  the pool list, the pod rolls once, and the others keep forging; the pool is
+  reported in `status.pools` with `keysValid: false` and the reason, and the
+  node is `Degraded`. Only when every bundle fails is the node refused as a
+  whole and its live pod template kept, as for a refused single-pool bundle;
+  the pools that template runs are still observed.
+  `status.pools` also holds each pool's on-disk, on-chain (one
+  node-to-client query reads all of them) and loaded opcert counters and KES
+  periods, read from the `pool_id`-labelled series Dingo exposes with several
+  pools, for every pool the running pod stages whatever its bundle's verdict.
+  A pod running one pool exposes its series unlabelled; they are attributed by
+  the `dingo.blinklabs.io/keys-pool` annotation of the scraped pod, read before
+  and after the scrape, not by the StatefulSet template, which during a roll
+  already records the next pools. When that pod changed between the reads or
+  records no pools, unlabelled series are attributed to no pool, and pools
+  without labelled series keep their status. `status.kes` is the pool with the
+  fewest KES periods left, and `RotationDue` is true while any pool is due.
+
+  `rotation.mode` may be `Assisted` or `MonitorOnly`; `Auto` through the agent
+  per pool is not supported yet and is refused. A new opcert in one pool's
+  Secret reaches Dingo without rolling the pod, whether or not
+  `rotation.reloadInPlace` is set: a container beside Dingo stages it once the
+  operator has validated and approved it, and Dingo reloads it on its key
+  file watch. Only a change to a pool's other Secret entries (its VRF key, vote
+  key, anything but the opcert), to its profile or to the agent settings, or
+  adding, removing or leaving out a pool, rolls the pod.
+
+  ```yaml
+  blockProducer:
+    signingAgent:
+      address: kes-agent.signing.svc:7000
+      serverSpkiSha256: <64 hex characters>
+      clientCertSecretRef: kes-agent-client
+    rotation: { mode: Assisted }
+    pools:
+      - poolId: <pool id, bech32 or hex>
+        keys: { secretRef: pool-a-keys }     # vrf.skey + opcert.cert
+        agentProfile: pool-a
+      - poolId: <pool id, bech32 or hex>
+        keys: { secretRef: pool-b-keys }
+        agentProfile: pool-b
+  ```
 - **Operational metrics** — the optional PodMonitor scrapes Dingo's complete
   Prometheus endpoint, including blockfetch delay and fetch duration, ledger
   block-apply batch latency, and the KES/opcert metrics used for status and
@@ -284,6 +345,16 @@ is not a refusal: the reconcile returns the error and leaves the workload as it
 is. The exception is another block producer's keys Secret the operator may not
 read with its current permissions: only that node's pool ID and Secret name
 count, and if its workload is running the reconcile fails closed.
+
+A node with `spec.blockProducer.pools` claims every listed pool and every
+listed keys Secret: a pool in its list conflicts with another node's `poolId`
+or list on the same network, and the refusal message names the pool. Signing
+through `spec.blockProducer.signingAgent` exempts no pair: two pool-list nodes,
+or a pool-list node and a single-pool node, that share a pool are fenced like
+any other pair. A pool left out of the pod for its keys stays claimed, since the
+spec and the Secret still name it. Its pod template records the pools it staged
+as a sorted, comma-separated `dingo.blinklabs.io/keys-pool`, and mounts one
+Secret per pool.
 
 A producer whose spec now names a signing agent but whose held template still
 signs with a local KES key stays at zero replicas until the agent template

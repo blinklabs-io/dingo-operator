@@ -59,9 +59,14 @@ commands, toolchain) see [CLAUDE.md](CLAUDE.md).
   pluggable signer (Bursa). Reject any change that reads a cold key into the
   operator or a node pod outside the explicit dev-only `secret` signer path.
 - **Exactly one active block producer.** Any change to HA/failover must preserve
-  the single-active invariant (never two forgers). `ActiveStandby` promotion
-  must be fenced (old primary confirmed down/keyless) before the standby is
-  keyed.
+  the single-active invariant (never two forgers), whether or not the
+  producers sign through `spec.blockProducer.signingAgent`; only
+  `--forger-fence-namespaces` trusts a pair. `ActiveStandby` promotion must be
+  fenced (old primary confirmed down/keyless) before the standby is keyed. The
+  invariant is per pool: a node with `spec.blockProducer.pools` claims every
+  listed pool and keys Secret, and fence code must compare all of them
+  (`forgerIdentity.pools`/`secrets`, `keys-pool` as a list), never only the
+  first.
 - **OpCert counter safety.** The next opcert counter must be derived from the
   authoritative on-chain value (via the node), never a naive local increment —
   guard against `CounterOverIncrementedOCERT`.
