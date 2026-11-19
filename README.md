@@ -200,8 +200,9 @@ operators.
   `spec.image.capabilityVersion`, set to the Dingo release contained in the
   image. The operator uses that version to select the UID, health probes and
   optional feature support. Existing digest and tag pairs retain their current
-  behavior while the digest and tag remain unchanged; add `capabilityVersion`
-  before changing either value.
+  behavior while the digest and tag remain unchanged and no capability version
+  was previously declared; add `capabilityVersion` before changing either value.
+  Once declared, it must remain set while the image is digest-pinned.
 
 Only one block producer may forge per pool on a network. When two DingoNodes on
 the same network share a pool ID (any namespace, hex or bech32), or share a keys

@@ -67,6 +67,9 @@ func TestImageDigestCapabilityVersionAdmission(t *testing.T) {
 	explicit := map[string]any{
 		"digest": digest, "capabilityVersion": "0.85.0",
 	}
+	explicitLegacyVersion := map[string]any{
+		"digest": digest, "tag": "0.85.0", "capabilityVersion": "0.69.0",
+	}
 	changedLegacy := map[string]any{"digest": digest, "tag": "0.84.0"}
 	changedDigest := map[string]any{
 		"digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
@@ -94,6 +97,12 @@ func TestImageDigestCapabilityVersionAdmission(t *testing.T) {
 	require.NotEmpty(t, validate(legacy, nil))
 	require.Empty(t, validate(explicit, nil))
 	require.Empty(t, validate(legacy, legacy))
+	require.NotEmpty(
+		t,
+		validate(legacy, explicitLegacyVersion),
+		"removing the declared version must not switch an unchanged image to tag inference",
+	)
+	require.Empty(t, validate(explicitLegacyVersion, explicitLegacyVersion))
 	require.NotEmpty(t, validate(changedLegacy, legacy))
 	require.NotEmpty(t, validate(changedDigest, legacy))
 	require.Empty(t, validate(explicit, legacy))

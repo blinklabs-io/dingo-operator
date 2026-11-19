@@ -103,7 +103,7 @@ const (
 
 // ImageSpec configures the Dingo container image.
 // +kubebuilder:validation:XValidation:rule="!has(self.capabilityVersion) || has(self.digest)",message="capabilityVersion requires digest"
-// +kubebuilder:validation:XValidation:rule="!has(self.digest) || has(self.capabilityVersion) || (oldSelf.hasValue() && has(oldSelf.value().digest) && oldSelf.value().digest == self.digest && has(oldSelf.value().tag) && has(self.tag) && oldSelf.value().tag == self.tag)",message="capabilityVersion is required for a new digest or a digest or tag change",optionalOldSelf=true
+// +kubebuilder:validation:XValidation:rule="!has(self.digest) || has(self.capabilityVersion) || (oldSelf.hasValue() && !has(oldSelf.value().capabilityVersion) && has(oldSelf.value().digest) && oldSelf.value().digest == self.digest && has(oldSelf.value().tag) && has(self.tag) && oldSelf.value().tag == self.tag)",message="capabilityVersion is required for a new digest, a digest or tag change, or once declared",optionalOldSelf=true
 type ImageSpec struct {
 	// +kubebuilder:default="ghcr.io/blinklabs-io/dingo"
 	// +optional
@@ -119,6 +119,7 @@ type ImageSpec struct {
 	// digest-pinned image. It selects UID, probe and optional feature support.
 	// New digest references require this field. Existing digest and tag pairs
 	// remain compatible, but changing either value requires CapabilityVersion.
+	// Once declared, it must remain set while the image is digest-pinned.
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Pattern=`^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`
 	// +optional

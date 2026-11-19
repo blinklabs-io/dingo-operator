@@ -276,9 +276,10 @@ func imageCapabilityVersion(
 }
 
 // usesLegacyDingoUser reports whether the selected image should use the
-// pre-v0.70.0 Dingo uid/gid. Unknown repositories and tags deliberately use
-// the legacy default: it is still non-root and preserves /ipc compatibility
-// for custom images that follow the historical layout. Users of another
+// pre-v0.70.0 Dingo uid/gid. Without a declared capability version, unknown
+// repositories and tags use the legacy default: it is still non-root and
+// preserves /ipc compatibility for custom images that follow the historical
+// layout. Users of another
 // layout can set spec.podSecurityContext explicitly.
 func usesLegacyDingoUser(dn *dingov1alpha1.DingoNode) bool {
 	version, declared := imageCapabilityVersion(dn)

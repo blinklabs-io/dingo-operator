@@ -123,8 +123,11 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   with an omitted tag resolving to `DefaultDingoTag` (currently v0.85.0).
   Digest-pinned images use `spec.image.capabilityVersion`; existing digest and
   tag pairs retain tag inference only while their digest and tag stay
-  unchanged. Custom repositories and unrecognized tags retain the conservative
-  `100:101` non-root compatibility default. Set `spec.podSecurityContext` when
+  unchanged and no capability version was previously declared. A declared
+  capability version must remain set while the image is digest-pinned. Custom
+  repositories and unrecognized tags without a declared capability version
+  retain the conservative `100:101` non-root compatibility default. Set
+  `spec.podSecurityContext` when
   a custom or unrecognized image uses different IDs; an explicit context is
   preserved unchanged.
 - Cold keys never enter the cluster. The operator issues opcerts by sending
