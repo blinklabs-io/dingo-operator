@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
@@ -312,6 +313,143 @@ func TestReconcileChartStatefulSetNetworkMismatch(t *testing.T) {
 				"pass %d: refused adoption repointed Service %s", pass, name)
 		}
 	}
+}
+
+// The refusal is visible on the DingoNode, not only in the operator log.
+func TestReconcileSelectorMismatchSetsCondition(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	ns := "adopt-mismatch-status"
+	createNamespace(t, ctx, c, ns)
+
+	require.NoError(
+		t,
+		c.Create(ctx, chartStatefulSet("dingo", ns, "preprod", "")),
+	)
+	require.NoError(t, c.Create(ctx, relayNode("dingo", ns, "preview")))
+
+	key := types.NamespacedName{Name: "dingo", Namespace: ns}
+	_, err := reconcilerFor(c).Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.Error(t, err)
+	assert.True(t, apierrors.IsInvalid(err), "not an API rejection: %v", err)
+
+	var got dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(ctx, key, &got))
+	for _, typ := range []string{condReady, condDegraded} {
+		cond := meta.FindStatusCondition(got.Status.Conditions, typ)
+		require.NotNil(t, cond, "no %s condition", typ)
+		assert.Equal(t, reasonSelectorMismatch, cond.Reason, typ)
+		assert.Contains(t, cond.Message, `"dingo"`, typ)
+		assert.Contains(t, cond.Message, "selector", typ)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, condReady)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	assert.Equal(t, metav1.ConditionTrue, degraded.Status)
+
+	// Removing the chart's StatefulSet resolves the mismatch, and the next
+	// pass clears the refusal.
+	sts := getStatefulSet(t, ctx, c, "dingo", ns)
+	require.NoError(t, c.Delete(ctx, sts))
+	require.True(
+		t,
+		apierrors.IsNotFound(c.Get(ctx, key, &appsv1.StatefulSet{})),
+	)
+	reconcile(t, ctx, reconcilerFor(c), "dingo", ns)
+
+	require.NoError(t, c.Get(ctx, key, &got))
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, condDegraded))
+	ready = meta.FindStatusCondition(got.Status.Conditions, condReady)
+	require.NotNil(t, ready)
+	assert.NotEqual(t, reasonSelectorMismatch, ready.Reason)
+	assert.NotEqual(t, "Degraded", got.Status.Phase)
+}
+
+// A refused StatefulSet never takes the operator's template, so the key
+// rollout status written with the refusal still describes the running pod.
+func TestReconcileSelectorMismatchKeepsRolloutStatus(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	ns := "adopt-mismatch-rollout"
+	createNamespace(t, ctx, c, ns)
+	poolID, data := poolKeys(t)
+	require.NoError(t, c.Create(ctx, keysSecret("pool-keys", ns, data)))
+	require.NoError(t, c.Create(
+		ctx, chartStatefulSet("dingo", ns, "preprod", "pool-keys"),
+	))
+	dn := blockProducerNode("dingo", ns, "pool-keys", poolID)
+	require.NoError(t, c.Create(ctx, dn))
+	reload := dingov1alpha1.InPlaceReloadStatus{
+		Checksum:    "approved-earlier",
+		Counter:     1,
+		RequestedAt: metav1.NewTime(time.Unix(1_700_000_000, 0)),
+	}
+	dn.Status.OpCert.InPlaceReload = &reload
+	dn.Status.OpCert.RolledCounter = new(int64(1))
+	require.NoError(t, c.Status().Update(ctx, dn))
+
+	key := client.ObjectKeyFromObject(dn)
+	_, err := reconcilerFor(c).Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.Error(t, err)
+	require.True(t, apierrors.IsInvalid(err), "not an API rejection: %v", err)
+
+	var got dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(ctx, key, &got))
+	require.True(t, meta.IsStatusConditionTrue(
+		got.Status.Conditions, condDegraded,
+	))
+	require.NotNil(t, got.Status.OpCert.InPlaceReload)
+	assert.Equal(t, reload.Checksum, got.Status.OpCert.InPlaceReload.Checksum)
+	assert.Equal(t, reload.Counter, got.Status.OpCert.InPlaceReload.Counter)
+	assert.True(t, reload.RequestedAt.Equal(
+		&got.Status.OpCert.InPlaceReload.RequestedAt,
+	))
+	assert.Equal(t, new(int64(1)), got.Status.OpCert.RolledCounter)
+}
+
+// Once a refusal is resolved, Degraded reports a wedge that is still kept
+// rather than the refusal's reason.
+func TestReconcileSelectorMismatchRecoveryKeepsWedge(t *testing.T) {
+	t.Parallel()
+	c, ctx := startEnv(t)
+	ns := "adopt-mismatch-wedge"
+	createNamespace(t, ctx, c, ns)
+	require.NoError(t, c.Create(
+		ctx, chartStatefulSet("dingo", ns, "preprod", ""),
+	))
+	dn := relayNode("dingo", ns, "preview")
+	require.NoError(t, c.Create(ctx, dn))
+	for _, typ := range []string{condPipelineHealthy, condDegraded} {
+		status := metav1.ConditionFalse
+		if typ == condDegraded {
+			status = metav1.ConditionTrue
+		}
+		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+			Type: typ, Status: status, Reason: "LedgerPipelineStuck",
+			Message: "ledger pipeline is restarting without tip progress",
+		})
+	}
+	require.NoError(t, c.Status().Update(ctx, dn))
+
+	key := client.ObjectKeyFromObject(dn)
+	r := reconcilerFor(c)
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.Error(t, err)
+	var got dingov1alpha1.DingoNode
+	require.NoError(t, c.Get(ctx, key, &got))
+	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	require.NotNil(t, degraded)
+	require.Equal(t, reasonSelectorMismatch, degraded.Reason)
+
+	// The reconciler has no metrics fetcher, so the wedge is kept unobserved.
+	require.NoError(t, c.Delete(ctx, getStatefulSet(t, ctx, c, "dingo", ns)))
+	reconcile(t, ctx, r, "dingo", ns)
+
+	require.NoError(t, c.Get(ctx, key, &got))
+	degraded = meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	require.NotNil(t, degraded)
+	assert.Equal(t, metav1.ConditionTrue, degraded.Status)
+	assert.Equal(t, "LedgerPipelineStuck", degraded.Reason)
 }
 
 // A block producer takes over the chart StatefulSet that already forges with

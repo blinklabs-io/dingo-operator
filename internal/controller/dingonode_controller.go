@@ -319,7 +319,23 @@ func (r *DingoNodeReconciler) Reconcile(
 		r.refreshOnChainCounter(ctx, dn)
 	}
 
+	var rollout dingov1alpha1.OpCertStatus
+	dn.Status.OpCert.DeepCopyInto(&rollout)
 	if err := r.reconcileResources(ctx, dn); err != nil {
+		// The error is still returned so the retry backoff applies: the
+		// selector is immutable and only a change to the node or the
+		// StatefulSet resolves it.
+		if _, ok := errors.AsType[*selectorMismatchError](err); ok {
+			// The refused template never reached the pod, so the rollout
+			// bookkeeping reconcileResources recorded for it is dropped.
+			dn.Status.OpCert.InPlaceReload = rollout.InPlaceReload
+			dn.Status.OpCert.RolledCounter = rollout.RolledCounter
+			if serr := r.markNotReady(
+				ctx, dn, reasonSelectorMismatch, err,
+			); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -466,6 +482,18 @@ func (r *DingoNodeReconciler) liveConfigChecksum(
 	return sts.Spec.Template.Annotations[resources.ConfigChecksumAnnotation], nil
 }
 
+// reasonSelectorMismatch is the condition reason for a node whose same-named
+// StatefulSet has an immutable selector the operator's pod template cannot
+// satisfy.
+const reasonSelectorMismatch = "StatefulSetSelectorMismatch"
+
+// selectorMismatchError marks the refusal from checkStatefulSetSelector so
+// Reconcile can report it without reclassifying other apply failures.
+type selectorMismatchError struct{ err error }
+
+func (e *selectorMismatchError) Error() string { return e.err.Error() }
+func (e *selectorMismatchError) Unwrap() error { return e.err }
+
 // checkStatefulSetSelector refuses an existing StatefulSet whose immutable
 // selector the operator's pod template cannot satisfy. The error matches the
 // API server's rejection of that template.
@@ -487,7 +515,7 @@ func (r *DingoNodeReconciler) checkStatefulSetSelector(
 	if sel.Matches(labels.Set(tmplLabels)) {
 		return nil
 	}
-	return apierrors.NewInvalid(
+	return &selectorMismatchError{err: apierrors.NewInvalid(
 		schema.GroupKind{Group: "apps", Kind: "StatefulSet"},
 		sts.Name,
 		field.ErrorList{field.Invalid(
@@ -495,7 +523,7 @@ func (r *DingoNodeReconciler) checkStatefulSetSelector(
 			tmplLabels,
 			"`selector` does not match template `labels`",
 		)},
-	)
+	)}
 }
 
 // reconcileResources applies all child objects for the node.
@@ -1005,8 +1033,21 @@ func (r *DingoNodeReconciler) reconcileStatus(
 	// status write, so keep Degraded while KeysValid is False. A wedged
 	// pipeline is kept for the same reason: it is set during this reconcile,
 	// after everything that returns early.
-	if !meta.IsStatusConditionFalse(dn.Status.Conditions, condKeysValid) &&
-		!wedged {
+	//
+	// A wedge kept through an unreadable scrape does not set Degraded again,
+	// and a refusal resolved by this pass may have replaced its reason.
+	switch {
+	case keysRefused:
+	case wedged:
+		pipeline := meta.FindStatusCondition(
+			dn.Status.Conditions, condPipelineHealthy,
+		)
+		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+			Type: condDegraded, Status: metav1.ConditionTrue,
+			Reason: pipeline.Reason, Message: pipeline.Message,
+			ObservedGeneration: dn.Generation,
+		})
+	default:
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condDegraded)
 	}
 	return r.updateStatus(ctx, dn)

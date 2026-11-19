@@ -443,7 +443,10 @@ To avoid that gap, a DingoNode can instead take over a running chart
 StatefulSet of the same name and namespace: the existing object becomes the
 DingoNode's controlled StatefulSet and its pod template is replaced with the
 operator's, keeping the `dingo-data` claim template. Replacing the template
-rolls the pod once. Order matters:
+rolls the pod once. The Services switch to the operator's selector when the
+takeover is applied, so a chart pod that has not rolled yet receives no Service
+traffic until it rolls; uninstalling the release before creating the DingoNode,
+described above, avoids the takeover. Order matters:
 
 1. Add the `helm.sh/resource-policy: keep` annotation to the StatefulSet
    through a `helm upgrade` of the release, not by annotating the live object.
@@ -470,12 +473,13 @@ DingoNode of that name. Check this before creating the DingoNode. When the
 selector does not match, the operator refuses the StatefulSet before writing
 any Service: the Services and the StatefulSet stay as they were, the chart's pod
 keeps serving, and each reconcile fails with a selector error until the
-mismatch is resolved. Claim templates are immutable, so a
-StatefulSet created by an earlier operator version keeps its `data` template and
-`data-<name>-<ordinal>` claims. When the operator creates a StatefulSet for a
-node whose retained claims exist, it uses their template name, preferring
-`dingo-data` when both are present. Only claims labelled with the node's
-`cardano_network` count. Kubernetes reuses a claim by name alone, so the
+mismatch is resolved. The DingoNode reports it as `Ready=False` and
+`Degraded=True` with reason `StatefulSetSelectorMismatch`. Claim templates are
+immutable, so a StatefulSet created by an earlier operator version keeps its
+`data` template and `data-<name>-<ordinal>` claims. When the operator creates a
+StatefulSet for a node whose retained claims exist, it uses their template name,
+preferring `dingo-data` when both are present. Only claims labelled with the
+node's `cardano_network` count. Kubernetes reuses a claim by name alone, so the
 operator refuses to create the StatefulSet while a claim under the template name
 it would use belongs to another network or has no network label.
 
