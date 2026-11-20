@@ -144,6 +144,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	dc, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
+		os.Exit(1)
+	}
+	preStopSleep, err := preStopSleepAvailable(dc)
+	if err != nil {
+		setupLog.Error(err, "unable to read the API server version")
+		os.Exit(1)
+	}
+
 	reconciler := &controller.DingoNodeReconciler{
 		Client:        mgr.GetClient(),
 		APIReader:     mgr.GetAPIReader(),
@@ -152,7 +163,7 @@ func main() {
 		ForgeStatus:   forgestatus.NewHTTPFetcher(),
 		OnChain:       onchain.NewNtCFetcher(),
 		PodMonitorCRD: podMonitorInstalled(mgr),
-		PreStopSleep:  preStopSleepAvailable(mgr),
+		PreStopSleep:  preStopSleep,
 
 		TipStallThreshold: tipStallThreshold,
 		WatchKeyBundles:   len(watchNamespaces) > 0,
@@ -200,17 +211,13 @@ func podMonitorInstalled(mgr ctrl.Manager) bool {
 
 // preStopSleepAvailable reports whether the API server keeps the native preStop
 // sleep action. An older one drops it and leaves an empty handler that the
-// pods of the StatefulSet then fail validation on.
-func preStopSleepAvailable(mgr ctrl.Manager) bool {
-	dc, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
-	if err != nil {
-		setupLog.Error(err, "unable to create discovery client")
-		return false
-	}
+// pods of the StatefulSet then fail validation on. A failed read is an error,
+// not "unsupported": the answer changes every relay's pod template, so a
+// transient failure must not roll them.
+func preStopSleepAvailable(dc discovery.ServerVersionInterface) (bool, error) {
 	info, err := dc.ServerVersion()
 	if err != nil {
-		setupLog.Error(err, "unable to read the API server version")
-		return false
+		return false, err
 	}
 	if !sleepActionSupported(info) {
 		setupLog.Info(
@@ -218,9 +225,9 @@ func preStopSleepAvailable(mgr ctrl.Manager) bool {
 				"connection drain disabled",
 			"version", info.GitVersion,
 		)
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // sleepActionSupported reports whether a server version has the preStop sleep

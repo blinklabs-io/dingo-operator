@@ -619,8 +619,8 @@ does not wait by default, because the delay postpones the forging pod's
 shutdown. The delay counts against `terminationGracePeriodSeconds`:
 `CARDANO_SHUTDOWN_TIMEOUT` shrinks by the same amount, so a relay at the
 default grace period gets 35 seconds instead of 50, and the CRD rejects a value
-less than 10 seconds below the grace period. Upgrading the operator rolls
-relays once to add the hook.
+less than 10 seconds below the grace period. On Kubernetes 1.30 or newer,
+upgrading the operator rolls relays once to add the hook.
 
 The sleep action needs Kubernetes 1.30 or newer. An older API server drops it
 and keeps an empty `preStop` handler that every new pod fails validation on, so
