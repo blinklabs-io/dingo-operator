@@ -338,3 +338,41 @@ func TestTieredServiceIsolation(t *testing.T) {
 	require.Len(t, metrics.Spec.Ports, 1)
 	assert.Equal(t, "metrics", metrics.Spec.Ports[0].Name)
 }
+
+// Dingo's Blockfrost and UTxORPC providers default their own host to
+// 127.0.0.1 and use the node bind address only when it is empty.
+var providerHostEnvs = map[string]string{
+	"blockfrost": "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_HOST",
+	"utxorpc":    "DINGO_PLUGINS_API_UTXORPC_CONFIG_HOST",
+}
+
+func TestAPIProviderHostsListenOnAllInterfaces(t *testing.T) {
+	t.Parallel()
+	dn := apiNode()
+	require.NoError(t, ValidateAPIs(dn))
+	env := envMap(dn, RenderOptions{})
+	for name, key := range providerHostEnvs {
+		assert.Equal(t, "0.0.0.0", env[key], name)
+	}
+
+	dn.Spec.APIs.Blockfrost = 0
+	dn.Spec.APIs.UTxORPC = 0
+	env = envMap(dn, RenderOptions{})
+	for name, key := range providerHostEnvs {
+		assert.NotContains(t, env, key, name)
+	}
+}
+
+func TestAPIProviderHostLoopbackRejected(t *testing.T) {
+	t.Parallel()
+	for name, key := range providerHostEnvs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Environment = map[string]string{key: "127.0.0.1"}
+			require.ErrorContains(t, ValidateAPIs(dn), key)
+			dn.Spec.Environment = map[string]string{key: "0.0.0.0"}
+			require.NoError(t, ValidateAPIs(dn))
+		})
+	}
+}

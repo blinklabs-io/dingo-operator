@@ -39,6 +39,9 @@ type apiListener struct {
 	port     int32
 	portEnvs []string
 	hostEnv  string
+	// providerHostEnv is the provider's own listen host. Dingo uses it ahead
+	// of the node bind address, and defaults it to 127.0.0.1.
+	providerHostEnv string
 }
 
 func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
@@ -66,6 +69,10 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 			l.hostEnv = "CARDANO_BIND_ADDR"
 			if l.name != "kupo" {
 				l.portEnvs = append(l.portEnvs, "DINGO_"+upper+"_PORT")
+			}
+			if l.name == "blockfrost" || l.name == "utxorpc" {
+				l.providerHostEnv = "DINGO_PLUGINS_API_" + upper +
+					"_CONFIG_HOST"
 			}
 		}
 		if dn.Spec.APIs == nil {
@@ -163,11 +170,11 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 			return fmt.Errorf("%s API port conflicts with %s", l.name, other)
 		}
 		used[l.port] = l.name
-		if host, ok := dn.Spec.Environment[l.hostEnv]; ok && host != "0.0.0.0" {
-			return fmt.Errorf(
-				"%s must be 0.0.0.0 for Service access",
-				l.hostEnv,
-			)
+		for _, key := range []string{l.hostEnv, l.providerHostEnv} {
+			if host, ok := dn.Spec.Environment[key]; key != "" && ok &&
+				host != "0.0.0.0" {
+				return fmt.Errorf("%s must be 0.0.0.0 for Service access", key)
+			}
 		}
 		if l.name == "midnight" {
 			for _, key := range []string{"DINGO_MIDNIGHT_ENABLED", "DINGO_MIDNIGHT_SERVER_ENABLED"} {
@@ -287,6 +294,12 @@ func apiEnv(dn *dingov1alpha1.DingoNode) []corev1.EnvVar {
 			continue
 		}
 		env = append(env, corev1.EnvVar{Name: l.hostEnv, Value: "0.0.0.0"})
+		if l.providerHostEnv != "" {
+			env = append(
+				env,
+				corev1.EnvVar{Name: l.providerHostEnv, Value: "0.0.0.0"},
+			)
+		}
 		if l.name == "midnight" {
 			env = append(
 				env,
