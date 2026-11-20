@@ -29,7 +29,10 @@ func dingoContainer(
 	dn *dingov1alpha1.DingoNode,
 ) corev1.Container {
 	t.Helper()
-	sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+	sts := BuildStatefulSet(
+		dn,
+		RenderOptions{Replicas: 1, PreStopSleep: true},
+	)
 	for _, c := range sts.Spec.Template.Spec.Containers {
 		if c.Name == containerName {
 			return c
@@ -135,7 +138,10 @@ func TestDrainDelayStaysInsideGracePeriod(t *testing.T) {
 					c := dingoContainer(t, dn)
 
 					slept := max(preStopSeconds(c), 0)
-					timeout := int64(dingoShutdownTimeout(dn).Seconds())
+					timeout := int64(dingoShutdownTimeout(
+						dn,
+						RenderOptions{PreStopSleep: true},
+					).Seconds())
 					assert.Positive(t, timeout)
 					assert.Less(t, slept+timeout, grace,
 						"preStop sleep plus Dingo's shutdown budget must fit "+
@@ -143,4 +149,53 @@ func TestDrainDelayStaysInsideGracePeriod(t *testing.T) {
 				})
 		}
 	}
+}
+
+// TestDrainDelayNeedsSleepAction: an API server older than 1.30 drops the sleep
+// action and keeps an empty preStop handler, which every pod created from the
+// template then fails validation on. Without the capability no hook renders,
+// and Dingo keeps the whole shutdown budget.
+func TestDrainDelayNeedsSleepAction(t *testing.T) {
+	t.Parallel()
+	for name, drain := range map[string]*int64{
+		"default":  nil,
+		"explicit": new(int64(20)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dn := relayNode()
+			dn.Spec.DrainDelaySeconds = drain
+			sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+			for _, c := range sts.Spec.Template.Spec.Containers {
+				assert.Nil(t, c.Lifecycle, c.Name)
+			}
+			env := envMap(dn, RenderOptions{})
+			assert.Equal(t, "50s", env["CARDANO_SHUTDOWN_TIMEOUT"])
+		})
+	}
+}
+
+// TestDrainDelayDefaultShrinksShutdownBudget pins what the default costs: at
+// the default grace period the relay's shutdown budget drops from 50s to 35s.
+func TestDrainDelayDefaultShrinksShutdownBudget(t *testing.T) {
+	t.Parallel()
+	env := envMap(relayNode(), RenderOptions{PreStopSleep: true})
+	assert.Equal(t, "35s", env["CARDANO_SHUTDOWN_TIMEOUT"])
+	env = envMap(bpNode(), RenderOptions{PreStopSleep: true})
+	assert.Equal(t, "50s", env["CARDANO_SHUTDOWN_TIMEOUT"])
+}
+
+// TestDrainDelayDefaultYieldsToShutdownOverride: a CARDANO_SHUTDOWN_TIMEOUT set
+// in spec.environment was sized against the whole grace period, so an implicit
+// delay would push it past SIGKILL. Only an explicit delay applies then.
+func TestDrainDelayDefaultYieldsToShutdownOverride(t *testing.T) {
+	t.Parallel()
+	dn := relayNode()
+	dn.Spec.Environment = map[string]string{"CARDANO_SHUTDOWN_TIMEOUT": "45s"}
+	assert.Equal(t, int64(-1), preStopSeconds(dingoContainer(t, dn)),
+		"the default must not eat into an overridden budget")
+
+	dn.Spec.DrainDelaySeconds = new(int64(5))
+	assert.Equal(t, int64(5), preStopSeconds(dingoContainer(t, dn)),
+		"an explicit delay still applies")
 }

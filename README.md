@@ -610,16 +610,22 @@ Kubernetes sends SIGTERM as it starts removing a pod from Service endpoints,
 and Dingo closes its listeners on SIGTERM, so connections still routed to the
 pod in that window are refused. `spec.drainDelaySeconds` adds a native
 `preStop` sleep to the Dingo container so SIGTERM arrives after proxies have
-stopped selecting the pod. It needs Kubernetes 1.30 or newer; set it to `0` on
-older clusters.
+stopped selecting the pod.
 
-A relay waits 15 seconds by default, as long as Dingo keeps its default 30
-second shutdown budget inside `terminationGracePeriodSeconds` (default 60). A
-block producer does not wait by default, because the delay postpones the
-forging pod's shutdown. The delay counts against
-`terminationGracePeriodSeconds`, `CARDANO_SHUTDOWN_TIMEOUT` shrinks by the same
-amount, and the CRD rejects a value less than 10 seconds below the grace period.
-Upgrading the operator rolls relays once to add the hook.
+A relay waits 15 seconds by default, as long as that leaves Dingo a 30 second
+shutdown budget inside `terminationGracePeriodSeconds` (default 60) and
+`spec.environment` does not set `CARDANO_SHUTDOWN_TIMEOUT`. A block producer
+does not wait by default, because the delay postpones the forging pod's
+shutdown. The delay counts against `terminationGracePeriodSeconds`:
+`CARDANO_SHUTDOWN_TIMEOUT` shrinks by the same amount, so a relay at the
+default grace period gets 35 seconds instead of 50, and the CRD rejects a value
+less than 10 seconds below the grace period. Upgrading the operator rolls
+relays once to add the hook.
+
+The sleep action needs Kubernetes 1.30 or newer. An older API server drops it
+and keeps an empty `preStop` handler that every new pod fails validation on, so
+the operator reads the server version at startup and, below 1.30, renders no
+hook and ignores `drainDelaySeconds`.
 
 ## API and Service exposure
 

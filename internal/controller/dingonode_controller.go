@@ -101,6 +101,9 @@ type DingoNodeReconciler struct {
 	// counter validation falls back to the operator's own last accepted counter.
 	OnChain       onchain.Fetcher
 	PodMonitorCRD bool // whether the PodMonitor CRD is installed
+	// PreStopSleep reports that the API server keeps the native preStop sleep
+	// action, which the connection drain delay is rendered as.
+	PreStopSleep bool
 	// ColdSigner overrides the cold signer Auto rotation issues opcerts with.
 	// Nil builds it from spec.blockProducer.rotation.coldSigner.
 	ColdSigner ColdSignerFactory
@@ -547,9 +550,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 	}
 
 	opts := resources.RenderOptions{
-		HasTopology: hasTopo,
-		Replicas:    desiredReplicas(dn),
-		MountKeys:   resources.IsBlockProducer(dn),
+		HasTopology:  hasTopo,
+		Replicas:     desiredReplicas(dn),
+		MountKeys:    resources.IsBlockProducer(dn),
+		PreStopSleep: r.PreStopSleep,
 	}
 	if hasTopo {
 		opts.TopologyChecksum = checksum(topoJSON)

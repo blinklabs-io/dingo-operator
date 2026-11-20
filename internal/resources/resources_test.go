@@ -1059,7 +1059,7 @@ func TestDingoShutdownTimeoutStaysInsideGracePeriod(t *testing.T) {
 				dn.Spec.TerminationGracePeriodSeconds = new(grace)
 			}
 			effective := terminationGracePeriod(dn)
-			timeout := dingoShutdownTimeout(dn)
+			timeout := dingoShutdownTimeout(dn, RenderOptions{})
 
 			assert.Positive(t, timeout, "timeout must be usable")
 			assert.Less(

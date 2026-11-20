@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	k8sversion "k8s.io/apimachinery/pkg/version"
 )
 
 func TestSplitNamespaces(t *testing.T) {
@@ -33,6 +34,27 @@ func TestSplitNamespaces(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
 			assert.Equal(t, tt.want, splitNamespaces(tt.in))
+		})
+	}
+}
+
+func TestSleepActionSupported(t *testing.T) {
+	for gitVersion, want := range map[string]bool{
+		"v1.28.3":             false,
+		"v1.29.5":             false,
+		"v1.29.15-eks-a1b2c3": false,
+		"v1.30.0":             true,
+		"v1.31.5+k3s1":        true,
+		"v1.34.1-gke.100":     true,
+		"":                    false,
+		"not-a-version":       false,
+	} {
+		t.Run(gitVersion, func(t *testing.T) {
+			assert.Equal(
+				t,
+				want,
+				sleepActionSupported(&k8sversion.Info{GitVersion: gitVersion}),
+			)
 		})
 	}
 }

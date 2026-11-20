@@ -798,13 +798,14 @@ type DingoNodeSpec struct {
 	// leave at least 10 seconds of headroom under the grace period.
 	//
 	// When omitted, a relay waits 15 seconds, provided that still leaves Dingo
-	// its default 30 second shutdown budget, and a block producer does not wait,
-	// because the delay would postpone the forging pod's shutdown. Set 0 to
-	// disable the hook.
+	// a 30 second shutdown budget and spec.environment does not set
+	// CARDANO_SHUTDOWN_TIMEOUT, and a block producer does not wait, because the
+	// delay would postpone the forging pod's shutdown. Set 0 to disable the
+	// hook.
 	//
-	// The hook uses the native preStop sleep action, which needs Kubernetes 1.30
-	// or newer (1.29 with the PodLifecycleSleepAction gate). Set 0 on older
-	// clusters.
+	// The hook uses the native preStop sleep action. On an API server older
+	// than Kubernetes 1.30 the operator renders no hook and the value has no
+	// effect.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	DrainDelaySeconds *int64 `json:"drainDelaySeconds,omitempty"`
