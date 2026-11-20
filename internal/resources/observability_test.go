@@ -87,7 +87,11 @@ func TestOTLPEnvRendersExportersAndHeadersSecret(t *testing.T) {
 	require.NotNil(t, ref)
 	assert.Equal(t, "otlp", ref.Name)
 	assert.Equal(t, "headers", ref.Key)
-	require.NotNil(t, ref.Optional, "a missing headers Secret must stop the pod")
+	require.NotNil(
+		t,
+		ref.Optional,
+		"a missing headers Secret must stop the pod",
+	)
 	assert.False(t, *ref.Optional)
 	assert.NotSame(t, dn.Spec.OTLP.HeadersSecretRef, ref)
 
@@ -205,8 +209,16 @@ func TestEmptyOTLPAddsResourceAttributesOnly(t *testing.T) {
 	dn.Spec.Tracing.Enabled = true
 	dn.Spec.OTLP = &dingov1alpha1.OTLPSpec{}
 	m := envMap(dn, RenderOptions{})
-	assert.Contains(t, m["OTEL_RESOURCE_ATTRIBUTES"], "k8s.pod.name=$(OTEL_K8S_POD_NAME)")
-	assert.Contains(t, m["OTEL_RESOURCE_ATTRIBUTES"], "cardano.network.name=mainnet")
+	assert.Contains(
+		t,
+		m["OTEL_RESOURCE_ATTRIBUTES"],
+		"k8s.pod.name=$(OTEL_K8S_POD_NAME)",
+	)
+	assert.Contains(
+		t,
+		m["OTEL_RESOURCE_ATTRIBUTES"],
+		"cardano.network.name=mainnet",
+	)
 	for _, name := range []string{
 		"OTEL_LOGS_EXPORTER",
 		"OTEL_METRICS_EXPORTER",
@@ -248,17 +260,23 @@ func TestEnvironmentOverridesSecretBackedVariable(t *testing.T) {
 	dn.Spec.Environment = map[string]string{
 		"OTEL_EXPORTER_OTLP_HEADERS": "x-token=abc",
 	}
-	headers := envVar(t, BuildEnv(dn, RenderOptions{}), "OTEL_EXPORTER_OTLP_HEADERS")
+	headers := envVar(
+		t,
+		BuildEnv(dn, RenderOptions{}),
+		"OTEL_EXPORTER_OTLP_HEADERS",
+	)
 	assert.Equal(t, "x-token=abc", headers.Value)
 	assert.Nil(t, headers.ValueFrom)
 }
 
 func TestSupportsObservabilityExport(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		repo  string
-		tag   string
-		wants bool
+		name              string
+		repo              string
+		tag               string
+		digest            string
+		capabilityVersion string
+		wants             bool
 	}{
 		{name: "default tag predates it"},
 		{name: "first release", tag: "0.91.0", wants: true},
@@ -268,11 +286,26 @@ func TestSupportsObservabilityExport(t *testing.T) {
 		{name: "major above zero", tag: "1.0.0", wants: true},
 		{name: "unparseable tag is trusted", tag: "main", wants: true},
 		{name: "custom repository is trusted", repo: "example/dingo", wants: true},
+		{
+			name:              "digest capability version overrides tag",
+			tag:               "0.91.0",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.90.9",
+		},
+		{
+			name:              "digest capability version enables export",
+			tag:               "0.90.9",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.91.0",
+			wants:             true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dn := relayNode()
 			dn.Spec.Image.Repository = tc.repo
 			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Image.Digest = tc.digest
+			dn.Spec.Image.CapabilityVersion = tc.capabilityVersion
 			assert.Equal(t, tc.wants, SupportsObservabilityExport(dn))
 		})
 	}

@@ -96,39 +96,17 @@ func BuildNetworkPolicy(
 	}
 
 	var ingress []networkingv1.NetworkPolicyIngressRule
-	if !IsBlockProducer(dn) {
+	relayPeers := relayIngressPeers(dn)
+	if !IsBlockProducer(dn) || len(relayPeers) > 0 {
+		// Peering grants only node-to-node traffic. It never grants access to
+		// the separate node-to-client listener.
 		relayPort := intstr.FromInt32(RelayPort(dn))
 		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
+			From: relayPeers,
 			Ports: []networkingv1.NetworkPolicyPort{{
 				Protocol: &tcp,
 				Port:     &relayPort,
 			}},
-		})
-	} else if refs := dn.Spec.Topology.RelayRefs; len(refs) > 0 {
-		// Relay peers get the node-to-node port and nothing else. They used to
-		// be handed the node-to-client port in the same rule, which was inert
-		// only because Dingo binds NtC to loopback: enabling the listener would
-		// have let any pod carrying this node's NodeLabel value open
-		// local-state-query, tx submission and mempool queries against a forging
-		// node with no NtC grant at all. Peering is a node-to-node
-		// relationship; it is not consent to drive the node as a client.
-		relayPort := intstr.FromInt32(RelayPort(dn))
-		peerSelector := metav1.LabelSelector{
-			MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      NodeLabel,
-					Operator: metav1.LabelSelectorOpIn,
-					Values:   refs,
-				},
-			},
-		}
-		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
-			From: []networkingv1.NetworkPolicyPeer{
-				{PodSelector: &peerSelector},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &relayPort},
-			},
 		})
 	}
 	// Only open the port the node is actually serving. Emitting this rule
@@ -180,6 +158,35 @@ func BuildNetworkPolicy(
 			}, // allow all egress
 		},
 	}
+}
+
+// relayIngressPeers returns the sources allowed to reach the node-to-node
+// listener. An empty result deliberately has different meanings at the call
+// site: relays accept all sources, while block producers emit no relay rule.
+func relayIngressPeers(
+	dn *dingov1alpha1.DingoNode,
+) []networkingv1.NetworkPolicyPeer {
+	relay := &dingov1alpha1.RelayServiceSpec{}
+	dn.Spec.RelayService.DeepCopyInto(relay)
+	peers := relay.IngressFrom
+
+	if !IsBlockProducer(dn) || len(dn.Spec.Topology.RelayRefs) == 0 {
+		return peers
+	}
+
+	peerSelector := metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      NodeLabel,
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   append([]string(nil), dn.Spec.Topology.RelayRefs...),
+			},
+		},
+	}
+	return append(
+		[]networkingv1.NetworkPolicyPeer{{PodSelector: &peerSelector}},
+		peers...,
+	)
 }
 
 // nodeToClientIngress allows the node-to-client port from clients that have
