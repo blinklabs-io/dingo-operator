@@ -30,6 +30,9 @@ import (
 	_ "go.uber.org/automaxprocs"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
+	k8sversion "k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -141,6 +144,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	dc, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
+		os.Exit(1)
+	}
+	preStopSleep, err := preStopSleepAvailable(dc)
+	if err != nil {
+		setupLog.Error(err, "unable to read the API server version")
+		os.Exit(1)
+	}
+
 	reconciler := &controller.DingoNodeReconciler{
 		Client:        mgr.GetClient(),
 		APIReader:     mgr.GetAPIReader(),
@@ -149,6 +163,7 @@ func main() {
 		ForgeStatus:   forgestatus.NewHTTPFetcher(),
 		OnChain:       onchain.NewNtCFetcher(),
 		PodMonitorCRD: podMonitorInstalled(mgr),
+		PreStopSleep:  preStopSleep,
 
 		TipStallThreshold: tipStallThreshold,
 		WatchKeyBundles:   len(watchNamespaces) > 0,
@@ -192,6 +207,38 @@ func podMonitorInstalled(mgr ctrl.Manager) bool {
 		return false
 	}
 	return true
+}
+
+// preStopSleepAvailable reports whether the API server keeps the native preStop
+// sleep action. An older one drops it and leaves an empty handler that the
+// pods of the StatefulSet then fail validation on. A failed read is an error,
+// not "unsupported": the answer changes every relay's pod template, so a
+// transient failure must not roll them.
+func preStopSleepAvailable(dc discovery.ServerVersionInterface) (bool, error) {
+	info, err := dc.ServerVersion()
+	if err != nil {
+		return false, err
+	}
+	if !sleepActionSupported(info) {
+		setupLog.Info(
+			"API server predates the preStop sleep action; "+
+				"connection drain disabled",
+			"version", info.GitVersion,
+		)
+		return false, nil
+	}
+	return true, nil
+}
+
+// sleepActionSupported reports whether a server version has the preStop sleep
+// action on by default, which it is from Kubernetes 1.30. GitVersion is parsed
+// rather than Minor, which managed distributions report as "29+".
+func sleepActionSupported(info *k8sversion.Info) bool {
+	v, err := utilversion.ParseGeneric(info.GitVersion)
+	if err != nil {
+		return false
+	}
+	return v.AtLeast(utilversion.MajorMinor(1, 30))
 }
 
 func utilRuntimeMust(err error) {

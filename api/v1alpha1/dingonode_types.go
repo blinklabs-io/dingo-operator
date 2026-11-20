@@ -716,6 +716,7 @@ type LoggingSpec struct {
 }
 
 // DingoNodeSpec defines the desired state of a DingoNode.
+// +kubebuilder:validation:XValidation:rule="!has(self.drainDelaySeconds) || self.drainDelaySeconds + 10 < (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds : 60)",message="drainDelaySeconds must be at least 10 seconds below terminationGracePeriodSeconds"
 type DingoNodeSpec struct {
 	// Role selects relay or blockProducer behaviour.
 	//
@@ -797,11 +798,35 @@ type DingoNodeSpec struct {
 	// default state where Kubernetes and Dingo are given the same 30s and
 	// kubelet fires exactly as Dingo's deadline expires.
 	//
-	// Raise it for a node with a large ledger, whose flush takes longer.
+	// Raise it for a node with a large ledger, whose flush takes longer. The
+	// preStop drain delay (drainDelaySeconds) counts against this period.
 	// +kubebuilder:default=60
 	// +kubebuilder:validation:Minimum=15
 	// +optional
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+	// DrainDelaySeconds is how long the Dingo container sleeps in a preStop hook
+	// before it receives SIGTERM. Kubernetes starts removing a terminating pod
+	// from Service endpoints at the same moment it begins termination, and
+	// kube-proxy and load balancers take a while to stop selecting it. Dingo
+	// closes its listeners on SIGTERM, so without a delay new connections that
+	// are still routed to the pod are refused.
+	//
+	// The delay is part of terminationGracePeriodSeconds, not added to it:
+	// CARDANO_SHUTDOWN_TIMEOUT is reduced by the same amount, and the value must
+	// leave at least 10 seconds of headroom under the grace period.
+	//
+	// When omitted, a relay waits 15 seconds, provided that still leaves Dingo
+	// a 30 second shutdown budget and spec.environment does not set
+	// CARDANO_SHUTDOWN_TIMEOUT, and a block producer does not wait, because the
+	// delay would postpone the forging pod's shutdown. Set 0 to disable the
+	// hook.
+	//
+	// The hook uses the native preStop sleep action. On an API server older
+	// than Kubernetes 1.30 the operator renders no hook and the value has no
+	// effect.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	DrainDelaySeconds *int64 `json:"drainDelaySeconds,omitempty"`
 	// PodSecurityContext overrides the operator's secure defaults.
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`

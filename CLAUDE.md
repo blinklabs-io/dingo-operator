@@ -186,9 +186,16 @@ that list is empty. Node-to-client, API, and metrics grants remain separate.
   flush that uses its budget is cut off. The operator therefore sets the pod's
   grace period (default 60s, `spec.terminationGracePeriodSeconds`) and derives
   Dingo's budget from it as `CARDANO_SHUTDOWN_TIMEOUT`, so the node's deadline is
-  always strictly inside the pod's. This matters more here than for most
-  workloads: on a block producer, restarts are routine rather than exceptional,
-  since every key rotation and config-bundle change rolls the pod.
+  always strictly inside the pod's, less the preStop drain delay
+  (`spec.drainDelaySeconds`, native `lifecycle.preStop.sleep`, Kubernetes 1.30+)
+  that runs inside the same period before SIGTERM. Relays default to 15s when
+  that leaves Dingo 30s and `spec.environment` does not set the timeout; block
+  producers default to none. Below Kubernetes 1.30, read from the server
+  version at startup, no hook renders: an older API server drops the sleep
+  action and keeps an empty handler that the pods then fail validation on. This matters more
+  here than for most workloads: on a block producer, restarts are routine
+  rather than exceptional, since every key rotation and config-bundle change
+  rolls the pod.
   - The variable is `CARDANO_`-prefixed, not `DINGO_`. Dingo runs a single
     `envconfig.Process("cardano", ...)`; the `DINGO_*` names the operator sets
     work only because those fields carry an explicit `envconfig:"DINGO_..."`

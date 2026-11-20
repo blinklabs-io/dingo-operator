@@ -381,6 +381,12 @@ const DefaultTerminationGracePeriodSeconds int64 = 60
 // or the grace period buys nothing.
 const shutdownHeadroomSeconds int64 = 10
 
+// DefaultDrainDelaySeconds is the preStop sleep a relay gets when the spec
+// omits one: long enough for kube-proxy and most load balancers to drop a
+// terminating pod, short enough that the default 60s grace period still leaves
+// Dingo its own 30s shutdown budget after the headroom.
+const DefaultDrainDelaySeconds int64 = 15
+
 // terminationGracePeriod returns the effective pod grace period.
 func terminationGracePeriod(dn *dingov1alpha1.DingoNode) int64 {
 	if v := dn.Spec.TerminationGracePeriodSeconds; v != nil && *v > 0 {
@@ -389,14 +395,79 @@ func terminationGracePeriod(dn *dingov1alpha1.DingoNode) int64 {
 	return DefaultTerminationGracePeriodSeconds
 }
 
+// shutdownTimeoutEnv is the variable Dingo reads its shutdown deadline from.
+const shutdownTimeoutEnv = "CARDANO_SHUTDOWN_TIMEOUT"
+
+// dingoDefaultShutdownBudgetSeconds is Dingo's own shutdown timeout default,
+// which an implicit drain delay must not eat into.
+const dingoDefaultShutdownBudgetSeconds int64 = 30
+
+// drainDelay returns the seconds the Dingo container sleeps in preStop before
+// SIGTERM; zero means no hook.
+//
+// An omitted value gives relays DefaultDrainDelaySeconds, but only when Dingo
+// keeps its default shutdown budget afterwards: a short grace period must not
+// turn the default into a mid-flush SIGKILL. A CARDANO_SHUTDOWN_TIMEOUT set in
+// spec.environment was sized against the whole grace period, so it suppresses
+// the default too. Block producers default to zero, since the delay would
+// postpone the forging pod's shutdown and a rotation or config roll. An
+// explicit value is clamped to leave the headroom plus one second for Dingo,
+// as the CRD rule does at admission.
+func drainDelay(dn *dingov1alpha1.DingoNode, opts RenderOptions) int64 {
+	if !opts.PreStopSleep {
+		return 0
+	}
+	grace := terminationGracePeriod(dn)
+	if v := dn.Spec.DrainDelaySeconds; v != nil {
+		return max(min(*v, grace-shutdownHeadroomSeconds-1), 0)
+	}
+	if IsBlockProducer(dn) {
+		return 0
+	}
+	if _, set := dn.Spec.Environment[shutdownTimeoutEnv]; set {
+		return 0
+	}
+	if grace-shutdownHeadroomSeconds-DefaultDrainDelaySeconds <
+		dingoDefaultShutdownBudgetSeconds {
+		return 0
+	}
+	return DefaultDrainDelaySeconds
+}
+
+// drainLifecycle returns the preStop hook for the Dingo container, or nil.
+// It is the native sleep action: it needs no binary in the image, but
+// Kubernetes 1.30 or newer. A zero-second sleep is invalid before 1.32, so a
+// zero delay renders no hook at all.
+func drainLifecycle(
+	dn *dingov1alpha1.DingoNode,
+	opts RenderOptions,
+) *corev1.Lifecycle {
+	secs := drainDelay(dn, opts)
+	if secs <= 0 {
+		return nil
+	}
+	return &corev1.Lifecycle{
+		PreStop: &corev1.LifecycleHandler{
+			Sleep: &corev1.SleepAction{Seconds: secs},
+		},
+	}
+}
+
 // dingoShutdownTimeout returns the value for CARDANO_SHUTDOWN_TIMEOUT: the pod's
-// grace period less the headroom kubelet needs, so Dingo always stops on its own
-// terms rather than being killed part-way through closing its database.
+// grace period less the preStop drain delay, which runs inside that period
+// before SIGTERM, and the headroom kubelet needs, so Dingo always stops on its
+// own terms rather than being killed part-way through closing its database.
 //
 // The floor exists because the CRD permits a grace period smaller than the
 // headroom; a non-positive timeout would be worse than a short one.
-func dingoShutdownTimeout(dn *dingov1alpha1.DingoNode) time.Duration {
-	secs := max(terminationGracePeriod(dn)-shutdownHeadroomSeconds, 1)
+func dingoShutdownTimeout(
+	dn *dingov1alpha1.DingoNode,
+	opts RenderOptions,
+) time.Duration {
+	secs := max(
+		terminationGracePeriod(dn)-shutdownHeadroomSeconds-drainDelay(dn, opts),
+		1,
+	)
 	return time.Duration(secs) * time.Second
 }
 
@@ -451,6 +522,11 @@ type RenderOptions struct {
 	// StatefulSet. Claim templates are immutable, so an existing StatefulSet
 	// keeps its original name. Empty selects DefaultDataVolumeName.
 	DataVolumeName string
+	// PreStopSleep reports that the API server keeps the native preStop sleep
+	// action (Kubernetes 1.30+). An older server drops it and leaves an empty
+	// handler that every pod created from the template fails validation on, so
+	// without it no drain hook renders.
+	PreStopSleep bool
 }
 
 // dataVolume returns the data volume and claim template name to render.
@@ -476,8 +552,8 @@ func BuildEnv(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.EnvVar {
 		// envconfig.Process("cardano", ...), and this field has no explicit
 		// envconfig tag to alias it, unlike the DINGO_* names above.
 		{
-			Name:  "CARDANO_SHUTDOWN_TIMEOUT",
-			Value: dingoShutdownTimeout(dn).String(),
+			Name:  shutdownTimeoutEnv,
+			Value: dingoShutdownTimeout(dn, opts).String(),
 		},
 		// Dingo binds the Prometheus listener to loopback by default as of
 		// v0.81.0 (dingo #4922), so metrics are unreachable across the pod
@@ -752,6 +828,7 @@ func BuildStatefulSet(
 		StartupProbe:    startupProbe(dn),
 		LivenessProbe:   livenessProbe(dn),
 		ReadinessProbe:  readinessProbe(dn),
+		Lifecycle:       drainLifecycle(dn, opts),
 	}
 
 	grace := terminationGracePeriod(dn)

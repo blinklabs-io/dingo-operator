@@ -15,9 +15,13 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	k8sversion "k8s.io/apimachinery/pkg/version"
+	fakediscovery "k8s.io/client-go/discovery/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 func TestSplitNamespaces(t *testing.T) {
@@ -34,5 +38,53 @@ func TestSplitNamespaces(t *testing.T) {
 		t.Run(tt.in, func(t *testing.T) {
 			assert.Equal(t, tt.want, splitNamespaces(tt.in))
 		})
+	}
+}
+
+func TestSleepActionSupported(t *testing.T) {
+	for gitVersion, want := range map[string]bool{
+		"v1.28.3":             false,
+		"v1.29.5":             false,
+		"v1.29.15-eks-a1b2c3": false,
+		"v1.30.0":             true,
+		"v1.31.5+k3s1":        true,
+		"v1.34.1-gke.100":     true,
+		"":                    false,
+		"not-a-version":       false,
+	} {
+		t.Run(gitVersion, func(t *testing.T) {
+			assert.Equal(
+				t,
+				want,
+				sleepActionSupported(&k8sversion.Info{GitVersion: gitVersion}),
+			)
+		})
+	}
+}
+
+type failingServerVersion struct{}
+
+func (failingServerVersion) ServerVersion() (*k8sversion.Info, error) {
+	return nil, errors.New("connection refused")
+}
+
+// A failed version read is an error, not "unsupported": reading it as
+// unsupported would render every relay without its hook until the next
+// restart, rolling each relay twice.
+func TestPreStopSleepAvailable(t *testing.T) {
+	_, err := preStopSleepAvailable(failingServerVersion{})
+	assert.Error(t, err)
+
+	for gitVersion, want := range map[string]bool{
+		"v1.29.5": false,
+		"v1.30.0": true,
+	} {
+		dc := &fakediscovery.FakeDiscovery{
+			Fake:               &clienttesting.Fake{},
+			FakedServerVersion: &k8sversion.Info{GitVersion: gitVersion},
+		}
+		got, err := preStopSleepAvailable(dc)
+		assert.NoError(t, err, gitVersion)
+		assert.Equal(t, want, got, gitVersion)
 	}
 }

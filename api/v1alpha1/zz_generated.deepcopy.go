@@ -235,6 +235,11 @@ func (in *DingoNodeSpec) DeepCopyInto(out *DingoNodeSpec) {
 		*out = new(int64)
 		**out = **in
 	}
+	if in.DrainDelaySeconds != nil {
+		in, out := &in.DrainDelaySeconds, &out.DrainDelaySeconds
+		*out = new(int64)
+		**out = **in
+	}
 	if in.PodSecurityContext != nil {
 		in, out := &in.PodSecurityContext, &out.PodSecurityContext
 		*out = new(corev1.PodSecurityContext)
