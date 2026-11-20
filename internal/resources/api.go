@@ -54,9 +54,11 @@ const (
 )
 
 // providerHostSupported reports whether the selected image can take the
-// provider's own listen host. As for SupportsTracing, an image whose version
-// cannot be determined is trusted: it is a custom build the user chose, and a
-// provider left on 127.0.0.1 would be unreachable without any error.
+// provider's own listen host. As for supportsHealthProbes, an image whose
+// version cannot be determined gets nothing: the variable is emitted
+// automatically and mergeEnv cannot remove it, so a mirror of an older release
+// would fail Dingo's strict config decode with no way out. A custom image that
+// has the field sets it in spec.environment, which passes through.
 func providerHostSupported(dn *dingov1alpha1.DingoNode, name string) bool {
 	var minMinor int
 	switch name {
@@ -68,7 +70,7 @@ func providerHostSupported(dn *dingov1alpha1.DingoNode, name string) bool {
 		return false
 	}
 	major, minor, _, ok := canonicalImageVersion(dn)
-	return !ok || major > 0 || minor >= minMinor
+	return ok && (major > 0 || minor >= minMinor)
 }
 
 func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {

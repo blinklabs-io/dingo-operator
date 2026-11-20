@@ -369,12 +369,10 @@ func TestAPIProviderHostByImageVersion(t *testing.T) {
 		{"1.0.0", "", "1.0.0", map[string]bool{
 			"blockfrost": true, "utxorpc": true,
 		}},
-		{"custom repository", "example.com/dingo", "0.50.0", map[string]bool{
-			"blockfrost": true, "utxorpc": true,
-		}},
-		{"non-semver tag", "", "latest", map[string]bool{
-			"blockfrost": true, "utxorpc": true,
-		}},
+		{"custom repository", "example.com/dingo", "0.50.0", map[string]bool{}},
+		{"mirror of old release", "example.com/mirror/dingo", "0.85.0",
+			map[string]bool{}},
+		{"non-semver tag", "", "latest", map[string]bool{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -391,6 +389,21 @@ func TestAPIProviderHostByImageVersion(t *testing.T) {
 					assert.NotContains(t, env, key, name)
 				}
 			}
+		})
+	}
+}
+
+func TestAPIProviderHostUserValuePassesThroughOnUnknownVersion(t *testing.T) {
+	t.Parallel()
+	for name, key := range providerHostEnvs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Repository = "example.com/mirror/dingo"
+			dn.Spec.Image.Tag = "custom"
+			dn.Spec.Environment = map[string]string{key: "0.0.0.0"}
+			require.NoError(t, ValidateAPIs(dn))
+			assert.Equal(t, "0.0.0.0", envMap(dn, RenderOptions{})[key])
 		})
 	}
 }
