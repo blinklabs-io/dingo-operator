@@ -23,6 +23,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 // APIAccessLabel grants access to enabled APIs. Cross-namespace clients must
@@ -77,8 +78,8 @@ func providerHostSupported(dn *dingov1alpha1.DingoNode, name string) bool {
 // blockfrostHostRefused reports whether the selected image would refuse to
 // start Blockfrost on a non-loopback host. Dingo v0.86.0 through v0.92.3 do
 // so when an auth token is set without server TLS, so such a node keeps the
-// loopback default. TLS counts only when DINGO_API_TLS_MODE is server and no
-// provider tls section, which can override it, is set.
+// loopback default. A provider tls mode overrides DINGO_API_TLS_MODE; a tls
+// section the operator cannot read counts as no TLS.
 func blockfrostHostRefused(dn *dingov1alpha1.DingoNode) bool {
 	major, minor, patch, ok := canonicalImageVersion(dn)
 	if !ok || major > 0 || minor > 92 || minor == 92 && patch >= 4 {
@@ -89,12 +90,24 @@ func blockfrostHostRefused(dn *dingov1alpha1.DingoNode) bool {
 	if env[prefix+"AUTH_TOKEN"] == "" && env[prefix+"AUTH_TOKEN_FILE"] == "" {
 		return false
 	}
-	for key := range env {
-		if strings.HasPrefix(key, prefix+"TLS") {
+	mode := env["DINGO_API_TLS_MODE"]
+	for key, value := range env {
+		if !strings.HasPrefix(key, prefix+"TLS") {
+			continue
+		}
+		var tls map[string]any
+		if key != prefix+"TLS" || yaml.Unmarshal([]byte(value), &tls) != nil {
 			return true
 		}
+		if m, set := tls["mode"]; set && m != nil {
+			s, isString := m.(string)
+			if !isString {
+				return true
+			}
+			mode = s
+		}
 	}
-	return env["DINGO_API_TLS_MODE"] != "server"
+	return mode != "server"
 }
 
 func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
