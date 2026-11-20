@@ -288,10 +288,12 @@ cert-manager).
 `Auto`.
 
 Key-material validation runs for every block producer, in all three modes
-(`internal/controller/keys.go`) — `rotation.mode` only governs who *issues* the
-certificate, never whether a delivered one is checked before it can reach the
-node. `Assisted` is therefore "validate an externally-delivered opcert and roll
-the pod onto it":
+(`internal/controller/keys.go`). `MonitorOnly` reports a valid replacement but
+keeps the live key checksum and withdraws its staging approval, so it neither
+rolls nor reloads the node. `Assisted` validates and delivers an externally
+managed replacement; `Auto` also issues it. A pod recreated outside the
+operator still stages the Secret's current contents. The shared validation
+contract is:
 
 - Validated: all three files present (the certificate as `opcert.cert` or the
   dingo chart's `node.cert`, identical if both); `kes.skey`/`vrf.skey` are
@@ -786,6 +788,10 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   (`agentBundleProblem` and the control role are Auto-only), so a per-pool
   opcert is checked against its Secret and chain counters, never against what
   the agent serves; Dingo checks it against the agent when it loads it.
+  `Assisted` updates the approval ConfigMap so the staging container loads a
+  new opcert, and rolls on static key or pool-list changes. `MonitorOnly`
+  withdraws staging approval and leaves the live template unchanged while
+  reporting the replacement.
 - Status. `status.pools[]` (keyed by hex pool ID, cleared once the node no
   longer uses a pool list) holds `keysValid`,
   reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter` and

@@ -314,6 +314,35 @@ func (r *DingoNodeReconciler) upsertKeysApprovalConfigMap(
 	})
 }
 
+// clearKeysApprovalConfigMap withdraws every in-place key-staging approval
+// when the approval ConfigMap already exists. A MonitorOnly node may inherit a
+// pending approval after its mode changes from Assisted; leaving that approval
+// in place would let the staging container deliver the replacement later.
+func (r *DingoNodeReconciler) clearKeysApprovalConfigMap(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) error {
+	key := types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	if err := r.Get(ctx, key, &corev1.ConfigMap{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("read keys approval configmap: %w", err)
+	}
+	cm := &corev1.ConfigMap{ObjectMeta: objectMeta(key.Name, key.Namespace)}
+	err := createOrUpdateWithRetry(ctx, r.Client, cm, func() error {
+		cm.Labels = resources.Labels(dn)
+		cm.Data = map[string]string{}
+		return ctrl.SetControllerReference(dn, cm, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("clear keys approval configmap: %w", err)
+	}
+	return nil
+}
+
 // observeLoadedOpCert records the opcert counter the node reports, clears the
 // rolled counter once the node reports it, and confirms a pending in-place
 // reload once that counter is the approved one.

@@ -40,6 +40,11 @@ operators.
   `reloadInPlace`, below, loads a validated KES key and opcert). Any later pod
   recreation stages the Secret's current contents, so fix a refused bundle
   rather than leaving it in place.
+  In `MonitorOnly` mode a valid replacement is reported but not approved,
+  loaded, or rolled out; any pending staging approval is withdrawn and the pod
+  template is held while its key checksum differs from the Secret. Switch to
+  `Assisted` to deliver an externally managed replacement. Pod recreation
+  initiated outside the operator still stages the Secret's current contents.
   With `spec.blockProducer.rotation.reloadInPlace: true`, a validated bundle
   that changes only the KES key and opcert is loaded into the running node
   instead of rolling the pod: after validating it, the operator records its
@@ -174,13 +179,14 @@ operators.
   fewest KES periods left, and `RotationDue` is true while any pool is due.
 
   `rotation.mode` may be `Assisted` or `MonitorOnly`; `Auto` through the agent
-  per pool is not supported yet and is refused. A new opcert in one pool's
-  Secret reaches Dingo without rolling the pod, whether or not
-  `rotation.reloadInPlace` is set: a container beside Dingo stages it once the
-  operator has validated and approved it, and Dingo reloads it on its key
-  file watch. Only a change to a pool's other Secret entries (its VRF key, vote
-  key, anything but the opcert), to its profile or to the agent settings, or
-  adding, removing or leaving out a pool, rolls the pod.
+  per pool is not supported yet and is refused. In `Assisted`, a new opcert in
+  one pool's Secret reaches Dingo without rolling the pod: a container beside
+  Dingo stages it once the operator has validated and approved it, and Dingo
+  reloads it on its key file watch. Only a change to a pool's other Secret
+  entries (its VRF key, vote key, anything but the opcert), to its profile or
+  to the agent settings, or adding, removing or leaving out a pool, rolls the
+  pod. `MonitorOnly` reports these changes, withdraws staging approval, and
+  does not roll the pod.
 
   ```yaml
   blockProducer:

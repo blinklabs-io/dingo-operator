@@ -33,7 +33,8 @@ spec:
     slotsPerKESPeriod: 129600
     maxKESEvolutions: 62
     rotation:
-      # MonitorOnly: surface KES/opcert state and RotationDue; do not mutate keys.
+      # MonitorOnly: validate and report replacement keys without delivering
+      # them to the node. Use Assisted to apply an externally managed bundle.
       # Switch to Auto with a cold signer to fully automate opcert issuance.
       # Auto also needs nodeToClient.enabled and Secret update access.
       mode: MonitorOnly

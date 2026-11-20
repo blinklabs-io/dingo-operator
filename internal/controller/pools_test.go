@@ -413,6 +413,54 @@ func TestReconcilePoolKeysRendersEveryAcceptedPool(t *testing.T) {
 	}
 }
 
+func TestReconcilePoolKeysMonitorOnlyKeepsLiveBundles(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	dn := poolListNode("bp", "ns", 0, pools...)
+	dn.Spec.BlockProducer.Rotation.Mode =
+		dingov1alpha1.RotationModeMonitorOnly
+	objects := []client.Object{dn}
+	for _, p := range pools {
+		objects = append(objects, poolSecret(t, "ns", p, 0))
+	}
+	c := conflictClient(t, objects...)
+	r := poolReconciler(c)
+
+	initial := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := r.reconcilePoolKeys(ctx, dn, &initial)
+	require.NoError(t, err)
+	require.False(t, keep)
+	require.NoError(t, c.Create(ctx, resources.BuildStatefulSet(dn, initial)))
+	approvalKey := types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	approval := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(ctx, approvalKey, approval))
+
+	secretKey := types.NamespacedName{
+		Name: pools[0].secret, Namespace: dn.Namespace,
+	}
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data = poolSecret(t, dn.Namespace, pools[0], 1).Data
+	secret.Data["extra"] = []byte("changed static material")
+	require.NoError(t, c.Update(ctx, secret))
+	approval.Data[pools[0].id] = approvedKeysDigest(secret.Data, true)
+	require.NoError(t, c.Update(ctx, approval))
+
+	observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, message, err := r.reconcilePoolKeys(ctx, dn, &observed)
+	require.NoError(t, err)
+	assert.True(t, keep)
+	assert.Equal(t, monitorOnlyHeldMessage, message)
+	assert.Equal(t, initial.KeysChecksum, observed.KeysChecksum)
+	require.NoError(t, c.Get(ctx, approvalKey, approval))
+	assert.Empty(t, approval.Data,
+		"MonitorOnly must withdraw pending pool approvals")
+	assert.Equal(t, int64(1), poolStatus(dn, pools[0].id).OnDiskCounter)
+}
+
 // Each pool's opcert is bound to that pool's own poolId, not to the node's: a
 // bundle whose cold key hashes to another listed pool is refused.
 func TestReconcilePoolKeysBindsEachOpCertToItsPool(t *testing.T) {

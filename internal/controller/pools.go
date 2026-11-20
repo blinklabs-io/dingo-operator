@@ -323,6 +323,19 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 	opts.KeysChecksum = poolsKeysChecksum(accepted)
 	opts.KeysPool = resources.JoinKeysPools(poolIDsOf(rendered))
 	opts.PoolsConfigChecksum = checksum(resources.PoolsConfig(dn, rendered))
+	monitorOnly := dn.Spec.BlockProducer.Rotation.Mode ==
+		dingov1alpha1.RotationModeMonitorOnly
+	if monitorOnly && live.exists && opts.KeysChecksum != live.checksum {
+		if err := r.clearKeysApprovalConfigMap(ctx, dn); err != nil {
+			return false, "", err
+		}
+		// MonitorOnly reports replacement bundles but does not change the pool
+		// set or static key material the live pod stages.
+		opts.KeysChecksum = live.checksum
+		opts.KeysPool = live.pool
+		keepTemplate = true
+		holdMessage = monitorOnlyHeldMessage
+	}
 
 	// The agent client certificate is mounted from its own Secret, as for a
 	// single pool: one that cannot be mounted holds the template.
@@ -339,10 +352,18 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		r.rejectSigningAgentCert(ctx, dn, problem)
 	}
 
-	if err := r.upsertPoolKeysApprovalConfigMap(
-		ctx, dn, approvedPoolDigests(accepted),
-	); err != nil {
-		return false, "", fmt.Errorf("apply keys approval configmap: %w", err)
+	// A fresh node needs its initial approval ConfigMap. Once it is running in
+	// MonitorOnly mode, leave that map unchanged so an observed opcert cannot be
+	// staged into the node by the sync container.
+	if !monitorOnly || !live.exists {
+		if err := r.upsertPoolKeysApprovalConfigMap(
+			ctx, dn, approvedPoolDigests(accepted),
+		); err != nil {
+			return false, "", fmt.Errorf(
+				"apply keys approval configmap: %w",
+				err,
+			)
+		}
 	}
 	// The pool list is read at startup only, so a held template keeps the
 	// list its pod started with.
