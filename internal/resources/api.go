@@ -70,7 +70,31 @@ func providerHostSupported(dn *dingov1alpha1.DingoNode, name string) bool {
 		return false
 	}
 	major, minor, _, ok := canonicalImageVersion(dn)
-	return ok && (major > 0 || minor >= minMinor)
+	return ok && (major > 0 || minor >= minMinor) &&
+		(name != "blockfrost" || !blockfrostHostRefused(dn))
+}
+
+// blockfrostHostRefused reports whether the selected image would refuse to
+// start Blockfrost on a non-loopback host. Dingo v0.86.0 through v0.92.3 do
+// so when an auth token is set without server TLS, so such a node keeps the
+// loopback default. TLS counts only when DINGO_API_TLS_MODE is server and no
+// provider tls section, which can override it, is set.
+func blockfrostHostRefused(dn *dingov1alpha1.DingoNode) bool {
+	major, minor, patch, ok := canonicalImageVersion(dn)
+	if !ok || major > 0 || minor > 92 || minor == 92 && patch >= 4 {
+		return false
+	}
+	const prefix = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_"
+	env := dn.Spec.Environment
+	if env[prefix+"AUTH_TOKEN"] == "" && env[prefix+"AUTH_TOKEN_FILE"] == "" {
+		return false
+	}
+	for key := range env {
+		if strings.HasPrefix(key, prefix+"TLS") {
+			return true
+		}
+	}
+	return env["DINGO_API_TLS_MODE"] != "server"
 }
 
 func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {

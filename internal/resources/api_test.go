@@ -434,3 +434,56 @@ func TestAPIProviderHostLoopbackRejected(t *testing.T) {
 		})
 	}
 }
+
+// Dingo v0.86.0 through v0.92.3 refuse to start Blockfrost on a non-loopback
+// host when an auth token is set without server TLS.
+func TestAPIBlockfrostHostWithAuthToken(t *testing.T) {
+	t.Parallel()
+	const (
+		token     = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_AUTH_TOKEN"
+		tokenFile = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_AUTH_TOKEN_FILE"
+		tls       = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_TLS"
+		apiTLS    = "DINGO_API_TLS_MODE"
+	)
+	cases := []struct {
+		name string
+		tag  string
+		env  map[string]string
+		want bool
+	}{
+		{"0.86.0 token", "0.86.0", map[string]string{token: "t"}, false},
+		{"0.92.3 token", "0.92.3", map[string]string{token: "t"}, false},
+		{"0.92.3 token file", "0.92.3",
+			map[string]string{tokenFile: "/run/token"}, false},
+		{"0.92.3 empty token", "0.92.3", map[string]string{token: ""}, true},
+		{"0.92.3 no token", "0.92.3", nil, true},
+		{"0.92.3 token with API TLS", "0.92.3",
+			map[string]string{token: "t", apiTLS: "server"}, true},
+		{"0.92.3 token with API TLS disabled", "0.92.3",
+			map[string]string{token: "t", apiTLS: "disabled"}, false},
+		{"0.92.3 token with provider TLS override", "0.92.3",
+			map[string]string{token: "t", apiTLS: "server",
+				tls: "{mode: disabled}"}, false},
+		{"0.92.4 token", "0.92.4", map[string]string{token: "t"}, true},
+		{"0.94.2 token", "0.94.2", map[string]string{token: "t"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Environment = tc.env
+			require.NoError(t, ValidateAPIs(dn))
+			env := envMap(dn, RenderOptions{})
+			key := providerHostEnvs["blockfrost"]
+			if tc.want {
+				assert.Equal(t, "0.0.0.0", env[key])
+			} else {
+				assert.NotContains(t, env, key)
+			}
+			if tc.tag != "0.86.0" {
+				assert.Equal(t, "0.0.0.0", env[providerHostEnvs["utxorpc"]])
+			}
+		})
+	}
+}
