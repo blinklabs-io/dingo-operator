@@ -604,6 +604,23 @@ node's tip slot has not changed for longer than the operator's
 `--tip-stall-threshold` flag (default `10m`; `0` disables the check). On a
 network whose blocks can be more than that apart, raise or disable it.
 
+### Termination and connection draining
+
+Kubernetes sends SIGTERM as it starts removing a pod from Service endpoints,
+and Dingo closes its listeners on SIGTERM, so connections still routed to the
+pod in that window are refused. `spec.drainDelaySeconds` adds a native
+`preStop` sleep to the Dingo container so SIGTERM arrives after proxies have
+stopped selecting the pod. It needs Kubernetes 1.30 or newer; set it to `0` on
+older clusters.
+
+A relay waits 15 seconds by default, as long as Dingo keeps its default 30
+second shutdown budget inside `terminationGracePeriodSeconds` (default 60). A
+block producer does not wait by default, because the delay postpones the
+forging pod's shutdown. The delay counts against
+`terminationGracePeriodSeconds`, `CARDANO_SHUTDOWN_TIMEOUT` shrinks by the same
+amount, and the CRD rejects a value less than 10 seconds below the grace period.
+Upgrading the operator rolls relays once to add the hook.
+
 ## API and Service exposure
 
 Configure API ports once; the operator uses them for Dingo's listener environment,

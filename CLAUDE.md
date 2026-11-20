@@ -176,9 +176,13 @@ cert-manager).
   flush that uses its budget is cut off. The operator therefore sets the pod's
   grace period (default 60s, `spec.terminationGracePeriodSeconds`) and derives
   Dingo's budget from it as `CARDANO_SHUTDOWN_TIMEOUT`, so the node's deadline is
-  always strictly inside the pod's. This matters more here than for most
-  workloads: on a block producer, restarts are routine rather than exceptional,
-  since every key rotation and config-bundle change rolls the pod.
+  always strictly inside the pod's, less the preStop drain delay
+  (`spec.drainDelaySeconds`, native `lifecycle.preStop.sleep`, Kubernetes 1.30+)
+  that runs inside the same period before SIGTERM. Relays default to 15s when
+  that leaves Dingo 30s; block producers default to none. This matters more
+  here than for most workloads: on a block producer, restarts are routine
+  rather than exceptional, since every key rotation and config-bundle change
+  rolls the pod.
   - The variable is `CARDANO_`-prefixed, not `DINGO_`. Dingo runs a single
     `envconfig.Process("cardano", ...)`; the `DINGO_*` names the operator sets
     work only because those fields carry an explicit `envconfig:"DINGO_..."`

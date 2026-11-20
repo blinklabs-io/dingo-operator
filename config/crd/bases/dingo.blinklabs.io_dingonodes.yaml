@@ -1512,6 +1512,30 @@ spec:
                 maxLength: 253
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                 type: string
+              drainDelaySeconds:
+                description: |-
+                  DrainDelaySeconds is how long the Dingo container sleeps in a preStop hook
+                  before it receives SIGTERM. Kubernetes starts removing a terminating pod
+                  from Service endpoints at the same moment it begins termination, and
+                  kube-proxy and load balancers take a while to stop selecting it. Dingo
+                  closes its listeners on SIGTERM, so without a delay new connections that
+                  are still routed to the pod are refused.
+
+                  The delay is part of terminationGracePeriodSeconds, not added to it:
+                  CARDANO_SHUTDOWN_TIMEOUT is reduced by the same amount, and the value must
+                  leave at least 10 seconds of headroom under the grace period.
+
+                  When omitted, a relay waits 15 seconds, provided that still leaves Dingo
+                  its default 30 second shutdown budget, and a block producer does not wait,
+                  because the delay would postpone the forging pod's shutdown. Set 0 to
+                  disable the hook.
+
+                  The hook uses the native preStop sleep action, which needs Kubernetes 1.30
+                  or newer (1.29 with the PodLifecycleSleepAction gate). Set 0 on older
+                  clusters.
+                format: int64
+                minimum: 0
+                type: integer
               environment:
                 additionalProperties:
                   type: string
@@ -2146,7 +2170,8 @@ spec:
                   default state where Kubernetes and Dingo are given the same 30s and
                   kubelet fires exactly as Dingo's deadline expires.
 
-                  Raise it for a node with a large ledger, whose flush takes longer.
+                  Raise it for a node with a large ledger, whose flush takes longer. The
+                  preStop drain delay (drainDelaySeconds) counts against this period.
                 format: int64
                 minimum: 15
                 type: integer
@@ -2323,6 +2348,11 @@ spec:
             - network
             - role
             type: object
+            x-kubernetes-validations:
+            - message: drainDelaySeconds must be at least 10 seconds below terminationGracePeriodSeconds
+              rule: '!has(self.drainDelaySeconds) || self.drainDelaySeconds + 10 <
+                (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds
+                : 60)'
           status:
             description: DingoNodeStatus defines the observed state of a DingoNode.
             properties:
