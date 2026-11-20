@@ -262,18 +262,33 @@ func imageTag(dn *dingov1alpha1.DingoNode) string {
 	return DefaultDingoTag
 }
 
+// imageCapabilityVersion returns the version whose runtime contract the image
+// implements. Legacy digest references keep their tag-based selection until
+// they are changed and acquire an explicit capabilityVersion.
+func imageCapabilityVersion(
+	dn *dingov1alpha1.DingoNode,
+) (version string, declared bool) {
+	if dn.Spec.Image.Digest != "" &&
+		dn.Spec.Image.CapabilityVersion != "" {
+		return dn.Spec.Image.CapabilityVersion, true
+	}
+	return imageTag(dn), false
+}
+
 // usesLegacyDingoUser reports whether the selected image should use the
-// pre-v0.70.0 Dingo uid/gid. Unknown repositories and tags deliberately use
-// the legacy default: it is still non-root and preserves /ipc compatibility
-// for custom images that follow the historical layout. Users of another
+// pre-v0.70.0 Dingo uid/gid. Without a declared capability version, unknown
+// repositories and tags use the legacy default: it is still non-root and
+// preserves /ipc compatibility for custom images that follow the historical
+// layout. Users of another
 // layout can set spec.podSecurityContext explicitly.
 func usesLegacyDingoUser(dn *dingov1alpha1.DingoNode) bool {
+	version, declared := imageCapabilityVersion(dn)
 	repo := dn.Spec.Image.Repository
-	if repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
+	if !declared && repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
 		return true
 	}
 
-	parts := strings.SplitN(strings.TrimPrefix(imageTag(dn), "v"), ".", 3)
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3)
 	if len(parts) < 2 {
 		return true
 	}
@@ -288,17 +303,18 @@ func usesLegacyDingoUser(dn *dingov1alpha1.DingoNode) bool {
 	return major == 0 && minor < 70
 }
 
-// canonicalImageVersion returns the parsed version of a canonical Dingo image
-// tag. ok is false for custom repositories, digest-pinned images and tags that
-// are not major.minor.patch, whose capabilities cannot be inferred.
+// canonicalImageVersion returns the parsed declared version for a digest image
+// or the parsed tag for a canonical Dingo image. ok is false for undeclared
+// custom images and values that are not major.minor.patch.
 func canonicalImageVersion(
 	dn *dingov1alpha1.DingoNode,
 ) (major, minor, patch int, ok bool) {
+	version, declared := imageCapabilityVersion(dn)
 	repo := dn.Spec.Image.Repository
-	if repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
+	if !declared && repo != "" && repo != "ghcr.io/blinklabs-io/dingo" {
 		return 0, 0, 0, false
 	}
-	parts := strings.SplitN(strings.TrimPrefix(imageTag(dn), "v"), ".", 3)
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3)
 	if len(parts) != 3 {
 		return 0, 0, 0, false
 	}
@@ -773,7 +789,9 @@ func BuildStatefulSet(
 				},
 				Spec: podSpec,
 			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{dataPVC(dn, opts)},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				dataPVC(dn, opts),
+			},
 			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
 				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
 				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -139,7 +140,11 @@ func TestBuildEnvSigningAgent(t *testing.T) {
 			}),
 			RenderOptions{MountKeys: true},
 		)
-		assert.Equal(t, signingAgentTLSPath+"/tls.crt", env[signingAgentCertEnv])
+		assert.Equal(
+			t,
+			signingAgentTLSPath+"/tls.crt",
+			env[signingAgentCertEnv],
+		)
 		assert.Equal(t, signingAgentTLSPath+"/tls.key", env[signingAgentKeyEnv])
 	})
 
@@ -202,7 +207,9 @@ func TestSigningAgentCertVolume(t *testing.T) {
 	assert.Equal(t, signingAgentTLSPath, mount.MountPath)
 
 	// No certificate, or no keys on this pod: nothing is mounted.
-	noCert := agentNode(dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"})
+	noCert := agentNode(
+		dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"},
+	)
 	spec = renderPod(noCert, RenderOptions{MountKeys: true})
 	assert.Nil(t, findVolume(spec))
 	assert.Nil(t, findMount(spec))
@@ -241,12 +248,16 @@ func TestSigningAgentCertChecksumRollsTemplate(t *testing.T) {
 		"the certificate must not change the keys checksum",
 	)
 
-	noCert := agentNode(dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"})
+	noCert := agentNode(
+		dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"},
+	)
 	assert.NotContains(
 		t, render(noCert, true, "cert-a"), SigningAgentCertChecksumAnnotation,
 	)
 	assert.NotContains(
-		t, render(withCert, false, "cert-a"), SigningAgentCertChecksumAnnotation,
+		t,
+		render(withCert, false, "cert-a"),
+		SigningAgentCertChecksumAnnotation,
 	)
 }
 
@@ -255,10 +266,12 @@ func TestSupportsSigningAgent(t *testing.T) {
 	minTag := fmt.Sprintf("0.%d.0", MinSigningAgentMinor)
 	below := fmt.Sprintf("0.%d.9", MinSigningAgentMinor-1)
 	for _, tc := range []struct {
-		name  string
-		repo  string
-		tag   string
-		wants bool
+		name              string
+		repo              string
+		tag               string
+		digest            string
+		capabilityVersion string
+		wants             bool
 	}{
 		{name: "default tag lacks the remote agent"},
 		{name: "one minor below", tag: below},
@@ -267,6 +280,19 @@ func TestSupportsSigningAgent(t *testing.T) {
 		{name: "major above zero", tag: "1.0.0", wants: true},
 		{name: "unparseable tag is trusted", tag: "main", wants: true},
 		{name: "custom repository is trusted", repo: "example/dingo", wants: true},
+		{
+			name:              "digest capability version overrides tag",
+			tag:               minTag,
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: below,
+		},
+		{
+			name:              "digest capability version enables agent",
+			tag:               below,
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: minTag,
+			wants:             true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -275,6 +301,8 @@ func TestSupportsSigningAgent(t *testing.T) {
 			})
 			dn.Spec.Image.Repository = tc.repo
 			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Image.Digest = tc.digest
+			dn.Spec.Image.CapabilityVersion = tc.capabilityVersion
 			assert.Equal(t, tc.wants, SupportsSigningAgent(dn))
 		})
 	}
@@ -398,8 +426,16 @@ func TestPodSignsThroughAgent(t *testing.T) {
 		spec corev1.PodSpec
 		want bool
 	}{
-		{"rendered for an agent", renderPod(agent, RenderOptions{MountKeys: true}), true},
-		{"rendered with a local KES key", renderPod(local, RenderOptions{MountKeys: true}), false},
+		{
+			"rendered for an agent",
+			renderPod(agent, RenderOptions{MountKeys: true}),
+			true,
+		},
+		{
+			"rendered with a local KES key",
+			renderPod(local, RenderOptions{MountKeys: true}),
+			false,
+		},
 		{"agent address beside a local KES key", withEnv(corev1.EnvVar{
 			Name: KESKeyEnv, Value: "/keys/kes.skey",
 		}), false},

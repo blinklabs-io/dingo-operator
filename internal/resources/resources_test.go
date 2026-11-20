@@ -269,6 +269,41 @@ func TestBuildStatefulSet(t *testing.T) {
 		assert.Equal(t, int64(101), *securityContext.FSGroup)
 	})
 
+	t.Run(
+		"legacy digest and tag retain their selected user",
+		func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Tag = "0.85.0"
+			dn.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+			securityContext := BuildStatefulSet(
+				dn,
+				RenderOptions{Replicas: 1},
+			).Spec.Template.Spec.SecurityContext
+			require.NotNil(t, securityContext)
+			assert.Equal(t, int64(1000), *securityContext.RunAsUser)
+			assert.Equal(t, int64(1000), *securityContext.RunAsGroup)
+			assert.Equal(t, int64(1000), *securityContext.FSGroup)
+		},
+	)
+
+	t.Run(
+		"digest capability version selects the image user",
+		func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Image.Tag = "0.85.0"
+			dn.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+			dn.Spec.Image.CapabilityVersion = "0.69.0"
+			securityContext := BuildStatefulSet(
+				dn,
+				RenderOptions{Replicas: 1},
+			).Spec.Template.Spec.SecurityContext
+			require.NotNil(t, securityContext)
+			assert.Equal(t, int64(100), *securityContext.RunAsUser)
+			assert.Equal(t, int64(101), *securityContext.RunAsGroup)
+			assert.Equal(t, int64(101), *securityContext.FSGroup)
+		},
+	)
+
 	t.Run("custom image retains the safe legacy default", func(t *testing.T) {
 		dn := relayNode()
 		dn.Spec.Image.Repository = "example/dingo"
@@ -724,6 +759,81 @@ func TestBuildNetworkPolicy(t *testing.T) {
 			)
 		},
 	)
+	t.Run(
+		"block producer relay ingress augments relay refs",
+		func(t *testing.T) {
+			dn := bpNode()
+			dn.Spec.Topology.RelayRefs = []string{"relay-a"}
+			dn.Spec.RelayService.IngressFrom = []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"relay-zone": "edge"},
+					},
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "relay"},
+					},
+				},
+			}
+
+			policy := BuildNetworkPolicy(dn)
+			relay := ruleForPort(t, policy, portRelay)
+			require.Len(t, relay.From, 2)
+			assert.Equal(
+				t,
+				[]string{"relay-a"},
+				relay.From[0].PodSelector.MatchExpressions[0].Values,
+			)
+			assert.Equal(
+				t,
+				map[string]string{"relay-zone": "edge"},
+				relay.From[1].NamespaceSelector.MatchLabels,
+			)
+			assert.Equal(
+				t,
+				map[string]string{"app": "relay"},
+				relay.From[1].PodSelector.MatchLabels,
+			)
+
+			dn.Spec.RelayService.IngressFrom[0].PodSelector.
+				MatchLabels["app"] = "changed"
+			assert.Equal(
+				t,
+				"relay",
+				relay.From[1].PodSelector.MatchLabels["app"],
+				"the rendered policy must not alias the DingoNode spec",
+			)
+		},
+	)
+	t.Run(
+		"block producer relay ingress works without relay refs",
+		func(t *testing.T) {
+			dn := bpNode()
+			dn.Spec.RelayService.IngressFrom = []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: "192.0.2.0/24"}},
+			}
+
+			relay := ruleForPort(t, BuildNetworkPolicy(dn), portRelay)
+			require.Len(t, relay.From, 1)
+			require.NotNil(t, relay.From[0].IPBlock)
+			assert.Equal(t, "192.0.2.0/24", relay.From[0].IPBlock.CIDR)
+		},
+	)
+	t.Run("relay ingress can restrict a relay", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.RelayService.IngressFrom = []networkingv1.NetworkPolicyPeer{
+			{PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "peer"},
+			}},
+		}
+
+		relay := ruleForPort(t, BuildNetworkPolicy(dn), portRelay)
+		require.Len(t, relay.From, 1)
+		assert.Equal(
+			t,
+			map[string]string{"app": "peer"},
+			relay.From[0].PodSelector.MatchLabels,
+		)
+	})
 
 	// Peering is a node-to-node relationship and must not carry node-to-client
 	// with it. This rule used to hand relays port 3002 alongside 3001, which was
@@ -886,10 +996,12 @@ func TestStatefulSetSecurityProfile(t *testing.T) {
 
 func TestSupportsHealthProbes(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		repo  string
-		tag   string
-		wants bool
+		name              string
+		repo              string
+		tag               string
+		digest            string
+		capabilityVersion string
+		wants             bool
 	}{
 		{name: "default tag", wants: true},
 		{name: "first release with the listener", tag: "0.70.13", wants: true},
@@ -913,11 +1025,32 @@ func TestSupportsHealthProbes(t *testing.T) {
 			wants: true,
 		},
 		{name: "custom repository", repo: "example/dingo", tag: "0.75.0"},
+		{
+			name:   "legacy digest keeps tag inference",
+			tag:    "0.70.13",
+			digest: "sha256:" + strings.Repeat("a", 64),
+			wants:  true,
+		},
+		{
+			name:              "digest capability version overrides tag",
+			tag:               "0.70.13",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.70.12",
+		},
+		{
+			name:              "digest capability version enables listener",
+			tag:               "0.70.12",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.70.13",
+			wants:             true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dn := relayNode()
 			dn.Spec.Image.Repository = tc.repo
 			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Image.Digest = tc.digest
+			dn.Spec.Image.CapabilityVersion = tc.capabilityVersion
 			assert.Equal(t, tc.wants, supportsHealthProbes(dn))
 		})
 	}
@@ -1151,10 +1284,12 @@ func TestBuildEnvLogging(t *testing.T) {
 
 func TestSupportsTracing(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		repo  string
-		tag   string
-		wants bool
+		name              string
+		repo              string
+		tag               string
+		digest            string
+		capabilityVersion string
+		wants             bool
 	}{
 		{name: "default tag has the options", wants: true},
 		{name: "first release with the options", tag: "0.82.0", wants: true},
@@ -1164,11 +1299,32 @@ func TestSupportsTracing(t *testing.T) {
 		{name: "major above zero", tag: "1.0.0", wants: true},
 		{name: "unparseable tag is trusted", tag: "main", wants: true},
 		{name: "custom repository is trusted", repo: "example/dingo", wants: true},
+		{
+			name:   "legacy digest keeps tag inference",
+			tag:    "0.82.0",
+			digest: "sha256:" + strings.Repeat("a", 64),
+			wants:  true,
+		},
+		{
+			name:              "digest capability version overrides tag",
+			tag:               "0.82.0",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.81.9",
+		},
+		{
+			name:              "digest capability version enables tracing",
+			tag:               "0.81.9",
+			digest:            "sha256:" + strings.Repeat("a", 64),
+			capabilityVersion: "0.82.0",
+			wants:             true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dn := relayNode()
 			dn.Spec.Image.Repository = tc.repo
 			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Image.Digest = tc.digest
+			dn.Spec.Image.CapabilityVersion = tc.capabilityVersion
 			assert.Equal(t, tc.wants, SupportsTracing(dn))
 		})
 	}
@@ -1195,7 +1351,11 @@ func TestDataVolumeNaming(t *testing.T) {
 	)
 	assert.Equal(t, "data", legacy.Spec.VolumeClaimTemplates[0].Name)
 	legacyMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
-	assert.Contains(t, legacy.Spec.Template.Spec.Containers[0].VolumeMounts, legacyMount)
+	assert.Contains(
+		t,
+		legacy.Spec.Template.Spec.Containers[0].VolumeMounts,
+		legacyMount,
+	)
 }
 
 // The staging script accepts the dingo Helm chart's node.cert and always

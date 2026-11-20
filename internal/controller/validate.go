@@ -60,12 +60,11 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 	if dn.Spec.Network == "" {
 		return errors.New("spec.network is required")
 	}
-	if dn.Spec.Image.Digest != "" && dn.Spec.Image.Tag == "" {
+	if dn.Spec.Image.CapabilityVersion != "" && dn.Spec.Image.Digest == "" {
 		return errors.New(
-			"spec.image.tag is required when spec.image.digest is set",
+			"spec.image.capabilityVersion requires spec.image.digest",
 		)
 	}
-
 	if dn.Spec.Network == "custom" && dn.Spec.NetworkMagic == nil {
 		return errors.New("network \"custom\" requires spec.networkMagic")
 	}
@@ -97,17 +96,18 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 	// An image that predates the tracing options would ignore them, leaving a
 	// node that reports tracing as configured while exporting nothing.
 	if dn.Spec.Tracing.Enabled && !resources.SupportsTracing(dn) {
-		return errors.New(
-			"spec.tracing requires a Dingo image of v0.82.0 or later; set " +
-				"spec.image.tag",
+		return fmt.Errorf(
+			"spec.tracing requires a Dingo image of v0.82.0 or later; set %s",
+			imageVersionField(dn),
 		)
 	}
 
 	if resources.UsesObservabilityExport(dn) &&
 		!resources.SupportsObservabilityExport(dn) {
-		return errors.New(
-			"spec.tracing.alwaysSamplePools and spec.otlp require a Dingo " +
-				"image of v0.91.0 or later; set spec.image.tag",
+		return fmt.Errorf(
+			"spec.tracing.alwaysSamplePools and spec.otlp require a Dingo "+
+				"image of v0.91.0 or later; set %s",
+			imageVersionField(dn),
 		)
 	}
 	if err := resources.ValidateObservability(dn); err != nil {
@@ -170,8 +170,9 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		if bp.SigningAgent != nil && !resources.SupportsSigningAgent(dn) {
 			return fmt.Errorf(
 				"spec.blockProducer.signingAgent requires a Dingo image of "+
-					"v0.%d.0 or later; set spec.image.tag",
+					"v0.%d.0 or later; set %s",
 				resources.MinSigningAgentMinor,
+				imageVersionField(dn),
 			)
 		}
 		if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
@@ -536,6 +537,13 @@ func validateAutoRotation(
 		)
 	}
 	return nil
+}
+
+func imageVersionField(dn *dingov1alpha1.DingoNode) string {
+	if dn.Spec.Image.Digest != "" {
+		return "spec.image.capabilityVersion"
+	}
+	return "spec.image.tag"
 }
 
 // keysChecksum returns a stable digest of a keys Secret's Data. Populating the

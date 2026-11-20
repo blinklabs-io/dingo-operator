@@ -103,7 +103,8 @@ const (
 )
 
 // ImageSpec configures the Dingo container image.
-// +kubebuilder:validation:XValidation:rule="!has(self.digest) || (has(self.tag) && size(self.tag) > 0)",message="tag must be set when digest is set"
+// +kubebuilder:validation:XValidation:rule="!has(self.capabilityVersion) || has(self.digest)",message="capabilityVersion requires digest"
+// +kubebuilder:validation:XValidation:rule="!has(self.digest) || has(self.capabilityVersion) || (oldSelf.hasValue() && !has(oldSelf.value().capabilityVersion) && has(oldSelf.value().digest) && oldSelf.value().digest == self.digest && has(oldSelf.value().tag) && has(self.tag) && oldSelf.value().tag == self.tag)",message="capabilityVersion is required for a new digest, a digest or tag change, or once declared",optionalOldSelf=true
 type ImageSpec struct {
 	// +kubebuilder:default="ghcr.io/blinklabs-io/dingo"
 	// +optional
@@ -112,10 +113,18 @@ type ImageSpec struct {
 	// +optional
 	Tag string `json:"tag,omitempty"`
 	// Digest pins immutable image content and takes precedence over Tag.
-	// Tag is required with Digest for UID and probe selection.
 	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
 	// +optional
 	Digest string `json:"digest,omitempty"`
+	// CapabilityVersion declares the Dingo release contract implemented by a
+	// digest-pinned image. It selects UID, probe and optional feature support.
+	// New digest references require this field. Existing digest and tag pairs
+	// remain compatible, but changing either value requires CapabilityVersion.
+	// Once declared, it must remain set while the image is digest-pinned.
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`
+	// +optional
+	CapabilityVersion string `json:"capabilityVersion,omitempty"`
 	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
 	// +kubebuilder:default=IfNotPresent
 	// +optional
@@ -548,6 +557,13 @@ type RelayServiceSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
 	HostPort int32 `json:"hostPort,omitempty"`
+	// IngressFrom grants access to the node-to-node listener using standard
+	// NetworkPolicy peers. For block producers these peers augment the
+	// same-namespace relays named by topology.relayRefs. When empty, relays
+	// accept node-to-node traffic from any source and block producers admit
+	// only their relayRefs, preserving the default policy.
+	// +optional
+	IngressFrom []networkingv1.NetworkPolicyPeer `json:"ingressFrom,omitempty"`
 }
 
 // APISpec configures API listeners and their cluster access. API listeners
