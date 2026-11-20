@@ -185,8 +185,8 @@ operators.
   reloads it on its key file watch. Only a change to a pool's other Secret
   entries (its VRF key, vote key, anything but the opcert), to its profile or
   to the agent settings, or adding, removing or leaving out a pool, rolls the
-  pod. `MonitorOnly` reports these changes, withdraws staging approval, and
-  does not roll the pod.
+  pod. `MonitorOnly` reports key-bundle changes, withdraws staging approval,
+  and does not roll the pod for those key changes.
 
   ```yaml
   blockProducer:

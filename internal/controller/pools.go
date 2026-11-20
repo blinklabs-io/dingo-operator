@@ -325,16 +325,19 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 	opts.PoolsConfigChecksum = checksum(resources.PoolsConfig(dn, rendered))
 	monitorOnly := dn.Spec.BlockProducer.Rotation.Mode ==
 		dingov1alpha1.RotationModeMonitorOnly
-	if monitorOnly && live.exists && opts.KeysChecksum != live.checksum {
+	liveHasKeys := live.exists && live.checksum != ""
+	if monitorOnly && liveHasKeys {
 		if err := r.clearKeysApprovalConfigMap(ctx, dn); err != nil {
 			return false, "", err
 		}
-		// MonitorOnly reports replacement bundles but does not change the pool
-		// set or static key material the live pod stages.
-		opts.KeysChecksum = live.checksum
-		opts.KeysPool = live.pool
-		keepTemplate = true
-		holdMessage = monitorOnlyHeldMessage
+		if opts.KeysChecksum != live.checksum {
+			// MonitorOnly reports replacement bundles but does not change the
+			// pool set or static key material the live pod stages.
+			opts.KeysChecksum = live.checksum
+			opts.KeysPool = live.pool
+			keepTemplate = true
+			holdMessage = monitorOnlyHeldMessage
+		}
 	}
 
 	// The agent client certificate is mounted from its own Secret, as for a
@@ -352,10 +355,9 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		r.rejectSigningAgentCert(ctx, dn, problem)
 	}
 
-	// A fresh node needs its initial approval ConfigMap. Once it is running in
-	// MonitorOnly mode, leave that map unchanged so an observed opcert cannot be
-	// staged into the node by the sync container.
-	if !monitorOnly || !live.exists {
+	// A fresh or keyless node needs its initial approval ConfigMap. Once it has
+	// live keys in MonitorOnly mode, every staging approval is withdrawn.
+	if !monitorOnly || !liveHasKeys {
 		if err := r.upsertPoolKeysApprovalConfigMap(
 			ctx, dn, approvedPoolDigests(accepted),
 		); err != nil {

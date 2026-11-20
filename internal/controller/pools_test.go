@@ -461,6 +461,88 @@ func TestReconcilePoolKeysMonitorOnlyKeepsLiveBundles(t *testing.T) {
 	assert.Equal(t, int64(1), poolStatus(dn, pools[0].id).OnDiskCounter)
 }
 
+func TestReconcilePoolKeysMonitorOnlyClearsPendingOpCert(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	dn := poolListNode("bp", "ns", 0, pools...)
+	objects := []client.Object{dn}
+	for _, p := range pools {
+		objects = append(objects, poolSecret(t, dn.Namespace, p, 0))
+	}
+	c := conflictClient(t, objects...)
+	r := poolReconciler(c)
+
+	initial := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := r.reconcilePoolKeys(ctx, dn, &initial)
+	require.NoError(t, err)
+	require.False(t, keep)
+	require.NoError(t, c.Create(ctx, resources.BuildStatefulSet(dn, initial)))
+
+	secretKey := types.NamespacedName{
+		Name: pools[0].secret, Namespace: dn.Namespace,
+	}
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data = poolSecret(t, dn.Namespace, pools[0], 1).Data
+	require.NoError(t, c.Update(ctx, secret))
+
+	pending := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err = r.reconcilePoolKeys(ctx, dn, &pending)
+	require.NoError(t, err)
+	require.False(t, keep)
+	assert.Equal(t, initial.KeysChecksum, pending.KeysChecksum,
+		"an opcert-only replacement does not change the rollout checksum")
+
+	approvalKey := types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	approval := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(ctx, approvalKey, approval))
+	require.NotEmpty(t, approval.Data[pools[0].id])
+
+	dn.Spec.BlockProducer.Rotation.Mode =
+		dingov1alpha1.RotationModeMonitorOnly
+	observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err = r.reconcilePoolKeys(ctx, dn, &observed)
+	require.NoError(t, err)
+	assert.False(t, keep, "an opcert-only observation does not roll the pod")
+	require.NoError(t, c.Get(ctx, approvalKey, approval))
+	assert.Empty(t, approval.Data,
+		"switching to MonitorOnly must withdraw an Assisted approval")
+}
+
+func TestReconcilePoolKeysMonitorOnlyInitializesKeylessTemplate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	dn := poolListNode("bp", "ns", 0, pools...)
+	dn.Spec.BlockProducer.Rotation.Mode =
+		dingov1alpha1.RotationModeMonitorOnly
+	c := conflictClient(t, dn)
+	r := poolReconciler(c)
+
+	empty := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := r.reconcilePoolKeys(ctx, dn, &empty)
+	require.NoError(t, err)
+	require.True(t, keep)
+	require.NoError(t, c.Create(ctx, resources.BuildStatefulSet(dn, empty)))
+	for _, p := range pools {
+		require.NoError(t, c.Create(ctx, poolSecret(t, dn.Namespace, p, 0)))
+	}
+
+	initialized := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err = r.reconcilePoolKeys(ctx, dn, &initialized)
+	require.NoError(t, err)
+	assert.False(t, keep)
+	assert.NotEmpty(t, initialized.KeysChecksum)
+	approval := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}, approval))
+	assert.Len(t, approval.Data, len(pools))
+}
+
 // Each pool's opcert is bound to that pool's own poolId, not to the node's: a
 // bundle whose cold key hashes to another listed pool is refused.
 func TestReconcilePoolKeysBindsEachOpCertToItsPool(t *testing.T) {
