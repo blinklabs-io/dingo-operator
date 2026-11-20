@@ -26,6 +26,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/yaml"
 )
 
 // APIAccessLabel grants access to enabled APIs. Cross-namespace clients must
@@ -42,6 +43,74 @@ type apiListener struct {
 	port     int32
 	portEnvs []string
 	hostEnv  string
+	// providerHostEnv is the provider's own listen host. Dingo uses it ahead
+	// of the node bind address, and defaults it to 127.0.0.1. Empty for an
+	// image that has no such field.
+	providerHostEnv string
+}
+
+// Releases from which the Blockfrost and UTxORPC plugin configuration has a
+// host field. Dingo decodes plugin configuration strictly, so an earlier
+// release refuses the variable, and binds the node bind address anyway.
+const (
+	minBlockfrostHostMinor = 86
+	minUTxORPCHostMinor    = 88
+)
+
+// providerHostSupported reports whether the selected image can take the
+// provider's own listen host. As for supportsHealthProbes, an image whose
+// version cannot be determined gets nothing: the variable is emitted
+// automatically and mergeEnv cannot remove it, so a mirror of an older release
+// would fail Dingo's strict config decode with no way out. A custom image that
+// has the field sets it in spec.environment, which passes through.
+func providerHostSupported(dn *dingov1alpha1.DingoNode, name string) bool {
+	var minMinor int
+	switch name {
+	case "blockfrost":
+		minMinor = minBlockfrostHostMinor
+	case "utxorpc":
+		minMinor = minUTxORPCHostMinor
+	default:
+		return false
+	}
+	major, minor, _, ok := canonicalImageVersion(dn)
+	return ok && (major > 0 || minor >= minMinor) &&
+		(name != "blockfrost" || !blockfrostHostRefused(dn))
+}
+
+// blockfrostHostRefused reports whether the selected image would refuse to
+// start Blockfrost on a non-loopback host. Dingo v0.86.0 through v0.92.3 do
+// so when an auth token is set without server TLS, so such a node keeps the
+// loopback default. A provider tls mode overrides DINGO_API_TLS_MODE; a tls
+// section the operator cannot read counts as no TLS.
+func blockfrostHostRefused(dn *dingov1alpha1.DingoNode) bool {
+	major, minor, patch, ok := canonicalImageVersion(dn)
+	if !ok || major > 0 || minor > 92 || minor == 92 && patch >= 4 {
+		return false
+	}
+	const prefix = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_"
+	env := dn.Spec.Environment
+	if env[prefix+"AUTH_TOKEN"] == "" && env[prefix+"AUTH_TOKEN_FILE"] == "" {
+		return false
+	}
+	mode := env["DINGO_API_TLS_MODE"]
+	for key, value := range env {
+		if !strings.HasPrefix(key, prefix+"TLS") {
+			continue
+		}
+		var tls map[string]any
+		if key != prefix+"TLS" || yaml.Unmarshal([]byte(value), &tls) != nil {
+			return true
+		}
+		if m, set := tls["mode"]; set && m != nil {
+			s, isString := m.(string)
+			if !isString {
+				return true
+			}
+			mode = s
+		}
+	}
+	return mode != "server"
 }
 
 func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
@@ -69,6 +138,10 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 			l.hostEnv = "CARDANO_BIND_ADDR"
 			if l.name != "kupo" {
 				l.portEnvs = append(l.portEnvs, "DINGO_"+upper+"_PORT")
+			}
+			if providerHostSupported(dn, l.name) {
+				l.providerHostEnv = "DINGO_PLUGINS_API_" + upper +
+					"_CONFIG_HOST"
 			}
 		}
 		if dn.Spec.APIs == nil {
@@ -140,11 +213,11 @@ func ValidateAPIs(dn *dingov1alpha1.DingoNode) error {
 			return fmt.Errorf("%s API port conflicts with %s", l.name, other)
 		}
 		used[l.port] = l.name
-		if host, ok := dn.Spec.Environment[l.hostEnv]; ok && host != "0.0.0.0" {
-			return fmt.Errorf(
-				"%s must be 0.0.0.0 for Service access",
-				l.hostEnv,
-			)
+		for _, key := range []string{l.hostEnv, l.providerHostEnv} {
+			if host, ok := dn.Spec.Environment[key]; key != "" && ok &&
+				host != "0.0.0.0" {
+				return fmt.Errorf("%s must be 0.0.0.0 for Service access", key)
+			}
 		}
 		if l.name == "midnight" {
 			for _, key := range []string{"DINGO_MIDNIGHT_ENABLED", "DINGO_MIDNIGHT_SERVER_ENABLED"} {
@@ -346,6 +419,12 @@ func apiEnv(dn *dingov1alpha1.DingoNode) []corev1.EnvVar {
 			continue
 		}
 		env = append(env, corev1.EnvVar{Name: l.hostEnv, Value: "0.0.0.0"})
+		if l.providerHostEnv != "" {
+			env = append(
+				env,
+				corev1.EnvVar{Name: l.providerHostEnv, Value: "0.0.0.0"},
+			)
+		}
 		if l.name == "midnight" {
 			env = append(
 				env,

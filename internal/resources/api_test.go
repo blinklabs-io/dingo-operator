@@ -422,3 +422,164 @@ func TestTieredServiceIsolation(t *testing.T) {
 	require.Len(t, metrics.Spec.Ports, 1)
 	assert.Equal(t, "metrics", metrics.Spec.Ports[0].Name)
 }
+
+// Dingo's Blockfrost (v0.86.0+) and UTxORPC (v0.88.0+) providers default their
+// own host to 127.0.0.1 and use the node bind address only when it is empty.
+// Earlier releases have no such field and reject the variable as unknown.
+var providerHostEnvs = map[string]string{
+	"blockfrost": "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_HOST",
+	"utxorpc":    "DINGO_PLUGINS_API_UTXORPC_CONFIG_HOST",
+}
+
+func TestAPIProviderHostByImageVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		repository string
+		tag        string
+		want       map[string]bool
+	}{
+		{"default tag", "", "", map[string]bool{}},
+		{"0.85.0", "", "0.85.0", map[string]bool{}},
+		{"0.86.0", "", "0.86.0", map[string]bool{"blockfrost": true}},
+		{"0.87.9", "", "0.87.9", map[string]bool{"blockfrost": true}},
+		{
+			"0.88.0", "", "0.88.0",
+			map[string]bool{"blockfrost": true, "utxorpc": true},
+		},
+		{"v0.94.2", "", "v0.94.2", map[string]bool{
+			"blockfrost": true, "utxorpc": true,
+		}},
+		{"1.0.0", "", "1.0.0", map[string]bool{
+			"blockfrost": true, "utxorpc": true,
+		}},
+		{"custom repository", "example.com/dingo", "0.50.0", map[string]bool{}},
+		{"mirror of old release", "example.com/mirror/dingo", "0.85.0",
+			map[string]bool{}},
+		{"non-semver tag", "", "latest", map[string]bool{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Repository = tc.repository
+			dn.Spec.Image.Tag = tc.tag
+			require.NoError(t, ValidateAPIs(dn))
+			env := envMap(dn, RenderOptions{})
+			for name, key := range providerHostEnvs {
+				if tc.want[name] {
+					assert.Equal(t, "0.0.0.0", env[key], name)
+				} else {
+					assert.NotContains(t, env, key, name)
+				}
+			}
+		})
+	}
+}
+
+func TestAPIProviderHostUserValuePassesThroughOnUnknownVersion(t *testing.T) {
+	t.Parallel()
+	for name, key := range providerHostEnvs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Repository = "example.com/mirror/dingo"
+			dn.Spec.Image.Tag = "custom"
+			dn.Spec.Environment = map[string]string{key: "0.0.0.0"}
+			require.NoError(t, ValidateAPIs(dn))
+			assert.Equal(t, "0.0.0.0", envMap(dn, RenderOptions{})[key])
+		})
+	}
+}
+
+func TestAPIProviderHostOmittedWithoutListener(t *testing.T) {
+	t.Parallel()
+	dn := apiNode()
+	dn.Spec.Image.Tag = "0.94.2"
+	dn.Spec.APIs.Blockfrost = 0
+	dn.Spec.APIs.UTxORPC = 0
+	env := envMap(dn, RenderOptions{})
+	for name, key := range providerHostEnvs {
+		assert.NotContains(t, env, key, name)
+	}
+}
+
+func TestAPIProviderHostLoopbackRejected(t *testing.T) {
+	t.Parallel()
+	for name, key := range providerHostEnvs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Tag = "0.94.2"
+			dn.Spec.Environment = map[string]string{key: "127.0.0.1"}
+			require.ErrorContains(t, ValidateAPIs(dn), key)
+			dn.Spec.Environment = map[string]string{key: "0.0.0.0"}
+			require.NoError(t, ValidateAPIs(dn))
+		})
+	}
+}
+
+// Dingo v0.86.0 through v0.92.3 refuse to start Blockfrost on a non-loopback
+// host when an auth token is set without server TLS.
+func TestAPIBlockfrostHostWithAuthToken(t *testing.T) {
+	t.Parallel()
+	const (
+		token     = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_AUTH_TOKEN"
+		tokenFile = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_AUTH_TOKEN_FILE"
+		tls       = "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_TLS"
+		apiTLS    = "DINGO_API_TLS_MODE"
+	)
+	cases := []struct {
+		name string
+		tag  string
+		env  map[string]string
+		want bool
+	}{
+		{"0.86.0 token", "0.86.0", map[string]string{token: "t"}, false},
+		{"0.92.3 token", "0.92.3", map[string]string{token: "t"}, false},
+		{"0.92.3 token file", "0.92.3",
+			map[string]string{tokenFile: "/run/token"}, false},
+		{"0.92.3 empty token", "0.92.3", map[string]string{token: ""}, true},
+		{"0.92.3 no token", "0.92.3", nil, true},
+		{"0.92.3 token with API TLS", "0.92.3",
+			map[string]string{token: "t", apiTLS: "server"}, true},
+		{"0.92.3 token with API TLS disabled", "0.92.3",
+			map[string]string{token: "t", apiTLS: "disabled"}, false},
+		{"0.92.3 token with provider TLS override", "0.92.3",
+			map[string]string{token: "t", apiTLS: "server",
+				tls: "{mode: disabled}"}, false},
+		{"0.92.3 token with provider TLS", "0.92.3",
+			map[string]string{token: "t",
+				tls: "{mode: server, certFilePath: /c, keyFilePath: /k}"},
+			true},
+		{"0.92.3 token with provider TLS inheriting API TLS", "0.92.3",
+			map[string]string{token: "t", apiTLS: "server",
+				tls: "{certFilePath: /c, keyFilePath: /k}"}, true},
+		{"0.92.3 token with malformed provider TLS", "0.92.3",
+			map[string]string{token: "t", tls: "{mode: server"}, false},
+		{"0.92.3 token with provider TLS file", "0.92.3",
+			map[string]string{token: "t", apiTLS: "server",
+				tls + "_FILE": "/run/tls"}, false},
+		{"0.92.4 token", "0.92.4", map[string]string{token: "t"}, true},
+		{"0.94.2 token", "0.94.2", map[string]string{token: "t"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Tag = tc.tag
+			dn.Spec.Environment = tc.env
+			require.NoError(t, ValidateAPIs(dn))
+			env := envMap(dn, RenderOptions{})
+			key := providerHostEnvs["blockfrost"]
+			if tc.want {
+				assert.Equal(t, "0.0.0.0", env[key])
+			} else {
+				assert.NotContains(t, env, key)
+			}
+			if tc.tag != "0.86.0" {
+				assert.Equal(t, "0.0.0.0", env[providerHostEnvs["utxorpc"]])
+			}
+		})
+	}
+}
