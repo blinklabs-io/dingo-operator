@@ -24,7 +24,6 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 )
 
 // TestBlockProducerPDBDisabled turns the block producer's budget off. The
@@ -48,7 +47,7 @@ func TestBlockProducerPDBDisabled(t *testing.T) {
 		t.Helper()
 		got := &dingov1alpha1.DingoNode{}
 		require.NoError(t, c.Get(ctx, key, got))
-		got.Spec.BlockProducer.PodDisruptionBudget.Enabled = ptr.To(enabled)
+		got.Spec.BlockProducer.PodDisruptionBudget.Enabled = new(enabled)
 		require.NoError(t, c.Update(ctx, got))
 		reconcile(t, ctx, reconcilerFor(c), "bp", "pdb-ns")
 	}

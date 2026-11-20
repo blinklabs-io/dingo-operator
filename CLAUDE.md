@@ -119,12 +119,17 @@ the regenerated files (`config/crd/bases/*.yaml`, `config/rbac/role.yaml`,
   `ghcr.io/blinklabs-io/dingo` image uses `100:101` for `runAsUser:runAsGroup`
   and `fsGroup` through v0.69.x, including `/ipc` ownership; v0.70.0 and later
   use `1000:1000` for both the process and `/ipc`.
-  The operator selects the matching default from the effective image tag, with
-  the omitted tag resolving to `DefaultDingoTag` (currently v0.85.0). Custom
-  repositories and unrecognized tags retain the conservative `100:101`
-  non-root compatibility default. Set `spec.podSecurityContext` when a custom
-  or unrecognized image uses different IDs; an explicit context is preserved
-  unchanged.
+  The operator selects the matching default from the effective image version,
+  with an omitted tag resolving to `DefaultDingoTag` (currently v0.85.0).
+  Digest-pinned images use `spec.image.capabilityVersion`; existing digest and
+  tag pairs retain tag inference only while their digest and tag stay
+  unchanged and no capability version was previously declared. A declared
+  capability version must remain set while the image is digest-pinned. Custom
+  repositories and unrecognized tags without a declared capability version
+  retain the conservative `100:101` non-root compatibility default. Set
+  `spec.podSecurityContext` when
+  a custom or unrecognized image uses different IDs; an explicit context is
+  preserved unchanged.
 - Cold keys never enter the cluster. The operator issues opcerts by sending
   the signable to a pluggable cold-signer (Bursa); it generates KES/VRF keys
   itself but never holds the cold key.

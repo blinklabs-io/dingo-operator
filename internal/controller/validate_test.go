@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 )
 
 // validTopology satisfies the block producer topology requirement so fixtures
@@ -61,6 +60,23 @@ func TestValidateSpec(t *testing.T) {
 				Image: dingov1alpha1.ImageSpec{
 					Digest: "sha256:" + strings.Repeat("a", 64),
 				},
+			},
+		},
+		{
+			name: "digest with explicit capability version",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+				Image: dingov1alpha1.ImageSpec{
+					Digest:            "sha256:" + strings.Repeat("a", 64),
+					CapabilityVersion: "0.85.0",
+				},
+			},
+		},
+		{
+			name: "capability version without digest",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "mainnet",
+				Image: dingov1alpha1.ImageSpec{CapabilityVersion: "0.85.0"},
 			},
 			wantErr: true,
 		},
@@ -288,6 +304,15 @@ func TestValidateSpecTracingImage(t *testing.T) {
 	require.NoError(t, validateSpec(spec("")))
 	require.ErrorContains(t, validateSpec(spec("0.81.0")), "v0.82.0")
 	require.NoError(t, validateSpec(spec("0.82.0")))
+
+	digest := spec("0.81.0")
+	digest.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+	digest.Spec.Image.CapabilityVersion = "0.82.0"
+	require.NoError(t, validateSpec(digest))
+
+	digest.Spec.Image.Tag = "0.82.0"
+	digest.Spec.Image.CapabilityVersion = "0.81.0"
+	require.ErrorContains(t, validateSpec(digest), "v0.82.0")
 
 	disabled := spec("0.81.0")
 	disabled.Spec.Tracing.Enabled = false
@@ -584,8 +609,8 @@ func TestValidateSpecAutoRotationSecretSignerMainnet(t *testing.T) {
 
 	dn.Spec.Network = "custom"
 	dn.Spec.ConfigRef = "custom-config"
-	dn.Spec.Mithril.Enabled = ptr.To(false)
-	dn.Spec.NetworkMagic = ptr.To(int64(764824073))
+	dn.Spec.Mithril.Enabled = new(false)
+	dn.Spec.NetworkMagic = new(int64(764824073))
 	err = validateSpec(dn)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mainnet")
