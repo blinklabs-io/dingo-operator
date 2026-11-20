@@ -339,25 +339,69 @@ func TestTieredServiceIsolation(t *testing.T) {
 	assert.Equal(t, "metrics", metrics.Spec.Ports[0].Name)
 }
 
-// Dingo's Blockfrost and UTxORPC providers default their own host to
-// 127.0.0.1 and use the node bind address only when it is empty.
+// Dingo's Blockfrost (v0.86.0+) and UTxORPC (v0.88.0+) providers default their
+// own host to 127.0.0.1 and use the node bind address only when it is empty.
+// Earlier releases have no such field and reject the variable as unknown.
 var providerHostEnvs = map[string]string{
 	"blockfrost": "DINGO_PLUGINS_API_BLOCKFROST_CONFIG_HOST",
 	"utxorpc":    "DINGO_PLUGINS_API_UTXORPC_CONFIG_HOST",
 }
 
-func TestAPIProviderHostsListenOnAllInterfaces(t *testing.T) {
+func TestAPIProviderHostByImageVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		repository string
+		tag        string
+		want       map[string]bool
+	}{
+		{"default tag", "", "", map[string]bool{}},
+		{"0.85.0", "", "0.85.0", map[string]bool{}},
+		{"0.86.0", "", "0.86.0", map[string]bool{"blockfrost": true}},
+		{"0.87.9", "", "0.87.9", map[string]bool{"blockfrost": true}},
+		{
+			"0.88.0", "", "0.88.0",
+			map[string]bool{"blockfrost": true, "utxorpc": true},
+		},
+		{"v0.94.2", "", "v0.94.2", map[string]bool{
+			"blockfrost": true, "utxorpc": true,
+		}},
+		{"1.0.0", "", "1.0.0", map[string]bool{
+			"blockfrost": true, "utxorpc": true,
+		}},
+		{"custom repository", "example.com/dingo", "0.50.0", map[string]bool{
+			"blockfrost": true, "utxorpc": true,
+		}},
+		{"non-semver tag", "", "latest", map[string]bool{
+			"blockfrost": true, "utxorpc": true,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dn := apiNode()
+			dn.Spec.Image.Repository = tc.repository
+			dn.Spec.Image.Tag = tc.tag
+			require.NoError(t, ValidateAPIs(dn))
+			env := envMap(dn, RenderOptions{})
+			for name, key := range providerHostEnvs {
+				if tc.want[name] {
+					assert.Equal(t, "0.0.0.0", env[key], name)
+				} else {
+					assert.NotContains(t, env, key, name)
+				}
+			}
+		})
+	}
+}
+
+func TestAPIProviderHostOmittedWithoutListener(t *testing.T) {
 	t.Parallel()
 	dn := apiNode()
-	require.NoError(t, ValidateAPIs(dn))
-	env := envMap(dn, RenderOptions{})
-	for name, key := range providerHostEnvs {
-		assert.Equal(t, "0.0.0.0", env[key], name)
-	}
-
+	dn.Spec.Image.Tag = "0.94.2"
 	dn.Spec.APIs.Blockfrost = 0
 	dn.Spec.APIs.UTxORPC = 0
-	env = envMap(dn, RenderOptions{})
+	env := envMap(dn, RenderOptions{})
 	for name, key := range providerHostEnvs {
 		assert.NotContains(t, env, key, name)
 	}
@@ -369,6 +413,7 @@ func TestAPIProviderHostLoopbackRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dn := apiNode()
+			dn.Spec.Image.Tag = "0.94.2"
 			dn.Spec.Environment = map[string]string{key: "127.0.0.1"}
 			require.ErrorContains(t, ValidateAPIs(dn), key)
 			dn.Spec.Environment = map[string]string{key: "0.0.0.0"}

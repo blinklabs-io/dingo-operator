@@ -40,8 +40,35 @@ type apiListener struct {
 	portEnvs []string
 	hostEnv  string
 	// providerHostEnv is the provider's own listen host. Dingo uses it ahead
-	// of the node bind address, and defaults it to 127.0.0.1.
+	// of the node bind address, and defaults it to 127.0.0.1. Empty for an
+	// image that has no such field.
 	providerHostEnv string
+}
+
+// Releases from which the Blockfrost and UTxORPC plugin configuration has a
+// host field. Dingo decodes plugin configuration strictly, so an earlier
+// release refuses the variable, and binds the node bind address anyway.
+const (
+	minBlockfrostHostMinor = 86
+	minUTxORPCHostMinor    = 88
+)
+
+// providerHostSupported reports whether the selected image can take the
+// provider's own listen host. As for SupportsTracing, an image whose version
+// cannot be determined is trusted: it is a custom build the user chose, and a
+// provider left on 127.0.0.1 would be unreachable without any error.
+func providerHostSupported(dn *dingov1alpha1.DingoNode, name string) bool {
+	var minMinor int
+	switch name {
+	case "blockfrost":
+		minMinor = minBlockfrostHostMinor
+	case "utxorpc":
+		minMinor = minUTxORPCHostMinor
+	default:
+		return false
+	}
+	major, minor, _, ok := canonicalImageVersion(dn)
+	return !ok || major > 0 || minor >= minMinor
 }
 
 func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
@@ -70,7 +97,7 @@ func apiListeners(dn *dingov1alpha1.DingoNode) []apiListener {
 			if l.name != "kupo" {
 				l.portEnvs = append(l.portEnvs, "DINGO_"+upper+"_PORT")
 			}
-			if l.name == "blockfrost" || l.name == "utxorpc" {
+			if providerHostSupported(dn, l.name) {
 				l.providerHostEnv = "DINGO_PLUGINS_API_" + upper +
 					"_CONFIG_HOST"
 			}
