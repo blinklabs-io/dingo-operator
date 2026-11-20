@@ -158,6 +158,7 @@ func TestHeldTemplateKeepsLiveRelayPort(t *testing.T) {
 	bp := blockProducerNode(
 		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	bp.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	bp.Spec.Topology.RelayRefs = []string{"rl"}
 	bp.Spec.RelayService.Port = 3001
 	require.NoError(t, c.Create(ctx, bp))

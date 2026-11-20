@@ -62,6 +62,7 @@ func TestBlockProducerSigningAgent(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	dn.Spec.Image.Tag = agentImageTag
 	dn.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{
 		Address:             "kes-agent.signing.svc:7000",
@@ -218,6 +219,7 @@ func TestBlockProducerSigningAgentHeldRollKeepsRolledCounter(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	dn.Spec.Image.Tag = agentImageTag
 	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
 	dn.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{
@@ -340,6 +342,7 @@ func TestBlockProducerSigningAgentAdoptedOpCertDoesNotRoll(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", ns, "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	dn.Spec.Image.Tag = agentImageTag
 	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
 	dn.Spec.BlockProducer.SigningAgent = &dingov1alpha1.SigningAgentSpec{

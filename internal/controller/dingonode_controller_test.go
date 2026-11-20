@@ -411,6 +411,7 @@ func TestBlockProducerKeysChecksumRollout(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "keys-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "keys-ns")
 
@@ -473,6 +474,70 @@ func TestBlockProducerKeysChecksumRollout(t *testing.T) {
 	)
 }
 
+func TestBlockProducerMonitorOnlyObservesKeysWithoutRollout(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "monitor-ns")
+
+	keys, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	data, err := keys.SecretData(0, 0)
+	require.NoError(t, err)
+	data[keyFileVote] = voteEnvelope(t, 42)
+	secretKey := types.NamespacedName{
+		Name: "pool-keys", Namespace: "monitor-ns",
+	}
+	require.NoError(t, c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: secretKey.Name, Namespace: secretKey.Namespace,
+		},
+		Data: data,
+	}))
+
+	dn := blockProducerNode(
+		"bp", "monitor-ns", secretKey.Name, hex.EncodeToString(keys.PoolID),
+	)
+	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
+	require.NoError(t, c.Create(ctx, dn))
+	r := reconcilerFor(c)
+	reconcile(t, ctx, r, dn.Name, dn.Namespace)
+	before := podTemplate(t, ctx, c, dn.Name, dn.Namespace)
+	reconcile(t, ctx, r, dn.Name, dn.Namespace)
+	assert.Equal(t, before, podTemplate(t, ctx, c, dn.Name, dn.Namespace),
+		"MonitorOnly must preserve an unchanged vote-key mount")
+
+	require.NoError(t, keys.RotateKES(rand.Reader))
+	rotated, err := keys.SecretData(1, 0)
+	require.NoError(t, err)
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(ctx, secretKey, secret))
+	secret.Data = rotated
+	require.NoError(t, c.Update(ctx, secret))
+	approvalKey := types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	approval := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(ctx, approvalKey, approval))
+	approval.Data[resources.KeysApprovalKey] = approvedKeysDigest(rotated, false)
+	require.NoError(t, c.Update(ctx, approval))
+
+	reconcile(t, ctx, r, dn.Name, dn.Namespace)
+	after := podTemplate(t, ctx, c, dn.Name, dn.Namespace)
+	assert.Equal(t, before, after,
+		"MonitorOnly must not deliver a replacement key bundle")
+	require.NoError(t, c.Get(ctx, approvalKey, approval))
+	assert.Empty(t, approval.Data,
+		"MonitorOnly must withdraw a pending in-place approval")
+
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), got))
+	cond := meta.FindStatusCondition(got.Status.Conditions, condKeysValid)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, "OpCertObserved", cond.Reason)
+	assert.Contains(t, cond.Message, "replacement observed without delivery")
+	assert.Equal(t, int64(1), got.Status.OpCert.OnDiskCounter)
+}
+
 // templateEnv returns the named environment variable from the pod template's
 // containers, and whether it is set.
 func templateEnv(tpl corev1.PodTemplateSpec, name string) (string, bool) {
@@ -504,6 +569,7 @@ func TestBlockProducerLeiosVoteKey(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "vote-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 
 	// No vote.skey: existing three-key Secrets render exactly as before.
@@ -645,6 +711,7 @@ func TestBlockProducerRejectedKeysDoNotRoll(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "reject-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "reject-ns")
 
@@ -827,9 +894,9 @@ func TestBlockProducerKeysPoolAnnotation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Data:       good,
 	}))
-	require.NoError(t, c.Create(ctx,
-		blockProducerNode("bp", "pool-ns", "pool-keys", pool),
-	))
+	dn := blockProducerNode("bp", "pool-ns", "pool-keys", pool)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
+	require.NoError(t, c.Create(ctx, dn))
 	r := reconcilerFor(c)
 	reconcile(t, ctx, r, "bp", "pool-ns")
 	require.Equal(t, pool, keysPool(t, ctx, c, "bp", "pool-ns"))
@@ -915,6 +982,7 @@ func TestBlockProducerKeysCounterAnnotation(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "counter-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	dn.Spec.BlockProducer.Rotation.ReloadInPlace = true
 	require.NoError(t, c.Create(ctx, dn))
 	r := reconcilerFor(c)
@@ -1302,6 +1370,7 @@ func TestBlockProducerOnChainCounterClearedOnPoolChange(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "poolchange-ns", "pool-keys", hex.EncodeToString(other.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	dn.Spec.BlockProducer.NodeToClient.Enabled = true
 	require.NoError(t, c.Create(ctx, dn))
 

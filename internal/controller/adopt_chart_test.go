@@ -470,6 +470,7 @@ func TestReconcileAdoptsChartBlockProducer(t *testing.T) {
 	require.NoError(t, c.Create(ctx, pod))
 
 	dn := blockProducerNode("dingo", ns, "pool-keys", poolID)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 	r := reconcilerFor(c)
 

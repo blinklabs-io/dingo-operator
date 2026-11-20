@@ -52,7 +52,8 @@ const (
 	RotationModeAuto RotationMode = "Auto"
 	// RotationModeAssisted validates and rolls an externally-delivered opcert.
 	RotationModeAssisted RotationMode = "Assisted"
-	// RotationModeMonitorOnly only surfaces rotation state; it never mutates keys.
+	// RotationModeMonitorOnly validates and reports replacement keys without
+	// delivering them to the node.
 	RotationModeMonitorOnly RotationMode = "MonitorOnly"
 )
 
@@ -286,8 +287,9 @@ type RotationSpec struct {
 	// Mode selects how the operator rotates keys. Note that key-material
 	// validation is not mode-dependent: the operator validates the keys Secret
 	// (opcert signature, pool binding, counter, KES period) for every block
-	// producer, including MonitorOnly, and refuses to roll the pod onto a
-	// bundle that fails.
+	// producer, including MonitorOnly. Assisted delivers an accepted replacement
+	// to the node; MonitorOnly reports it, keeps the live pod template, and
+	// withholds approval to stage the replacement.
 	// +kubebuilder:default=MonitorOnly
 	// +optional
 	Mode RotationMode `json:"mode,omitempty"`

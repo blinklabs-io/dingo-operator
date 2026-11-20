@@ -17,8 +17,8 @@ package controller
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -84,6 +84,7 @@ func TestBlockProducerRejectedKeysKeepUpgradedTemplate(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "upgrade-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "upgrade-ns")
 	accepted := keysAnnotation(t, ctx, c, "bp", "upgrade-ns")
@@ -181,6 +182,7 @@ func TestBlockProducerMissingKeysKeepLiveTemplate(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "missing-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "missing-ns")
 	accepted := keysAnnotation(t, ctx, c, "bp", "missing-ns")
@@ -256,6 +258,7 @@ func TestBlockProducerMissingKeysFirstRender(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "first-missing-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 	reconcile(t, ctx, reconcilerFor(c), "bp", "first-missing-ns")
 	assert.Empty(t, keysAnnotation(t, ctx, c, "bp", "first-missing-ns"))

@@ -76,6 +76,9 @@ const (
 	// while a pod template change is withheld because the keys are refused or
 	// missing.
 	templateHeldMessage = "pod template update held until the keys Secret validates"
+	// monitorOnlyHeldMessage is appended when a valid replacement bundle is
+	// observed but the configured rotation mode does not deliver it.
+	monitorOnlyHeldMessage = "pod template update held while rotation.mode is MonitorOnly"
 	// signingAgentCertHeldMessage replaces templateHeldMessage when the
 	// template is held for the signing agent client certificate Secret.
 	signingAgentCertHeldMessage = "pod template update held until the " +
@@ -640,20 +643,62 @@ func (r *DingoNodeReconciler) reconcileResources(
 				if err != nil {
 					return err
 				}
-				live.agent = resources.UsesSigningAgent(dn)
-				rollout := decideKeysRollout(
-					resources.ReloadsKeysInPlace(dn), live,
-					keysChecksum(secret), staticKeysChecksum(secret.Data),
-					pool, state.Counter, dn.Status.OpCert.LoadedCounter,
-					dn.Status.OpCert.RolledCounter,
-					dn.Status.OpCert.InPlaceReload, r.now(),
-				)
-				opts.KeysChecksum = rollout.checksum
-				opts.KeysStaticChecksum = rollout.static
-				opts.KeysPool = pool
-				opts.KeysCounter = strconv.FormatInt(state.Counter, 10)
-				decided, decidedLive = &rollout, live.checksum
-				if rollout.approve {
+				full := keysChecksum(secret)
+				monitorOnly := bp.Rotation.Mode ==
+					dingov1alpha1.RotationModeMonitorOnly
+				if monitorOnly && live.exists {
+					// MonitorOnly observes and validates replacement bundles but
+					// does not deliver them. Keep every key-derived template value
+					// from the live pod.
+					opts.KeysChecksum = live.checksum
+					opts.KeysStaticChecksum = live.static
+					opts.KeysPool = live.pool
+					if live.checksum != full {
+						if err := r.clearKeysApprovalConfigMap(ctx, dn); err != nil {
+							return err
+						}
+						keepTemplate = true
+						holdMessage = monitorOnlyHeldMessage
+					}
+				} else {
+					live.agent = resources.UsesSigningAgent(dn)
+					rollout := decideKeysRollout(
+						resources.ReloadsKeysInPlace(dn), live,
+						full, staticKeysChecksum(secret.Data),
+						pool, state.Counter, dn.Status.OpCert.LoadedCounter,
+						dn.Status.OpCert.RolledCounter,
+						dn.Status.OpCert.InPlaceReload, r.now(),
+					)
+					opts.KeysChecksum = rollout.checksum
+					opts.KeysStaticChecksum = rollout.static
+					opts.KeysPool = pool
+					opts.KeysCounter = strconv.FormatInt(state.Counter, 10)
+					decided, decidedLive = &rollout, live.checksum
+					if rollout.approve {
+						if err := r.upsertKeysApprovalConfigMap(
+							ctx, dn,
+							approvedKeysDigest(
+								secret.Data, resources.UsesSigningAgent(dn),
+							),
+						); err != nil {
+							return fmt.Errorf("apply keys approval configmap: %w", err)
+						}
+					}
+					if rollout.timedOut && r.Recorder != nil {
+						r.Recorder.Eventf(
+							dn, nil, corev1.EventTypeNormal, "KeysReloadTimedOut",
+							"ReloadKeys",
+							"node did not report opcert counter %d within %s; "+
+								"rolling the pod onto it",
+							state.Counter, keysReloadTimeout,
+						)
+					}
+				}
+				// A fresh MonitorOnly pod still needs the initial approval
+				// ConfigMap when its render includes the reload sidecar. A later
+				// replacement withdraws that approval.
+				if monitorOnly && !live.exists &&
+					resources.ReloadsKeysInPlace(dn) {
 					if err := r.upsertKeysApprovalConfigMap(
 						ctx, dn,
 						approvedKeysDigest(
@@ -662,15 +707,6 @@ func (r *DingoNodeReconciler) reconcileResources(
 					); err != nil {
 						return fmt.Errorf("apply keys approval configmap: %w", err)
 					}
-				}
-				if rollout.timedOut && r.Recorder != nil {
-					r.Recorder.Eventf(
-						dn, nil, corev1.EventTypeNormal, "KeysReloadTimedOut",
-						"ReloadKeys",
-						"node did not report opcert counter %d within %s; "+
-							"rolling the pod onto it",
-						state.Counter, keysReloadTimeout,
-					)
 				}
 				voteData, _, _ := voteKeyFile(secret.Data)
 				opts.MountVoteKey = voteData != nil
@@ -682,12 +718,17 @@ func (r *DingoNodeReconciler) reconcileResources(
 				if state.UnusedKESKey {
 					msg += "; " + unusedKESKeyMessage
 				}
+				reason := "OpCertAccepted"
+				if monitorOnly && live.exists && live.checksum != full {
+					reason = "OpCertObserved"
+					msg += "; replacement observed without delivery in MonitorOnly mode"
+				}
 				meta.SetStatusCondition(
 					&dn.Status.Conditions,
 					metav1.Condition{
 						Type:               condKeysValid,
 						Status:             metav1.ConditionTrue,
-						Reason:             "OpCertAccepted",
+						Reason:             reason,
 						Message:            msg,
 						ObservedGeneration: dn.Generation,
 					},
