@@ -759,6 +759,81 @@ func TestBuildNetworkPolicy(t *testing.T) {
 			)
 		},
 	)
+	t.Run(
+		"block producer relay ingress augments relay refs",
+		func(t *testing.T) {
+			dn := bpNode()
+			dn.Spec.Topology.RelayRefs = []string{"relay-a"}
+			dn.Spec.RelayService.IngressFrom = []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"relay-zone": "edge"},
+					},
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "relay"},
+					},
+				},
+			}
+
+			policy := BuildNetworkPolicy(dn)
+			relay := ruleForPort(t, policy, portRelay)
+			require.Len(t, relay.From, 2)
+			assert.Equal(
+				t,
+				[]string{"relay-a"},
+				relay.From[0].PodSelector.MatchExpressions[0].Values,
+			)
+			assert.Equal(
+				t,
+				map[string]string{"relay-zone": "edge"},
+				relay.From[1].NamespaceSelector.MatchLabels,
+			)
+			assert.Equal(
+				t,
+				map[string]string{"app": "relay"},
+				relay.From[1].PodSelector.MatchLabels,
+			)
+
+			dn.Spec.RelayService.IngressFrom[0].PodSelector.
+				MatchLabels["app"] = "changed"
+			assert.Equal(
+				t,
+				"relay",
+				relay.From[1].PodSelector.MatchLabels["app"],
+				"the rendered policy must not alias the DingoNode spec",
+			)
+		},
+	)
+	t.Run(
+		"block producer relay ingress works without relay refs",
+		func(t *testing.T) {
+			dn := bpNode()
+			dn.Spec.RelayService.IngressFrom = []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: "192.0.2.0/24"}},
+			}
+
+			relay := ruleForPort(t, BuildNetworkPolicy(dn), portRelay)
+			require.Len(t, relay.From, 1)
+			require.NotNil(t, relay.From[0].IPBlock)
+			assert.Equal(t, "192.0.2.0/24", relay.From[0].IPBlock.CIDR)
+		},
+	)
+	t.Run("relay ingress can restrict a relay", func(t *testing.T) {
+		dn := relayNode()
+		dn.Spec.RelayService.IngressFrom = []networkingv1.NetworkPolicyPeer{
+			{PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "peer"},
+			}},
+		}
+
+		relay := ruleForPort(t, BuildNetworkPolicy(dn), portRelay)
+		require.Len(t, relay.From, 1)
+		assert.Equal(
+			t,
+			map[string]string{"app": "peer"},
+			relay.From[0].PodSelector.MatchLabels,
+		)
+	})
 
 	// Peering is a node-to-node relationship and must not carry node-to-client
 	// with it. This rule used to hand relays port 3002 alongside 3001, which was

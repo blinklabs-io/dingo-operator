@@ -145,6 +145,11 @@ default-deny NetworkPolicy. Validation is CRD OpenAPI schema + controller-side
 checks + status conditions; no admission webhooks in v1 (k3s has no
 cert-manager).
 
+Block producers admit node-to-node ingress from same-namespace
+`topology.relayRefs` and the standard NetworkPolicy peers in
+`relayService.ingressFrom`. Relays keep unrestricted node-to-node ingress when
+that list is empty. Node-to-client, API, and metrics grants remain separate.
+
 ### Dingo constraints that shape the design
 
 - KES auto-evolves in memory while forging — no action within an opcert's

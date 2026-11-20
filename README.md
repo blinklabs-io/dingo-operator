@@ -447,6 +447,14 @@ spec:
     relayRefs: [relay]
     externalRelays:
       - { address: relay.example.com, port: 3001, valency: 1, trustable: true }
+  relayService:
+    ingressFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: relay-edge
+        podSelector:
+          matchLabels:
+            app: cardano-relay
   blockProducer:
     poolId: <pool id, bech32 or hex>
     keys: { secretRef: producer-pool-keys }
@@ -674,6 +682,13 @@ their pod and, for cross-namespace access, their namespace too. This grants no
 NtC or metrics access. Existing NtC and metrics opt-ins remain separate. Network
 isolation requires a CNI that enforces NetworkPolicy; APIs still need application
 authentication or an authenticated gateway where appropriate.
+
+`relayService.ingressFrom` uses the same standard NetworkPolicy peer shape for
+the node-to-node listener. On a block producer, these peers are admitted in
+addition to same-namespace nodes named by `topology.relayRefs`, so
+cross-namespace relays, external source ranges, and traffic through a host or
+node port can be granted explicitly. With no entries, block producers admit only
+their `relayRefs`, while relays retain unrestricted node-to-node ingress.
 
 Legacy `DINGO_UTXORPC_PORT`, `DINGO_BLOCKFROST_PORT`, and `DINGO_MESH_PORT`
 environment settings, canonical `DINGO_PLUGINS_API_*_CONFIG_PORT` settings, and

@@ -555,6 +555,13 @@ type RelayServiceSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
 	HostPort int32 `json:"hostPort,omitempty"`
+	// IngressFrom grants access to the node-to-node listener using standard
+	// NetworkPolicy peers. For block producers these peers augment the
+	// same-namespace relays named by topology.relayRefs. When empty, relays
+	// accept node-to-node traffic from any source and block producers admit
+	// only their relayRefs, preserving the default policy.
+	// +optional
+	IngressFrom []networkingv1.NetworkPolicyPeer `json:"ingressFrom,omitempty"`
 }
 
 // APISpec configures API listeners and their cluster access. API listeners
