@@ -279,7 +279,12 @@ func (r *DingoNodeReconciler) replaceStaleUnreadyPod(
 			ctx,
 			pod,
 			client.Preconditions{UID: &uid},
-		); err != nil && !apierrors.IsNotFound(err) {
+		); err != nil {
+			// The pod was already replaced, or was recreated since the list
+			// (a UID mismatch is a Conflict). Either way the nudge is done.
+			if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+				return nil
+			}
 			return fmt.Errorf("replace stale unready pod %s: %w", pod.Name, err)
 		}
 		log.FromContext(ctx).Info(

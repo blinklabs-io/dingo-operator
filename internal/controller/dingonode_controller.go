@@ -866,7 +866,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if err != nil {
 		return fmt.Errorf("apply statefulset: %w", err)
 	}
-	if !held {
+	// A withheld template that equals the live one still reports not held, but
+	// the replacement pod would mount the Secret that was refused, so no pod
+	// is replaced while the template is kept.
+	if !keepTemplate {
 		if err := r.replaceStaleUnreadyPod(ctx, dn); err != nil {
 			return fmt.Errorf("continue statefulset rollout: %w", err)
 		}

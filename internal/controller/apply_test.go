@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -209,4 +210,104 @@ func TestCreateOrUpdateWithRetryPropagatesOtherErrors(t *testing.T) {
 
 	require.ErrorIs(t, err, sentinel)
 	assert.Equal(t, 1, updates, "non-conflict errors must not be retried")
+}
+
+// staleRolloutFixture returns a reconciler over a fake client holding a
+// node's StatefulSet mid-rollout with one stale unready pod. A block producer
+// whose keys Secret does not exist has its template held.
+func staleRolloutFixture(
+	t *testing.T,
+	dn *dingov1alpha1.DingoNode,
+	delErr error,
+) (*DingoNodeReconciler, *dingov1alpha1.DingoNode, client.Client) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	dn.UID = types.UID("node-uid")
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&appsv1.StatefulSet{}).
+		WithObjects(dn).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(
+				ctx context.Context,
+				cl client.WithWatch,
+				obj client.Object,
+				opts ...client.DeleteOption,
+			) error {
+				if _, ok := obj.(*corev1.Pod); ok && delErr != nil {
+					return delErr
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := reconcilerFor(c)
+	ctx := context.Background()
+	// The first pass creates the StatefulSet. Later passes render the same
+	// template, so a held one equals the live one.
+	require.NoError(t, r.reconcileResources(ctx, dn))
+
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), sts))
+	sts.Status.UpdateRevision = "new-revision"
+	require.NoError(t, c.Status().Update(ctx, sts))
+	require.NoError(t, c.Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dn.Name + "-0",
+			Namespace: dn.Namespace,
+			UID:       types.UID(dn.Name + "-0-uid"),
+			Labels: map[string]string{
+				resources.NodeLabel:             dn.Name,
+				appsv1.StatefulSetRevisionLabel: "old-revision",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: appsv1.SchemeGroupVersion.String(),
+				Kind:       "StatefulSet",
+				Name:       sts.Name,
+				UID:        sts.UID,
+				Controller: new(true),
+			}},
+		},
+	}))
+	return r, dn, c
+}
+
+func TestReconcileResourcesKeepsStalePodWhileTemplateHeld(t *testing.T) {
+	r, dn, c := staleRolloutFixture(
+		t,
+		blockProducerNode("bp", "bp-ns", "missing-keys", "pool"),
+		nil,
+	)
+	ctx := context.Background()
+
+	require.NoError(t, r.reconcileResources(ctx, dn))
+
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: "bp-0", Namespace: dn.Namespace},
+		&corev1.Pod{},
+	), "a held template must not replace the pod onto the refused Secret")
+}
+
+// A pod recreated between the list and the delete fails the UID precondition
+// with a Conflict. That must not stop the rest of the resources applying.
+func TestReconcileResourcesToleratesStalePodUIDConflict(t *testing.T) {
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay", Namespace: "relay-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+	r, dn, c := staleRolloutFixture(t, dn, conflictErr("relay-0"))
+	ctx := context.Background()
+	key := client.ObjectKeyFromObject(dn)
+	require.NoError(t, c.Delete(ctx, &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: dn.Name, Namespace: dn.Namespace},
+	}))
+
+	require.NoError(t, r.reconcileResources(ctx, dn))
+
+	require.NoError(t, c.Get(ctx, key, &networkingv1.NetworkPolicy{}),
+		"resources after the pod nudge must still be applied")
 }
