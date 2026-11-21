@@ -30,6 +30,7 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
+	"github.com/blinklabs-io/dingo-operator/internal/topology"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -569,12 +570,19 @@ func TestBlockProducerLeiosVoteKey(t *testing.T) {
 	dn := blockProducerNode(
 		"bp", "vote-ns", "pool-keys", hex.EncodeToString(keys.PoolID),
 	)
+	dn.Spec.Network = "musashi"
 	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAssisted
 	require.NoError(t, c.Create(ctx, dn))
 
 	// No vote.skey: existing three-key Secrets render exactly as before.
 	reconcile(t, ctx, reconcilerFor(c), "bp", "vote-ns")
-	_, ok := templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
+	network, ok := templateEnv(
+		podTemplate(t, ctx, c, "bp", "vote-ns"),
+		"CARDANO_NETWORK",
+	)
+	require.True(t, ok)
+	assert.Equal(t, "musashi", network)
+	_, ok = templateEnv(podTemplate(t, ctx, c, "bp", "vote-ns"), voteEnv)
 	assert.False(t, ok, "no vote key in the Secret must set no vote env")
 	before := keysAnnotation(t, ctx, c, "bp", "vote-ns")
 
@@ -1646,6 +1654,89 @@ func TestConfigRefChecksumRollout(t *testing.T) {
 	)
 }
 
+func TestPeerSnapshotRefRendersAndRolls(t *testing.T) {
+	c, ctx := startEnv(t)
+	createNamespace(t, ctx, c, "snapshot-ns")
+
+	source := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ledger-peers", Namespace: "snapshot-ns",
+		},
+		BinaryData: map[string][]byte{
+			topology.PeerSnapshotFileName: []byte(`{"snapshot":["first"]}`),
+		},
+	}
+	require.NoError(t, c.Create(ctx, source))
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay", Namespace: "snapshot-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "musashi",
+			Topology: dingov1alpha1.TopologySpec{
+				PeerSnapshotRef: source.Name,
+			},
+		},
+	}
+	require.NoError(t, c.Create(ctx, dn))
+	reconcile(t, ctx, reconcilerFor(c), dn.Name, dn.Namespace)
+
+	managed := &corev1.ConfigMap{}
+	managedKey := types.NamespacedName{
+		Name: resources.TopologyConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	require.NoError(t, c.Get(ctx, managedKey, managed))
+	assert.Equal(
+		t,
+		source.BinaryData[topology.PeerSnapshotFileName],
+		managed.BinaryData[topology.PeerSnapshotFileName],
+	)
+	assert.Contains(
+		t,
+		managed.Data["topology.json"],
+		`"peerSnapshotFile": "peer-snapshot.json"`,
+	)
+
+	sts := &appsv1.StatefulSet{}
+	stsKey := types.NamespacedName{Name: dn.Name, Namespace: dn.Namespace}
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	first := sts.Spec.Template.Annotations[resources.TopologyChecksumAnnotation]
+	assert.NotEmpty(t, first)
+	var mounted bool
+	for _, volume := range sts.Spec.Template.Spec.Volumes {
+		if volume.ConfigMap != nil && volume.ConfigMap.Name == managed.Name {
+			mounted = true
+		}
+	}
+	assert.True(t, mounted, "the managed topology ConfigMap must be mounted")
+	env, ok := templateEnv(sts.Spec.Template, "CARDANO_TOPOLOGY")
+	require.True(t, ok)
+	assert.Equal(t, "/config/topology.json", env)
+
+	require.NoError(t, c.Get(
+		ctx,
+		types.NamespacedName{Name: source.Name, Namespace: source.Namespace},
+		source,
+	))
+	source.BinaryData[topology.PeerSnapshotFileName] =
+		[]byte(`{"snapshot":["second"]}`)
+	require.NoError(t, c.Update(ctx, source))
+	reconcile(t, ctx, reconcilerFor(c), dn.Name, dn.Namespace)
+
+	require.NoError(t, c.Get(ctx, managedKey, managed))
+	assert.Equal(
+		t,
+		source.BinaryData[topology.PeerSnapshotFileName],
+		managed.BinaryData[topology.PeerSnapshotFileName],
+	)
+	require.NoError(t, c.Get(ctx, stsKey, sts))
+	assert.NotEqual(
+		t,
+		first,
+		sts.Spec.Template.Annotations[resources.TopologyChecksumAnnotation],
+		"changing snapshot bytes must roll the node",
+	)
+}
+
 func TestReconcileInvalidSpecSetsDegraded(t *testing.T) {
 	c, ctx := startEnv(t)
 	createNamespace(t, ctx, c, "bad-ns")
@@ -2232,4 +2323,48 @@ func TestUpsertStatefulSetUsesFetchedClaimTemplate(t *testing.T) {
 		}).Build()
 	require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), dn))
 	assertDataVolume(t, c, "data")
+}
+
+type countingFetcher struct{ calls int }
+
+func (f *countingFetcher) Fetch(
+	context.Context,
+	string,
+) (*forgestatus.Status, error) {
+	f.calls++
+	return nil, errors.New("unused")
+}
+
+// A peer snapshot that cannot be read blocks the rollout but must not stop the
+// running producer's KES observation, nor hide the cause from status.
+func TestReconcileObservesKESWhilePeerSnapshotUnreadable(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	dn := blockProducerNode("bp", "snap-ns", "keys", "pool")
+	dn.Spec.Topology.PeerSnapshotRef = "missing-snapshot"
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&dingov1alpha1.DingoNode{}).
+		WithObjects(dn).Build()
+	fetcher := &countingFetcher{}
+	r := reconcilerFor(c)
+	r.ForgeStatus = fetcher
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(dn),
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing-snapshot")
+	assert.Positive(t, fetcher.calls, "KES must still be observed")
+	assert.True(t, apierrors.IsNotFound(c.Get(
+		ctx, client.ObjectKeyFromObject(dn), &appsv1.StatefulSet{},
+	)), "the rollout must stay blocked")
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), got))
+	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	require.NotNil(t, degraded)
+	assert.Equal(t, reasonPeerSnapshotUnavailable, degraded.Reason)
+	assert.Contains(t, degraded.Message, "missing-snapshot")
 }

@@ -119,7 +119,7 @@ func ownedChildren(dn *dingov1alpha1.DingoNode) []ownedChild {
 		},
 		{
 			what: "topology ConfigMap",
-			key:  key(resources.BuildTopologyConfigMap(dn, "").Name),
+			key:  key(resources.BuildTopologyConfigMap(dn, "", nil).Name),
 			obj:  func() client.Object { return &corev1.ConfigMap{} },
 		},
 		{

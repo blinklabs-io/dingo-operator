@@ -35,6 +35,13 @@ func TestDataVolumeStickyInitContainer(t *testing.T) {
 	t.Parallel()
 	noMithril := relayNode()
 	noMithril.Spec.Mithril.Enabled = new(false)
+	musashi := relayNode()
+	musashi.Spec.Network = "musashi"
+	dijkstra := relayNode()
+	dijkstra.Spec.Network = "dijkstra"
+	explicitAggregator := relayNode()
+	explicitAggregator.Spec.Network = "musashi"
+	explicitAggregator.Spec.Mithril.AggregatorURL = "https://aggregator.example"
 	for _, tc := range []struct {
 		name  string
 		dn    *dingov1alpha1.DingoNode
@@ -60,6 +67,26 @@ func TestDataVolumeStickyInitContainer(t *testing.T) {
 			dn:    noMithril,
 			opts:  RenderOptions{Replicas: 1},
 			names: []string{dataStickyInitName, ipcInitName},
+		},
+		{
+			name:  "musashi without an aggregator skips mithril",
+			dn:    musashi,
+			opts:  RenderOptions{Replicas: 1},
+			names: []string{dataStickyInitName, ipcInitName},
+		},
+		{
+			name:  "dijkstra without an aggregator skips mithril",
+			dn:    dijkstra,
+			opts:  RenderOptions{Replicas: 1},
+			names: []string{dataStickyInitName, ipcInitName},
+		},
+		{
+			name: "explicit aggregator enables mithril",
+			dn:   explicitAggregator,
+			opts: RenderOptions{Replicas: 1},
+			names: []string{
+				dataStickyInitName, ipcInitName, mithrilInitName,
+			},
 		},
 		{
 			name: "legacy data volume",

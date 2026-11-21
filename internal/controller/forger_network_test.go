@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -44,6 +45,20 @@ func TestNetworkKey(t *testing.T) {
 	t.Parallel()
 	preview := forgerNode("a", "ns", conflictPoolID, "k", 0)
 	assert.Equal(t, "magic:2", networkKey(preview))
+	for _, tt := range []struct {
+		name  string
+		magic int64
+	}{
+		{name: "musashi", magic: 164},
+		{name: "dijkstra", magic: 6},
+	} {
+		named := forgerNode("named", "ns", conflictPoolID, "k", 0)
+		named.Spec.Network = tt.name
+		assert.Equal(t, "magic:"+strconv.FormatInt(tt.magic, 10), networkKey(named))
+		assert.Equal(t, networkKey(named), networkKey(onNetwork(
+			forgerNode("custom", "ns", conflictPoolID, "k", 0), tt.magic,
+		)))
+	}
 	assert.Equal(t, networkKey(preview), networkKey(onNetwork(
 		forgerNode("b", "ns", conflictPoolID, "k", 0), 2,
 	)), "a custom network with a named network's magic is that network")
@@ -103,6 +118,12 @@ func TestEnvNetwork(t *testing.T) {
 		{"known name", []corev1.EnvVar{
 			v("CARDANO_NETWORK", "preview"),
 		}, false, "magic:2"},
+		{"musashi name", []corev1.EnvVar{
+			v("CARDANO_NETWORK", "musashi"),
+		}, false, "magic:164"},
+		{"dijkstra name", []corev1.EnvVar{
+			v("CARDANO_NETWORK", "dijkstra"),
+		}, false, "magic:6"},
 		{"magic wins over name", []corev1.EnvVar{
 			v("CARDANO_NETWORK", "preview"), v("CARDANO_NETWORK_MAGIC", "42"),
 		}, false, "magic:42"},
@@ -296,34 +317,62 @@ func TestReconcileSamePoolOnDifferentNetworksSameNamespace(t *testing.T) {
 
 func TestReconcileSamePoolOnSameNetworkStillRefused(t *testing.T) {
 	t.Parallel()
-	for _, ns := range []string{"ns-a", "ns-b"} {
-		t.Run(ns, func(t *testing.T) {
-			t.Parallel()
-			pool, data := poolKeys(t)
-			older := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
-			older.UID = "older-uid"
-			// Same magic as preview, spelled as a custom network.
-			newer := onNetwork(forgerNode("bp-2", ns, pool, "keys-b", 0), 2)
-			newer.UID = "newer-uid"
-			c := conflictClient(
-				t,
-				older,
-				newer,
-				keysSecret(
-					"keys-a",
-					"ns-a",
-					data,
-				),
-				keysSecret("keys-b", ns, data),
-			)
-			r := reconcilerFor(c)
-			reconcileNode(t, r, older)
-			reconcileNode(t, r, newer)
-			assert.True(t, refusedAsDuplicate(t, c, newer))
-			assert.False(t, forging(t, c, newer))
-			reconcileNode(t, r, older)
-			assert.True(t, forging(t, c, older))
-		})
+	for _, network := range []struct {
+		name  string
+		magic int64
+	}{
+		{name: "preview", magic: 2},
+		{name: "musashi", magic: 164},
+		{name: "dijkstra", magic: 6},
+	} {
+		for _, ns := range []string{"ns-a", "ns-b"} {
+			t.Run(network.name+"/"+ns, func(t *testing.T) {
+				t.Parallel()
+				pool, data := poolKeys(t)
+				older := forgerNode("bp-1", "ns-a", pool, "keys-a", time.Hour)
+				older.Spec.Network = network.name
+				older.UID = "older-uid"
+				newer := onNetwork(
+					forgerNode("bp-2", ns, pool, "keys-b", 0), network.magic,
+				)
+				newer.UID = "newer-uid"
+				c := conflictClient(
+					t,
+					older,
+					newer,
+					keysSecret(
+						"keys-a",
+						"ns-a",
+						data,
+					),
+					keysSecret("keys-b", ns, data),
+				)
+				r := reconcilerFor(c)
+				reconcileNode(t, r, older)
+				reconcileNode(t, r, newer)
+				assert.True(t, refusedAsDuplicate(t, c, newer))
+				assert.False(t, forging(t, c, newer))
+				reconcileNode(t, r, older)
+				assert.True(t, forging(t, c, older))
+			})
+		}
+	}
+}
+
+func TestNetworkMagicNamedNetworks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		magic uint32
+	}{
+		{name: "musashi", magic: 164},
+		{name: "dijkstra", magic: 6},
+	} {
+		dn := &dingov1alpha1.DingoNode{}
+		dn.Spec.Network = tt.name
+		magic, ok := networkMagic(dn)
+		require.True(t, ok)
+		assert.Equal(t, tt.magic, magic)
 	}
 }
 

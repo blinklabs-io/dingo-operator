@@ -130,14 +130,16 @@ func (r *DingoNodeReconciler) upsertConfigMap(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 	topologyJSON string,
+	peerSnapshot []byte,
 ) error {
-	desired := resources.BuildTopologyConfigMap(dn, topologyJSON)
+	desired := resources.BuildTopologyConfigMap(dn, topologyJSON, peerSnapshot)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
 	}
 	err := createOrUpdateWithRetry(ctx, r.Client, cm, func() error {
 		cm.Labels = desired.Labels
 		cm.Data = desired.Data
+		cm.BinaryData = desired.BinaryData
 		return ctrl.SetControllerReference(dn, cm, r.Scheme)
 	})
 	return err

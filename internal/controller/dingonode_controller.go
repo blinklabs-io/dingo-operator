@@ -348,6 +348,24 @@ func (r *DingoNodeReconciler) Reconcile(
 				return ctrl.Result{}, errors.Join(err, serr)
 			}
 		}
+		if _, ok := errors.AsType[*peerSnapshotError](err); ok {
+			// Nothing was applied, so the node keeps running as it was. Keep
+			// observing it: its KES window closes whatever the snapshot's state.
+			if serr := r.reconcileStatus(ctx, dn); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+			meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+				Type:               condDegraded,
+				Status:             metav1.ConditionTrue,
+				Reason:             reasonPeerSnapshotUnavailable,
+				Message:            err.Error(),
+				ObservedGeneration: dn.Generation,
+			})
+			dn.Status.Phase = "Degraded"
+			if serr := r.updateStatus(ctx, dn); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -499,6 +517,18 @@ func (r *DingoNodeReconciler) liveConfigChecksum(
 // satisfy.
 const reasonSelectorMismatch = "StatefulSetSelectorMismatch"
 
+// reasonPeerSnapshotUnavailable is the condition reason for a node whose
+// peerSnapshotRef names a missing ConfigMap or key.
+const reasonPeerSnapshotUnavailable = "PeerSnapshotUnavailable"
+
+// peerSnapshotError marks a peer snapshot that cannot be read. No child
+// resource has been changed when it is returned, so the rollout is blocked
+// while the running node is still observed.
+type peerSnapshotError struct{ err error }
+
+func (e *peerSnapshotError) Error() string { return e.err.Error() }
+func (e *peerSnapshotError) Unwrap() error { return e.err }
+
 // selectorMismatchError marks the refusal from checkStatefulSetSelector so
 // Reconcile can report it without reclassifying other apply failures.
 type selectorMismatchError struct{ err error }
@@ -547,6 +577,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if err != nil {
 		return err
 	}
+	peerSnapshot, err := r.peerSnapshot(ctx, dn)
+	if err != nil {
+		return &peerSnapshotError{err: err}
+	}
 	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace, peerPorts)
 	if err != nil {
 		return err
@@ -559,7 +593,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 		PreStopSleep: r.PreStopSleep,
 	}
 	if hasTopo {
-		opts.TopologyChecksum = checksum(topoJSON)
+		data := map[string][]byte{"topology.json": []byte(topoJSON)}
+		if peerSnapshot != nil {
+			data[topology.PeerSnapshotFileName] = peerSnapshot
+		}
+		opts.TopologyChecksum = checksumData(data)
 	}
 	// Claim templates are immutable: a new StatefulSet takes the name of
 	// retained claims; upsertStatefulSet keeps an existing one's name.
@@ -858,7 +896,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 		return fmt.Errorf("apply service: %w", err)
 	}
 	if hasTopo {
-		if err := r.upsertConfigMap(ctx, dn, topoJSON); err != nil {
+		if err := r.upsertConfigMap(ctx, dn, topoJSON, peerSnapshot); err != nil {
 			return fmt.Errorf("apply topology configmap: %w", err)
 		}
 	}
@@ -899,6 +937,35 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 	}
 	return nil
+}
+
+// peerSnapshot reads the configured snapshot before any child resources are
+// changed. A missing ConfigMap or key is an error so Dingo is never rolled onto
+// a topology that names a file the pod cannot mount.
+func (r *DingoNodeReconciler) peerSnapshot(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) ([]byte, error) {
+	name := dn.Spec.Topology.PeerSnapshotRef
+	if name == "" {
+		return nil, nil
+	}
+	cm := &corev1.ConfigMap{}
+	key := types.NamespacedName{Name: name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, cm); err != nil {
+		return nil, fmt.Errorf("read peer snapshot ConfigMap %q: %w", name, err)
+	}
+	if data, ok := cm.BinaryData[topology.PeerSnapshotFileName]; ok {
+		return data, nil
+	}
+	if data, ok := cm.Data[topology.PeerSnapshotFileName]; ok {
+		return []byte(data), nil
+	}
+	return nil, fmt.Errorf(
+		"peer snapshot ConfigMap %q has no %q key",
+		name,
+		topology.PeerSnapshotFileName,
+	)
 }
 
 // rejectKeys records that the delivered key bundle was refused: a log line, a

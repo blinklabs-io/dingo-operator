@@ -1507,7 +1507,8 @@ spec:
                   referenced genesis files (byron/shelley/alonzo/conway-genesis.json), all as
                   sibling keys. When set, the operator mounts it read-only and points Dingo at
                   it via CARDANO_CONFIG. Required for custom networks whose genesis is not
-                  built into Dingo; leave empty for named networks (mainnet/preprod/preview).
+                  built into Dingo; leave empty for named networks (mainnet, preprod, preview,
+                  musashi and dijkstra).
                   Must be a valid ConfigMap name (RFC 1123 DNS subdomain) so an invalid
                   reference is rejected at admission rather than failing pod creation later.
                 maxLength: 253
@@ -1634,11 +1635,15 @@ spec:
                   sync".
                 properties:
                   aggregatorUrl:
-                    description: AggregatorURL is auto-detected from the network when
-                      empty.
+                    description: |-
+                      AggregatorURL is auto-detected from mainnet, preprod and preview when
+                      empty. Setting it explicitly also enables Mithril when enabled is unset.
                     type: string
                   enabled:
-                    default: true
+                    description: |-
+                      Enabled selects Mithril bootstrap. When unset, bootstrap is enabled only
+                      for networks with a built-in aggregator (mainnet, preprod and preview), or
+                      when aggregatorUrl is set explicitly.
                     type: boolean
                   forceResync:
                     description: |-
@@ -1656,8 +1661,8 @@ spec:
                 type: object
               network:
                 description: |-
-                  Network is a named Cardano network (mainnet, preprod, preview, devnet) or
-                  "custom" (with networkMagic).
+                  Network is a named Cardano network (mainnet, preprod, preview, devnet,
+                  musashi or dijkstra) or "custom" (with networkMagic).
                 minLength: 1
                 type: string
               networkMagic:
@@ -2428,6 +2433,15 @@ spec:
                       - port
                       type: object
                     type: array
+                  peerSnapshotRef:
+                    description: |-
+                      PeerSnapshotRef names a ConfigMap in this DingoNode's namespace whose
+                      peer-snapshot.json key holds a cardano-node peer snapshot. The operator
+                      copies the snapshot beside topology.json and points Dingo at it, allowing
+                      ledger peers to seed a node before its local ledger is available.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
                   publicRoots:
                     items:
                       description: AccessPoint is a bootstrap/public root peer passthrough

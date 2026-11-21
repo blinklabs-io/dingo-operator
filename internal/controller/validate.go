@@ -78,17 +78,35 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				"config.json and its genesis files)",
 		)
 	}
+	if dn.Spec.Topology.PeerSnapshotRef != "" &&
+		dn.Spec.Topology.PeerSnapshotRef == resources.TopologyConfigMapName(dn) {
+		return errors.New(
+			"spec.topology.peerSnapshotRef must not name the operator-managed " +
+				"topology ConfigMap",
+		)
+	}
 
-	// A config bundle implies a custom genesis, which has no auto-detectable
-	// Mithril aggregator. The Mithril bootstrap init container would then
-	// crash-loop resolving a non-existent aggregator, blocking pod start. Require
-	// the user to either point Mithril at an aggregator or disable it explicitly.
-	if dn.Spec.ConfigRef != "" &&
-		(dn.Spec.Mithril.Enabled == nil || *dn.Spec.Mithril.Enabled) &&
+	// An explicitly enabled bootstrap needs either a network with a built-in
+	// aggregator or an explicit URL. Unset bootstrap is disabled automatically
+	// on networks without a built-in aggregator.
+	if resources.MithrilEnabled(dn) &&
+		dn.Spec.Mithril.AggregatorURL == "" &&
+		!resources.HasDefaultMithrilAggregator(dn.Spec.Network) {
+		return fmt.Errorf(
+			"spec.mithril.enabled=true on network %q requires "+
+				"spec.mithril.aggregatorUrl; the network has no built-in "+
+				"Mithril aggregator",
+			dn.Spec.Network,
+		)
+	}
+
+	// A config bundle can replace a named network's genesis, so it cannot rely
+	// on that network's built-in aggregator.
+	if dn.Spec.ConfigRef != "" && resources.MithrilEnabled(dn) &&
 		dn.Spec.Mithril.AggregatorURL == "" {
 		return errors.New(
 			"spec.configRef requires spec.mithril.aggregatorUrl to be set or " +
-				"spec.mithril.enabled=false; a custom network has no " +
+				"Mithril bootstrap to be disabled; a custom genesis has no " +
 				"auto-detected Mithril aggregator",
 		)
 	}
@@ -204,7 +222,7 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 			return errors.New(
 				"role blockProducer requires spec.topology (relayRefs with " +
 					"autoPeerRelays, externalRelays, bootstrapPeers, " +
-					"publicRoots or useLedgerAfterSlot); without it the " +
+					"publicRoots, peerSnapshotRef or useLedgerAfterSlot); without it the " +
 					"node dials public bootstrap peers",
 			)
 		}

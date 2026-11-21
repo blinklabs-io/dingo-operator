@@ -156,12 +156,18 @@ func TestValidateSpec(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// configRef + default Mithril (enabled) + no aggregator would
-			// crash-loop the bootstrap init container; reject at admission.
-			name: "configRef with mithril enabled but no aggregator",
+			name: "custom network defaults mithril off",
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleRelay, Network: "custom",
 				NetworkMagic: new(int64(42)), ConfigRef: "devnet-config",
+			},
+		},
+		{
+			name: "custom network with mithril enabled but no aggregator",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "custom",
+				NetworkMagic: new(int64(42)), ConfigRef: "devnet-config",
+				Mithril: dingov1alpha1.MithrilSpec{Enabled: new(true)},
 			},
 			wantErr: true,
 		},
@@ -170,6 +176,35 @@ func TestValidateSpec(t *testing.T) {
 			spec: dingov1alpha1.DingoNodeSpec{
 				Role: dingov1alpha1.RoleRelay, Network: "custom",
 				NetworkMagic: new(int64(42)), ConfigRef: "devnet-config",
+				Mithril: dingov1alpha1.MithrilSpec{
+					AggregatorURL: "https://aggregator.example/aggregator",
+				},
+			},
+		},
+		{
+			name: "musashi defaults mithril off",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "musashi",
+			},
+		},
+		{
+			name: "dijkstra defaults mithril off",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "dijkstra",
+			},
+		},
+		{
+			name: "musashi explicit mithril needs aggregator",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "musashi",
+				Mithril: dingov1alpha1.MithrilSpec{Enabled: new(true)},
+			},
+			wantErr: true,
+		},
+		{
+			name: "dijkstra explicit aggregator enables mithril",
+			spec: dingov1alpha1.DingoNodeSpec{
+				Role: dingov1alpha1.RoleRelay, Network: "dijkstra",
 				Mithril: dingov1alpha1.MithrilSpec{
 					AggregatorURL: "https://aggregator.example/aggregator",
 				},
@@ -279,6 +314,21 @@ func TestValidateSpecRejectsManagedServiceSuffixes(t *testing.T) {
 		}
 		require.ErrorContains(t, validateSpec(dn), "managed Service name")
 	}
+}
+
+func TestValidateSpecRejectsManagedTopologyAsSnapshotSource(t *testing.T) {
+	t.Parallel()
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "musashi",
+			Topology: dingov1alpha1.TopologySpec{
+				PeerSnapshotRef: "relay-topology",
+			},
+		},
+	}
+	require.ErrorContains(t, validateSpec(dn), "operator-managed topology")
 }
 
 func TestChecksum(t *testing.T) {
@@ -666,6 +716,10 @@ func TestValidateSpecBlockProducerRequiresTopology(t *testing.T) {
 			topo: dingov1alpha1.TopologySpec{
 				UseLedgerAfterSlot: new(int64(-1)),
 			},
+		},
+		{
+			name: "peerSnapshotRef",
+			topo: dingov1alpha1.TopologySpec{PeerSnapshotRef: "snapshot"},
 		},
 	}
 	for _, tt := range tests {
