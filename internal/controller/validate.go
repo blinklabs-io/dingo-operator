@@ -552,8 +552,11 @@ func imageVersionField(dn *dingov1alpha1.DingoNode) string {
 //
 // The certificate is hashed under one name whichever of opcert.cert and
 // node.cert holds it, so renaming the file in the Secret does not roll the pod.
+// The retained kes.pending.skey is left out: the node never loads it, so a
+// refused issuance that stores it must not roll the pod.
 func keysChecksum(secret *corev1.Secret) string {
 	data := maps.Clone(secret.Data)
+	delete(data, keyFilePendingKES)
 	if cert, _, err := opCertFile(data); err == nil && cert != nil {
 		delete(data, keyFileNodeCert)
 		data[keyFileOpCert] = cert

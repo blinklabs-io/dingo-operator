@@ -41,13 +41,15 @@ import (
 const keysReloadTimeout = 10 * time.Minute
 
 // staticKeysChecksum returns the checksum of everything in a keys Secret that
-// an in-place reload cannot change: every entry except kes.skey and the opcert.
+// an in-place reload cannot change: every entry except the active or pending
+// KES key and the opcert.
 // That covers the VRF key and the optional vote key, and any other entry, so a
 // change to anything but the KES key and opcert rolls the pod. The vote key is
 // hashed under one name, whichever file it came from.
 func staticKeysChecksum(data map[string][]byte) string {
 	static := maps.Clone(data)
 	delete(static, keyFileKES)
+	delete(static, keyFilePendingKES)
 	delete(static, keyFileOpCert)
 	delete(static, keyFileNodeCert)
 	delete(static, keyFileVote)

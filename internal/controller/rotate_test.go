@@ -57,6 +57,7 @@ type countingIssuer struct {
 	inner coldsigner.Issuer
 	err   error
 	calls int
+	vkeys [][]byte
 }
 
 func (c *countingIssuer) SignOpCertFromChain(
@@ -65,6 +66,7 @@ func (c *countingIssuer) SignOpCertFromChain(
 	chainCounter, kesPeriod uint64,
 ) (*coldsigner.OpCertResult, error) {
 	c.calls++
+	c.vkeys = append(c.vkeys, append([]byte(nil), kesVkey...))
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -381,6 +383,64 @@ func TestAutoRotateBacksOffAfterFailure(t *testing.T) {
 	f.r.issueMu.Unlock()
 	f.r.autoRotate(ctx, f.dn)
 	assert.Equal(t, 2, f.issuer.calls)
+	require.Len(t, f.issuer.vkeys, 2)
+	assert.NotEqual(t, f.issuer.vkeys[0], f.issuer.vkeys[1],
+		"a signer without exact-key grants gets a fresh retry key")
+}
+
+// Bursa grants opcert issuance to exact KES verification keys. A refused
+// request must retain its generated key so granting the reported key makes the
+// next attempt succeed instead of requesting a different, ungranted key.
+func TestAutoRotateReusesBursaGrantedKey(t *testing.T) {
+	f := newRotateFixture(t)
+	f.dn.Spec.BlockProducer.Rotation.ColdSigner.Type =
+		dingov1alpha1.ColdSignerBursa
+	f.issuer.err = errors.New("KES verification key is not granted")
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+
+	require.Len(t, f.issuer.vkeys, 1)
+	first := append([]byte(nil), f.issuer.vkeys[0]...)
+	pending := f.secret(t)
+	require.NotEmpty(t, pending.Data[keyFilePendingKES])
+	assert.Equal(t, staticKeysChecksum(pending.Data),
+		staticKeysChecksum(mapWithout(pending.Data, keyFilePendingKES)))
+	assert.Equal(t,
+		keysChecksum(&corev1.Secret{Data: pending.Data}),
+		keysChecksum(&corev1.Secret{
+			Data: mapWithout(pending.Data, keyFilePendingKES),
+		}),
+		"a retained pending key must not change the rollout checksum")
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, hex.EncodeToString(first))
+
+	f.issuer.err = nil
+	f.r.issueMu.Lock()
+	at := f.r.issueFailures[client.ObjectKeyFromObject(f.dn)]
+	at.at = at.at.Add(-issueRetryInterval)
+	f.r.issueFailures[client.ObjectKeyFromObject(f.dn)] = at
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(ctx, f.dn)
+
+	require.Len(t, f.issuer.vkeys, 2)
+	assert.Equal(t, first, f.issuer.vkeys[1])
+	after := f.secret(t)
+	assert.NotContains(t, after.Data, keyFilePendingKES)
+	active, err := pendingKESVKey(after.Data[keyFileKES])
+	require.NoError(t, err)
+	assert.Equal(t, first, active)
+}
+
+func mapWithout(data map[string][]byte, key string) map[string][]byte {
+	result := make(map[string][]byte, len(data))
+	for name, value := range data {
+		if name != key {
+			result[name] = value
+		}
+	}
+	return result
 }
 
 // Without update access to the keys Secret the write would fail after the

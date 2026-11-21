@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -168,6 +169,47 @@ func TestAutoRotateThroughAgentIssuesOnce(t *testing.T) {
 	assert.Equal(t, 1, f.issuer.calls)
 	assert.Len(t, f.agent.Commands(), 3)
 	assert.Equal(t, staged.Data, f.secret(t).Data)
+}
+
+// An agent retains its staged KES key after the signer refuses it. Retrying
+// must offer that exact key again so a Bursa per-key grant can take effect.
+func TestAutoRotateThroughAgentReusesBursaGrantedKey(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	f.dn.Spec.BlockProducer.Rotation.ColdSigner.Type =
+		dingov1alpha1.ColdSignerBursa
+	f.issuer.err = errors.New("KES verification key is not granted")
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+
+	require.Len(t, f.issuer.vkeys, 1)
+	first := append([]byte(nil), f.issuer.vkeys[0]...)
+	assert.Equal(t, first, f.agent.Staged("pool-a"))
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, hex.EncodeToString(first))
+
+	f.issuer.err = nil
+	f.r.issueMu.Lock()
+	at := f.r.issueFailures[client.ObjectKeyFromObject(f.dn)]
+	at.at = at.at.Add(-issueRetryInterval)
+	f.r.issueFailures[client.ObjectKeyFromObject(f.dn)] = at
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(ctx, f.dn)
+
+	require.Len(t, f.issuer.vkeys, 2)
+	assert.Equal(t, first, f.issuer.vkeys[1])
+	var generated int
+	for _, command := range f.agent.Commands() {
+		if command.Command == "gen-staged-key" {
+			generated++
+		}
+	}
+	assert.Equal(t, 1, generated)
+	active, issue := f.agent.Active("pool-a")
+	assert.Equal(t, first, active)
+	assert.Equal(t, uint64(4), issue)
 }
 
 // A rotation that fails at any step leaves the previous key serving and the

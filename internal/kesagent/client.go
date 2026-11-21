@@ -16,9 +16,8 @@
 // KES agent: gen-staged-key and install-key over the attested listener.
 //
 // The wire shapes follow docs/signer/kes-agent-protocol.md and
-// kesagent/wire/messages.go in blinklabs-io/bursa at afd19ef. No release of
-// bursa contains them yet, so they are copied here for exactly the commands
-// the operator needs instead of imported.
+// kesagent/wire/messages.go in Bursa v0.26. They are copied here for exactly
+// the commands the operator needs instead of importing the signer binary.
 package kesagent
 
 import (
@@ -89,6 +88,7 @@ type agentInfo struct {
 	ActiveKESVKey     []byte `json:"active_kes_vkey"`
 	ActiveIssueNumber uint64 `json:"active_issue_number"`
 	ActiveOpCert      []byte `json:"active_opcert"`
+	StagedKESVKey     []byte `json:"staged_kes_vkey"`
 }
 
 type reply struct {
@@ -170,10 +170,16 @@ type Active struct {
 	OpCert []byte
 }
 
-// ActiveKey returns the key the profile serves, from the agent's info
-// command. It is how a rotation interrupted after install-key finds the
-// opcert the agent already serves.
-func ActiveKey(ctx context.Context, cfg Config) (*Active, error) {
+// State is the active key and any key already staged for the next rotation.
+type State struct {
+	Active        *Active
+	StagedKESVKey []byte
+}
+
+// KeyState returns the key state reported by the profile. A staged key is
+// retained by Bursa until it is installed or explicitly replaced, so callers
+// can retry an exact-key authorization without generating a different key.
+func KeyState(ctx context.Context, cfg Config) (*State, error) {
 	r, err := cfg.do(ctx, command{Command: cmdInfo, Profile: cfg.Profile})
 	if err != nil {
 		return nil, err
@@ -181,11 +187,32 @@ func ActiveKey(ctx context.Context, cfg Config) (*Active, error) {
 	if r.Info == nil || !r.Info.HasActiveKey {
 		return nil, errors.New("agent reports no active key")
 	}
-	return &Active{
-		KESVKey:     r.Info.ActiveKESVKey,
-		IssueNumber: r.Info.ActiveIssueNumber,
-		OpCert:      r.Info.ActiveOpCert,
+	if len(r.Info.StagedKESVKey) != 0 &&
+		len(r.Info.StagedKESVKey) != kesVKeySize {
+		return nil, fmt.Errorf(
+			"agent returned a %d-byte staged kes vkey, want %d",
+			len(r.Info.StagedKESVKey), kesVKeySize,
+		)
+	}
+	return &State{
+		Active: &Active{
+			KESVKey:     r.Info.ActiveKESVKey,
+			IssueNumber: r.Info.ActiveIssueNumber,
+			OpCert:      r.Info.ActiveOpCert,
+		},
+		StagedKESVKey: r.Info.StagedKESVKey,
 	}, nil
+}
+
+// ActiveKey returns the key the profile serves, from the agent's info
+// command. It is how a rotation interrupted after install-key finds the
+// opcert the agent already serves.
+func ActiveKey(ctx context.Context, cfg Config) (*Active, error) {
+	state, err := KeyState(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return state.Active, nil
 }
 
 // do opens a control session, sends cmd and returns an accepted reply.
