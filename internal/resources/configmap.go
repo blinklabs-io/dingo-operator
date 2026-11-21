@@ -25,8 +25,9 @@ import (
 func BuildTopologyConfigMap(
 	dn *dingov1alpha1.DingoNode,
 	topologyJSON string,
+	peerSnapshot []byte,
 ) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
+	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      TopologyConfigMapName(dn),
 			Namespace: dn.Namespace,
@@ -36,4 +37,10 @@ func BuildTopologyConfigMap(
 			topologyFileName: topologyJSON,
 		},
 	}
+	if peerSnapshot != nil {
+		cm.BinaryData = map[string][]byte{
+			"peer-snapshot.json": peerSnapshot,
+		}
+	}
+	return cm
 }

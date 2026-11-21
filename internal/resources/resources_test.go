@@ -90,6 +90,15 @@ func TestBuildEnv(t *testing.T) {
 		assert.NotContains(t, env, "CARDANO_BLOCK_PRODUCER")
 	})
 
+	for _, network := range []string{"musashi", "dijkstra"} {
+		t.Run(network+" renders the named network", func(t *testing.T) {
+			dn := relayNode()
+			dn.Spec.Network = network
+			env := envMap(dn, RenderOptions{})
+			assert.Equal(t, network, env["CARDANO_NETWORK"])
+		})
+	}
+
 	t.Run("block producer sets key paths and kes params", func(t *testing.T) {
 		env := envMap(bpNode(), RenderOptions{MountKeys: true})
 		assert.Equal(t, "true", env["CARDANO_BLOCK_PRODUCER"])

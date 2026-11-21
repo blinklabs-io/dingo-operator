@@ -39,8 +39,8 @@ import (
 // The keys Secret is deliberately not mapped. Watching it would need a Secret
 // informer, and list/watch on Secrets, which this operator must not have.
 
-// dingoNodesForConfigMap enqueues every DingoNode whose configRef names the
-// ConfigMap.
+// dingoNodesForConfigMap enqueues every DingoNode whose configRef or peer
+// snapshot reference names the ConfigMap.
 func (r *DingoNodeReconciler) dingoNodesForConfigMap(
 	ctx context.Context,
 	obj client.Object,
@@ -48,7 +48,8 @@ func (r *DingoNodeReconciler) dingoNodesForConfigMap(
 	return r.referrers(ctx, obj.GetNamespace(), func(
 		dn *dingov1alpha1.DingoNode,
 	) bool {
-		return dn.Spec.ConfigRef == obj.GetName()
+		return dn.Spec.ConfigRef == obj.GetName() ||
+			dn.Spec.Topology.PeerSnapshotRef == obj.GetName()
 	})
 }
 

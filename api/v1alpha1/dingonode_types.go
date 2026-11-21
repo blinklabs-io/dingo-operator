@@ -168,10 +168,13 @@ type PersistenceSpec struct {
 
 // MithrilSpec configures fast bootstrap via "dingo mithril sync".
 type MithrilSpec struct {
-	// +kubebuilder:default=true
+	// Enabled selects Mithril bootstrap. When unset, bootstrap is enabled only
+	// for networks with a built-in aggregator (mainnet, preprod and preview), or
+	// when aggregatorUrl is set explicitly.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
-	// AggregatorURL is auto-detected from the network when empty.
+	// AggregatorURL is auto-detected from mainnet, preprod and preview when
+	// empty. Setting it explicitly also enables Mithril when enabled is unset.
 	// +optional
 	AggregatorURL string `json:"aggregatorUrl,omitempty"`
 	// +kubebuilder:default=true
@@ -233,6 +236,14 @@ type TopologySpec struct {
 	PublicRoots []AccessPoint `json:"publicRoots,omitempty"`
 	// +optional
 	UseLedgerAfterSlot *int64 `json:"useLedgerAfterSlot,omitempty"`
+	// PeerSnapshotRef names a ConfigMap in this DingoNode's namespace whose
+	// peer-snapshot.json key holds a cardano-node peer snapshot. The operator
+	// copies the snapshot beside topology.json and points Dingo at it, allowing
+	// ledger peers to seed a node before its local ledger is available.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	PeerSnapshotRef string `json:"peerSnapshotRef,omitempty"`
 }
 
 // KeysSpec references the block-producer signing key material.
@@ -729,8 +740,8 @@ type DingoNodeSpec struct {
 	// transition rule applies only on update; creation is unaffected.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="role is immutable"
 	Role Role `json:"role"`
-	// Network is a named Cardano network (mainnet, preprod, preview, devnet) or
-	// "custom" (with networkMagic).
+	// Network is a named Cardano network (mainnet, preprod, preview, devnet,
+	// musashi or dijkstra) or "custom" (with networkMagic).
 	// +kubebuilder:validation:MinLength=1
 	Network string `json:"network"`
 	// NetworkMagic is required when network is "custom". It is a 32-bit unsigned
@@ -745,7 +756,8 @@ type DingoNodeSpec struct {
 	// referenced genesis files (byron/shelley/alonzo/conway-genesis.json), all as
 	// sibling keys. When set, the operator mounts it read-only and points Dingo at
 	// it via CARDANO_CONFIG. Required for custom networks whose genesis is not
-	// built into Dingo; leave empty for named networks (mainnet/preprod/preview).
+	// built into Dingo; leave empty for named networks (mainnet, preprod, preview,
+	// musashi and dijkstra).
 	// Must be a valid ConfigMap name (RFC 1123 DNS subdomain) so an invalid
 	// reference is rejected at admission rather than failing pod creation later.
 	// +kubebuilder:validation:MaxLength=253

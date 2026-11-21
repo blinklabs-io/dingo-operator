@@ -72,6 +72,8 @@ func requestNames(reqs []ctrl.Request) []string {
 }
 
 func TestReferencedObjectMappers(t *testing.T) {
+	snapshotNode := watchNode("a", "uses-snapshot", "")
+	snapshotNode.Spec.Topology.PeerSnapshotRef = "cfg"
 	nodes := []client.Object{
 		watchNode("a", "uses-cfg", "cfg"),
 		watchNode("a", "also-cfg", "cfg", "relay"),
@@ -80,6 +82,7 @@ func TestReferencedObjectMappers(t *testing.T) {
 		watchNode("a", "bp", "", "relay"),
 		watchNode("a", "self", "", "self"),
 		watchNode("b", "uses-cfg", "cfg", "relay"),
+		snapshotNode,
 	}
 	c := fake.NewClientBuilder().WithScheme(watchScheme(t)).
 		WithObjects(nodes...).Build()
@@ -111,7 +114,7 @@ func TestReferencedObjectMappers(t *testing.T) {
 			got: r.dingoNodesForConfigMap(ctx, &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "a"},
 			}),
-			want: []string{"a/also-cfg", "a/uses-cfg"},
+			want: []string{"a/also-cfg", "a/uses-cfg", "a/uses-snapshot"},
 		},
 		{
 			name: "unreferenced ConfigMap maps to nothing",

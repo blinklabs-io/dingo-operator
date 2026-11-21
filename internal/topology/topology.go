@@ -28,6 +28,10 @@ import (
 // known (a relayRefs entry with no DingoNode of that name).
 const defaultRelayPort = 3001
 
+// PeerSnapshotFileName is the fixed key and mounted filename of a configured
+// peer snapshot.
+const PeerSnapshotFileName = "peer-snapshot.json"
+
 // accessPoint is a single peer address.
 type accessPoint struct {
 	Address string `json:"address"`
@@ -53,6 +57,7 @@ type publicRoot struct {
 type document struct {
 	BootstrapPeers     []accessPoint `json:"bootstrapPeers"`
 	LocalRoots         []localRoot   `json:"localRoots"`
+	PeerSnapshotFile   string        `json:"peerSnapshotFile,omitempty"`
 	PublicRoots        []publicRoot  `json:"publicRoots"`
 	UseLedgerAfterSlot *int64        `json:"useLedgerAfterSlot,omitempty"`
 }
@@ -98,6 +103,9 @@ func Render(
 		LocalRoots:         []localRoot{},
 		PublicRoots:        []publicRoot{},
 		UseLedgerAfterSlot: spec.UseLedgerAfterSlot,
+	}
+	if spec.PeerSnapshotRef != "" {
+		doc.PeerSnapshotFile = PeerSnapshotFileName
 	}
 
 	// In-cluster peers form a single trusted local root group.
@@ -148,6 +156,7 @@ func Render(
 	hasContent := len(doc.LocalRoots) > 0 ||
 		len(doc.BootstrapPeers) > 0 ||
 		len(doc.PublicRoots) > 0 ||
+		doc.PeerSnapshotFile != "" ||
 		doc.UseLedgerAfterSlot != nil
 
 	out, err := json.MarshalIndent(doc, "", "  ")

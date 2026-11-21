@@ -472,6 +472,17 @@ See [CLAUDE.md](CLAUDE.md) for the design summary, rotation/HA models, delivery
 roadmap, and the upstream issues that unlock full automation, and
 [AGENTS.md](AGENTS.md) for coding and review standards.
 
+Named networks are `mainnet`, `preprod`, `preview`, `devnet`, `musashi` and
+`dijkstra`. Mithril bootstrap defaults on only where Dingo has a built-in
+aggregator (`mainnet`, `preprod` and `preview`). Set `mithril.aggregatorUrl` to
+use another aggregator; an explicit `mithril.enabled: false` always disables
+bootstrap.
+
+For a node syncing without Mithril, `topology.peerSnapshotRef` can name a
+ConfigMap in the same namespace containing `peer-snapshot.json`. The operator
+copies that file beside the rendered `topology.json`, includes its relative
+path in the topology, and rolls the pod when the snapshot changes.
+
 ## Development
 
 ```sh

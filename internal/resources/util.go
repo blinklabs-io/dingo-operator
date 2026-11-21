@@ -39,9 +39,27 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// mithrilEnabled reports whether Mithril bootstrap is enabled (default true).
-func mithrilEnabled(dn *dingov1alpha1.DingoNode) bool {
-	return dn.Spec.Mithril.Enabled == nil || *dn.Spec.Mithril.Enabled
+// HasDefaultMithrilAggregator reports whether Dingo knows an aggregator for
+// the named network without an explicit URL.
+func HasDefaultMithrilAggregator(network string) bool {
+	switch network {
+	case "mainnet", "preprod", "preview":
+		return true
+	default:
+		return false
+	}
+}
+
+// MithrilEnabled reports whether Mithril bootstrap should be rendered.
+// An explicit enabled value wins. Otherwise an explicit aggregator enables
+// bootstrap on any network, and only networks with a built-in aggregator use
+// the implicit default.
+func MithrilEnabled(dn *dingov1alpha1.DingoNode) bool {
+	if dn.Spec.Mithril.Enabled != nil {
+		return *dn.Spec.Mithril.Enabled
+	}
+	return dn.Spec.Mithril.AggregatorURL != "" ||
+		HasDefaultMithrilAggregator(dn.Spec.Network)
 }
 
 const prepareBlockProducerKeysScript = `set -eu
@@ -203,7 +221,7 @@ func initContainers(
 			Resources:       dn.Spec.Resources,
 		})
 	}
-	if !mithrilEnabled(dn) {
+	if !MithrilEnabled(dn) {
 		return containers
 	}
 	// Completion is tracked by an explicit marker pair, not by the presence of

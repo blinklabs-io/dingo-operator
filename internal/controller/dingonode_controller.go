@@ -547,6 +547,10 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if err != nil {
 		return err
 	}
+	peerSnapshot, err := r.peerSnapshot(ctx, dn)
+	if err != nil {
+		return err
+	}
 	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace, peerPorts)
 	if err != nil {
 		return err
@@ -559,7 +563,11 @@ func (r *DingoNodeReconciler) reconcileResources(
 		PreStopSleep: r.PreStopSleep,
 	}
 	if hasTopo {
-		opts.TopologyChecksum = checksum(topoJSON)
+		data := map[string][]byte{"topology.json": []byte(topoJSON)}
+		if peerSnapshot != nil {
+			data[topology.PeerSnapshotFileName] = peerSnapshot
+		}
+		opts.TopologyChecksum = checksumData(data)
 	}
 	// Claim templates are immutable: a new StatefulSet takes the name of
 	// retained claims; upsertStatefulSet keeps an existing one's name.
@@ -858,7 +866,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 		return fmt.Errorf("apply service: %w", err)
 	}
 	if hasTopo {
-		if err := r.upsertConfigMap(ctx, dn, topoJSON); err != nil {
+		if err := r.upsertConfigMap(ctx, dn, topoJSON, peerSnapshot); err != nil {
 			return fmt.Errorf("apply topology configmap: %w", err)
 		}
 	}
@@ -899,6 +907,35 @@ func (r *DingoNodeReconciler) reconcileResources(
 		}
 	}
 	return nil
+}
+
+// peerSnapshot reads the configured snapshot before any child resources are
+// changed. A missing ConfigMap or key is an error so Dingo is never rolled onto
+// a topology that names a file the pod cannot mount.
+func (r *DingoNodeReconciler) peerSnapshot(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) ([]byte, error) {
+	name := dn.Spec.Topology.PeerSnapshotRef
+	if name == "" {
+		return nil, nil
+	}
+	cm := &corev1.ConfigMap{}
+	key := types.NamespacedName{Name: name, Namespace: dn.Namespace}
+	if err := r.Get(ctx, key, cm); err != nil {
+		return nil, fmt.Errorf("read peer snapshot ConfigMap %q: %w", name, err)
+	}
+	if data, ok := cm.BinaryData[topology.PeerSnapshotFileName]; ok {
+		return data, nil
+	}
+	if data, ok := cm.Data[topology.PeerSnapshotFileName]; ok {
+		return []byte(data), nil
+	}
+	return nil, fmt.Errorf(
+		"peer snapshot ConfigMap %q has no %q key",
+		name,
+		topology.PeerSnapshotFileName,
+	)
 }
 
 // rejectKeys records that the delivered key bundle was refused: a log line, a

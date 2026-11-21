@@ -88,4 +88,17 @@ func TestRender(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, hasContent)
 	})
+
+	t.Run("peer snapshot renders its mounted relative path", func(t *testing.T) {
+		dn := newNode(dingov1alpha1.TopologySpec{
+			PeerSnapshotRef: "ledger-peers",
+		})
+		out, hasContent, err := Render(dn, "ns", nil)
+		require.NoError(t, err)
+		assert.True(t, hasContent)
+
+		var doc document
+		require.NoError(t, json.Unmarshal([]byte(out), &doc))
+		assert.Equal(t, PeerSnapshotFileName, doc.PeerSnapshotFile)
+	})
 }
