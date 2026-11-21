@@ -857,6 +857,12 @@ func BuildStatefulSet(
 			PodManagementPolicy: appsv1.OrderedReadyPodManagement,
 			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				// A nil RollingUpdate is not defaulted when Type is set, and
+				// the StatefulSet controller then recreates ordinals below
+				// CurrentReplicas from the current revision.
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: new(int32(0)),
+				},
 			},
 			Selector: &metav1.LabelSelector{MatchLabels: SelectorLabels(dn)},
 			Template: corev1.PodTemplateSpec{

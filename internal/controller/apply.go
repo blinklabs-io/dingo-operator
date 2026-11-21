@@ -252,7 +252,11 @@ func (r *DingoNodeReconciler) replaceStaleUnreadyPod(
 	); err != nil {
 		return fmt.Errorf("read statefulset: %w", err)
 	}
-	if sts.Status.UpdateRevision == "" {
+	// Until the StatefulSet controller observes the applied generation,
+	// UpdateRevision can predate a template change that is already creating
+	// pods, so a pod from the new template would read as stale.
+	if sts.Status.UpdateRevision == "" ||
+		sts.Status.ObservedGeneration < sts.Generation {
 		return nil
 	}
 
@@ -275,13 +279,17 @@ func (r *DingoNodeReconciler) replaceStaleUnreadyPod(
 			continue
 		}
 		uid := pod.UID
+		// The resourceVersion precondition rejects the delete when the pod
+		// changed since the list, such as becoming Ready.
+		resourceVersion := pod.ResourceVersion
 		if err := r.Delete(
 			ctx,
 			pod,
-			client.Preconditions{UID: &uid},
+			client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion},
 		); err != nil {
-			// The pod was already replaced, or was recreated since the list
-			// (a UID mismatch is a Conflict). Either way the nudge is done.
+			// The pod was already replaced, recreated, or changed since the
+			// list (a precondition mismatch is a Conflict). Either way the
+			// nudge is done.
 			if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 				return nil
 			}

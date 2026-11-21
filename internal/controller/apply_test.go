@@ -219,6 +219,7 @@ func staleRolloutFixture(
 	t *testing.T,
 	dn *dingov1alpha1.DingoNode,
 	delErr error,
+	observe ...func(*client.DeleteOptions),
 ) (*DingoNodeReconciler, *dingov1alpha1.DingoNode, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -235,8 +236,15 @@ func staleRolloutFixture(
 				obj client.Object,
 				opts ...client.DeleteOption,
 			) error {
-				if _, ok := obj.(*corev1.Pod); ok && delErr != nil {
-					return delErr
+				if _, ok := obj.(*corev1.Pod); ok {
+					var o client.DeleteOptions
+					o.ApplyOptions(opts)
+					for _, f := range observe {
+						f(&o)
+					}
+					if delErr != nil {
+						return delErr
+					}
 				}
 				return cl.Delete(ctx, obj, opts...)
 			},
@@ -310,4 +318,71 @@ func TestReconcileResourcesToleratesStalePodUIDConflict(t *testing.T) {
 
 	require.NoError(t, c.Get(ctx, key, &networkingv1.NetworkPolicy{}),
 		"resources after the pod nudge must still be applied")
+}
+
+// A pod can become Ready between the list and the delete. The delete must
+// carry the listed resourceVersion so the API server rejects it then.
+func TestReconcileResourcesDeletesStalePodAtListedResourceVersion(
+	t *testing.T,
+) {
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay", Namespace: "relay-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+	var got *client.DeleteOptions
+	r, dn, c := staleRolloutFixture(t, dn, nil, func(o *client.DeleteOptions) {
+		got = o
+	})
+	ctx := context.Background()
+	pod := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{
+		Name: dn.Name + "-0", Namespace: dn.Namespace,
+	}, pod))
+
+	require.NoError(t, r.reconcileResources(ctx, dn))
+
+	require.NotNil(t, got, "the stale pod must be deleted")
+	require.NotNil(t, got.Preconditions)
+	require.NotNil(t, got.Preconditions.ResourceVersion)
+	assert.Equal(t, pod.ResourceVersion, *got.Preconditions.ResourceVersion)
+	require.NotNil(t, got.Preconditions.UID)
+	assert.Equal(t, pod.UID, *got.Preconditions.UID)
+}
+
+// While the StatefulSet controller has not observed the latest generation,
+// UpdateRevision can predate a template change, so no pod is stale yet.
+func TestReconcileResourcesKeepsPodsUntilGenerationObserved(t *testing.T) {
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay", Namespace: "relay-ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+	r, dn, c := staleRolloutFixture(t, dn, nil)
+	ctx := context.Background()
+	sts := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), sts))
+	sts.Generation = 2
+	require.NoError(t, c.Update(ctx, sts))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), sts))
+	require.Equal(t, int64(2), sts.Generation)
+	sts.Status.ObservedGeneration = 1
+	require.NoError(t, c.Status().Update(ctx, sts))
+	podKey := types.NamespacedName{
+		Name: dn.Name + "-0", Namespace: dn.Namespace,
+	}
+
+	require.NoError(t, r.reconcileResources(ctx, dn))
+	require.NoError(t, c.Get(ctx, podKey, &corev1.Pod{}),
+		"an unobserved generation must not classify pods as stale")
+
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), sts))
+	sts.Status.ObservedGeneration = sts.Generation
+	require.NoError(t, c.Status().Update(ctx, sts))
+	require.NoError(t, r.reconcileResources(ctx, dn))
+	assert.True(t, apierrors.IsNotFound(c.Get(ctx, podKey, &corev1.Pod{})))
 }
