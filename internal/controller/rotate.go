@@ -138,7 +138,10 @@ func (r *DingoNodeReconciler) autoRotate(
 		return
 	}
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{Name: bp.Keys.SecretRef, Namespace: dn.Namespace}
+	key := types.NamespacedName{
+		Name:      bp.Keys.SecretRef,
+		Namespace: dn.Namespace,
+	}
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
 		r.refuseIssue(ctx, dn, "KeysSecretUnavailable", err.Error())
 		return
@@ -209,8 +212,35 @@ func (r *DingoNodeReconciler) autoRotate(
 			return
 		}
 	} else {
-		kesEnv, cert, err := issueBundle(
-			ctx, issuer, chainCounter, kesPeriod,
+		var kesEnv []byte
+		if bp.Rotation.ColdSigner.Type == dingov1alpha1.ColdSignerBursa {
+			kesEnv = secret.Data[keyFilePendingKES]
+		}
+		var vkey []byte
+		if len(kesEnv) == 0 {
+			kesEnv, vkey, err = generateKESKey()
+			if err != nil {
+				fail("PendingKESKeyFailed", err.Error())
+				return
+			}
+			if bp.Rotation.ColdSigner.Type == dingov1alpha1.ColdSignerBursa {
+				pending := secret.DeepCopy()
+				pending.Data[keyFilePendingKES] = kesEnv
+				if err := r.Update(ctx, pending); err != nil {
+					fail("SecretUpdateFailed", err.Error())
+					return
+				}
+				secret = pending
+			}
+		} else {
+			vkey, err = pendingKESVKey(kesEnv)
+		}
+		if err != nil {
+			fail("PendingKESKeyFailed", err.Error())
+			return
+		}
+		cert, err := issueBundle(
+			ctx, issuer, vkey, chainCounter, kesPeriod,
 		)
 		if err != nil {
 			fail("IssueFailed", err.Error())
@@ -218,6 +248,7 @@ func (r *DingoNodeReconciler) autoRotate(
 		}
 		candidate = secret.DeepCopy()
 		candidate.Data[keyFileKES] = kesEnv
+		delete(candidate.Data, keyFilePendingKES)
 		candidate.Data[certFile] = cert
 		if len(candidate.Data[keyFileNodeCert]) > 0 {
 			// opCertFile accepted both names only because they were identical.
@@ -272,7 +303,9 @@ func issueOpCert(
 		ctx, kesVkey, chainCounter, kesPeriod,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf(
+			"sign opcert for KES verification key %x: %w", kesVkey, err,
+		)
 	}
 	oc := &ledger.OpCert{
 		KesVkey:       kesVkey,
@@ -286,13 +319,9 @@ func issueOpCert(
 	return oc, res.ColdVkey, nil
 }
 
-// issueBundle generates a KES key and has issuer sign an opcert for it. It
-// returns the kes.skey and opcert envelopes.
-func issueBundle(
-	ctx context.Context,
-	issuer coldsigner.Issuer,
-	chainCounter, kesPeriod uint64,
-) ([]byte, []byte, error) {
+// generateKESKey returns a new KES signing-key envelope and its verification
+// key.
+func generateKESKey() ([]byte, []byte, error) {
 	seed := make([]byte, kes.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, nil, fmt.Errorf("read kes seed: %w", err)
@@ -303,17 +332,6 @@ func issueBundle(
 		return nil, nil, fmt.Errorf("generate kes key: %w", err)
 	}
 	defer sk.Zeroize()
-
-	oc, coldVkey, err := issueOpCert(
-		ctx, issuer, vkey, chainCounter, kesPeriod,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	cert, err := opcert.Encode(oc, coldVkey)
-	if err != nil {
-		return nil, nil, err
-	}
 	payload, err := cbor.Encode(sk.Data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode kes key: %w", err)
@@ -326,7 +344,45 @@ func issueBundle(
 	if err != nil {
 		return nil, nil, err
 	}
-	return kesEnv, cert, nil
+	return kesEnv, vkey, nil
+}
+
+// pendingKESVKey validates a saved pending KES key and derives its public key.
+func pendingKESVKey(kesEnv []byte) ([]byte, error) {
+	raw, err := checkKeyEnvelope(
+		kesEnv, keyFilePendingKES, kesEnvelopeTypePrefix,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != kes.CardanoKesSecretKeySize {
+		return nil, fmt.Errorf(
+			"%s holds %d bytes, expected %d", keyFilePendingKES,
+			len(raw), kes.CardanoKesSecretKeySize,
+		)
+	}
+	sk := &kes.SecretKey{Depth: kes.CardanoKesDepth, Data: raw}
+	return append([]byte(nil), kes.PublicKey(sk)...), nil
+}
+
+// issueBundle has issuer sign an opcert for vkey and returns its envelope.
+func issueBundle(
+	ctx context.Context,
+	issuer coldsigner.Issuer,
+	vkey []byte,
+	chainCounter, kesPeriod uint64,
+) ([]byte, error) {
+	oc, coldVkey, err := issueOpCert(
+		ctx, issuer, vkey, chainCounter, kesPeriod,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := opcert.Encode(oc, coldVkey)
+	if err != nil {
+		return nil, err
+	}
+	return cert, nil
 }
 
 // issueThroughAgent rotates a key held by a signing agent. The agent generates
@@ -358,8 +414,12 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	// opcert it issued. Publish that one: issuing another at the same counter
 	// would not be offered to a node that already took the first. Without an
 	// answer from info that cannot be ruled out, so the attempt fails.
+	state, err := kesagent.KeyState(ctx, cfg)
+	if err != nil {
+		return nil, nil, "AgentInfoFailed", err
+	}
 	adopted, err := r.adoptServedOpCert(
-		ctx, cfg, secret, certFile, chainCounter,
+		state.Active, secret, certFile, chainCounter,
 		kesPeriod, maxEvolutions, renewBefore,
 	)
 	if err != nil {
@@ -368,9 +428,16 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	if adopted != nil {
 		return adopted, nil, "", nil
 	}
-	vkey, err := kesagent.GenStagedKey(ctx, cfg)
-	if err != nil {
-		return nil, nil, "AgentGenStagedKeyFailed", err
+	var vkey []byte
+	if dn.Spec.BlockProducer.Rotation.ColdSigner.Type ==
+		dingov1alpha1.ColdSignerBursa {
+		vkey = state.StagedKESVKey
+	}
+	if len(vkey) == 0 {
+		vkey, err = kesagent.GenStagedKey(ctx, cfg)
+		if err != nil {
+			return nil, nil, "AgentGenStagedKeyFailed", err
+		}
 	}
 	oc, coldVkey, err := issueOpCert(ctx, issuer, vkey, chainCounter, kesPeriod)
 	if err != nil {
@@ -404,17 +471,12 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 // either: it would stay due, so a fresh one is issued instead. The agent is
 // only read.
 func (r *DingoNodeReconciler) adoptServedOpCert(
-	ctx context.Context,
-	cfg kesagent.Config,
+	active *kesagent.Active,
 	secret *corev1.Secret,
 	certFile string,
 	chainCounter, kesPeriod uint64,
 	maxEvolutions, renewBefore int64,
 ) (*corev1.Secret, error) {
-	active, err := kesagent.ActiveKey(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
 	if active.IssueNumber != chainCounter+1 {
 		return nil, nil
 	}
@@ -493,7 +555,10 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 		return false
 	}
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{Name: bp.Keys.SecretRef, Namespace: dn.Namespace}
+	key := types.NamespacedName{
+		Name:      bp.Keys.SecretRef,
+		Namespace: dn.Namespace,
+	}
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
 		return false
 	}

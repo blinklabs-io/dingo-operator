@@ -51,6 +51,9 @@ func TestStaticKeysChecksum(t *testing.T) {
 	}
 	assert.Equal(t, sum, staticKeysChecksum(rotated),
 		"a new KES key and opcert leave the static checksum unchanged")
+	rotated[keyFilePendingKES] = []byte("pending-kes")
+	assert.Equal(t, sum, staticKeysChecksum(rotated),
+		"a pending KES key leaves the static checksum unchanged")
 
 	newVRF := map[string][]byte{
 		"vrf.skey":    []byte("vrf-2"),

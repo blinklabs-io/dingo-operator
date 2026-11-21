@@ -41,9 +41,13 @@ import (
 // File names the operator mounts into the node from the keys Secret. They match
 // the paths passed to Dingo in internal/resources (CARDANO_SHELLEY_*_KEY).
 const (
-	keyFileKES    = "kes.skey"
-	keyFileVRF    = "vrf.skey"
-	keyFileOpCert = "opcert.cert"
+	keyFileKES = "kes.skey"
+	// keyFilePendingKES holds an Auto rotation key while its exact public key
+	// is being granted at the cold signer. It is never mounted as the node's
+	// active KES key.
+	keyFilePendingKES = "kes.pending.skey"
+	keyFileVRF        = "vrf.skey"
+	keyFileOpCert     = "opcert.cert"
 	// keyFileVote is optional: the Leios BLS vote signing key. A Secret
 	// without it stays valid.
 	keyFileVote = resources.VoteKeyFile
