@@ -19,16 +19,111 @@ import (
 	"errors"
 	"testing"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestReconcileResourcesReplacesStaleUnreadyPod(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+
+	dn := &dingov1alpha1.DingoNode{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: dingov1alpha1.GroupVersion.String(),
+			Kind:       "DingoNode",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "relay",
+			Namespace: "relay-ns",
+			UID:       types.UID("node-uid"),
+		},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+	sts := resources.BuildStatefulSet(
+		dn,
+		resources.RenderOptions{Replicas: 1},
+	)
+	sts.CreationTimestamp = metav1.Now()
+	sts.UID = types.UID("statefulset-uid")
+	sts.Status.CurrentRevision = "old-revision"
+	sts.Status.UpdateRevision = "new-revision"
+	require.NoError(t, ctrl.SetControllerReference(dn, sts, scheme))
+
+	pod := func(
+		name, revision string,
+		ready bool,
+		ownerUID types.UID,
+	) *corev1.Pod {
+		readyStatus := corev1.ConditionFalse
+		if ready {
+			readyStatus = corev1.ConditionTrue
+		}
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: dn.Namespace,
+				UID:       types.UID(name + "-uid"),
+				Labels: map[string]string{
+					resources.NodeLabel:             dn.Name,
+					appsv1.StatefulSetRevisionLabel: revision,
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: appsv1.SchemeGroupVersion.String(),
+					Kind:       "StatefulSet",
+					Name:       sts.Name,
+					UID:        ownerUID,
+					Controller: new(true),
+				}},
+			},
+			Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
+				Type:   corev1.PodReady,
+				Status: readyStatus,
+			}}},
+		}
+	}
+	stale := pod("relay-0", "old-revision", false, sts.UID)
+	ready := pod("relay-1", "old-revision", true, sts.UID)
+	current := pod("relay-2", "new-revision", false, sts.UID)
+	foreign := pod("relay-3", "old-revision", false, types.UID("other-uid"))
+	unversioned := pod("relay-4", "", false, sts.UID)
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&appsv1.StatefulSet{}).
+		WithObjects(sts, stale, ready, current, foreign, unversioned).
+		Build()
+
+	require.NoError(
+		t,
+		reconcilerFor(c).reconcileResources(context.Background(), dn),
+	)
+	assert.True(t, apierrors.IsNotFound(c.Get(
+		context.Background(), client.ObjectKeyFromObject(stale), &corev1.Pod{},
+	)))
+	for _, kept := range []*corev1.Pod{ready, current, foreign, unversioned} {
+		require.NoError(t, c.Get(
+			context.Background(),
+			client.ObjectKeyFromObject(kept),
+			&corev1.Pod{},
+		))
+	}
+}
 
 // conflictErr is the error the API server returns when the submitted
 // resourceVersion is stale, which is what the manager's cache can hand a
