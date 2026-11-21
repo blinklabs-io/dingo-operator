@@ -406,6 +406,12 @@ func TestAutoRotateReusesBursaGrantedKey(t *testing.T) {
 	require.NotEmpty(t, pending.Data[keyFilePendingKES])
 	assert.Equal(t, staticKeysChecksum(pending.Data),
 		staticKeysChecksum(mapWithout(pending.Data, keyFilePendingKES)))
+	assert.Equal(t,
+		keysChecksum(&corev1.Secret{Data: pending.Data}),
+		keysChecksum(&corev1.Secret{
+			Data: mapWithout(pending.Data, keyFilePendingKES),
+		}),
+		"a retained pending key must not change the rollout checksum")
 	cond := f.issued(t)
 	require.NotNil(t, cond)
 	assert.Contains(t, cond.Message, hex.EncodeToString(first))
