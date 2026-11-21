@@ -481,7 +481,9 @@ bootstrap.
 For a node syncing without Mithril, `topology.peerSnapshotRef` can name a
 ConfigMap in the same namespace containing `peer-snapshot.json`. The operator
 copies that file beside the rendered `topology.json`, includes its relative
-path in the topology, and rolls the pod when the snapshot changes.
+path in the topology, and rolls the pod when the snapshot changes. While the
+ConfigMap or its key is missing, nothing rolls: the node keeps running, its KES
+status keeps updating, and `Degraded` reports `PeerSnapshotUnavailable`.
 
 ## Development
 

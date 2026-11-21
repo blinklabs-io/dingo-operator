@@ -348,6 +348,24 @@ func (r *DingoNodeReconciler) Reconcile(
 				return ctrl.Result{}, errors.Join(err, serr)
 			}
 		}
+		if _, ok := errors.AsType[*peerSnapshotError](err); ok {
+			// Nothing was applied, so the node keeps running as it was. Keep
+			// observing it: its KES window closes whatever the snapshot's state.
+			if serr := r.reconcileStatus(ctx, dn); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+			meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+				Type:               condDegraded,
+				Status:             metav1.ConditionTrue,
+				Reason:             reasonPeerSnapshotUnavailable,
+				Message:            err.Error(),
+				ObservedGeneration: dn.Generation,
+			})
+			dn.Status.Phase = "Degraded"
+			if serr := r.updateStatus(ctx, dn); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -499,6 +517,18 @@ func (r *DingoNodeReconciler) liveConfigChecksum(
 // satisfy.
 const reasonSelectorMismatch = "StatefulSetSelectorMismatch"
 
+// reasonPeerSnapshotUnavailable is the condition reason for a node whose
+// peerSnapshotRef names a missing ConfigMap or key.
+const reasonPeerSnapshotUnavailable = "PeerSnapshotUnavailable"
+
+// peerSnapshotError marks a peer snapshot that cannot be read. No child
+// resource has been changed when it is returned, so the rollout is blocked
+// while the running node is still observed.
+type peerSnapshotError struct{ err error }
+
+func (e *peerSnapshotError) Error() string { return e.err.Error() }
+func (e *peerSnapshotError) Unwrap() error { return e.err }
+
 // selectorMismatchError marks the refusal from checkStatefulSetSelector so
 // Reconcile can report it without reclassifying other apply failures.
 type selectorMismatchError struct{ err error }
@@ -549,7 +579,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 	}
 	peerSnapshot, err := r.peerSnapshot(ctx, dn)
 	if err != nil {
-		return err
+		return &peerSnapshotError{err: err}
 	}
 	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace, peerPorts)
 	if err != nil {

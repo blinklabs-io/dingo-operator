@@ -2324,3 +2324,47 @@ func TestUpsertStatefulSetUsesFetchedClaimTemplate(t *testing.T) {
 	require.NoError(t, reconcilerFor(c).reconcileResources(context.Background(), dn))
 	assertDataVolume(t, c, "data")
 }
+
+type countingFetcher struct{ calls int }
+
+func (f *countingFetcher) Fetch(
+	context.Context,
+	string,
+) (*forgestatus.Status, error) {
+	f.calls++
+	return nil, errors.New("unused")
+}
+
+// A peer snapshot that cannot be read blocks the rollout but must not stop the
+// running producer's KES observation, nor hide the cause from status.
+func TestReconcileObservesKESWhilePeerSnapshotUnreadable(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
+	dn := blockProducerNode("bp", "snap-ns", "keys", "pool")
+	dn.Spec.Topology.PeerSnapshotRef = "missing-snapshot"
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&dingov1alpha1.DingoNode{}).
+		WithObjects(dn).Build()
+	fetcher := &countingFetcher{}
+	r := reconcilerFor(c)
+	r.ForgeStatus = fetcher
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(dn),
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing-snapshot")
+	assert.Positive(t, fetcher.calls, "KES must still be observed")
+	assert.True(t, apierrors.IsNotFound(c.Get(
+		ctx, client.ObjectKeyFromObject(dn), &appsv1.StatefulSet{},
+	)), "the rollout must stay blocked")
+	got := &dingov1alpha1.DingoNode{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), got))
+	degraded := meta.FindStatusCondition(got.Status.Conditions, condDegraded)
+	require.NotNil(t, degraded)
+	assert.Equal(t, reasonPeerSnapshotUnavailable, degraded.Reason)
+	assert.Contains(t, degraded.Message, "missing-snapshot")
+}
