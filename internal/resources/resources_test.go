@@ -1499,3 +1499,20 @@ func TestKeyPreparationStagesBLSKeyAsVoteKey(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildStatefulSetSetsExplicitZeroPartition(t *testing.T) {
+	dn := &dingov1alpha1.DingoNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "relay", Namespace: "ns"},
+		Spec: dingov1alpha1.DingoNodeSpec{
+			Role:    dingov1alpha1.RoleRelay,
+			Network: "preview",
+		},
+	}
+
+	sts := BuildStatefulSet(dn, RenderOptions{Replicas: 2})
+
+	require.NotNil(t, sts.Spec.UpdateStrategy.RollingUpdate,
+		"a nil RollingUpdate is not defaulted and recreates pods from the old revision")
+	require.NotNil(t, sts.Spec.UpdateStrategy.RollingUpdate.Partition)
+	assert.Equal(t, int32(0), *sts.Spec.UpdateStrategy.RollingUpdate.Partition)
+}

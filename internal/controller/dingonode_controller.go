@@ -200,7 +200,7 @@ type onChainAttempt struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
@@ -903,6 +903,14 @@ func (r *DingoNodeReconciler) reconcileResources(
 	held, err := r.upsertStatefulSet(ctx, dn, opts, keepTemplate)
 	if err != nil {
 		return fmt.Errorf("apply statefulset: %w", err)
+	}
+	// A withheld template that equals the live one still reports not held, but
+	// the replacement pod would mount the Secret that was refused, so no pod
+	// is replaced while the template is kept.
+	if !keepTemplate {
+		if err := r.replaceStaleUnreadyPod(ctx, dn); err != nil {
+			return fmt.Errorf("continue statefulset rollout: %w", err)
+		}
 	}
 	if held {
 		for _, t := range []string{condKeysValid, condDegraded} {

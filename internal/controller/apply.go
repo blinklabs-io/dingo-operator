@@ -239,6 +239,82 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 	), nil
 }
 
+// replaceStaleUnreadyPod advances an OrderedReady rollout past a pod that
+// cannot become Ready on its old template. It replaces at most one pod per
+// reconcile and leaves ready pods to the StatefulSet controller's ordering.
+func (r *DingoNodeReconciler) replaceStaleUnreadyPod(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) error {
+	sts := &appsv1.StatefulSet{}
+	if err := r.uncachedReader().Get(
+		ctx,
+		client.ObjectKeyFromObject(dn),
+		sts,
+	); err != nil {
+		return fmt.Errorf("read statefulset: %w", err)
+	}
+	// Until the StatefulSet controller observes the applied generation,
+	// UpdateRevision can predate a template change that is already creating
+	// pods, so a pod from the new template would read as stale.
+	if sts.Status.UpdateRevision == "" ||
+		sts.Status.ObservedGeneration < sts.Generation {
+		return nil
+	}
+
+	var pods corev1.PodList
+	if err := r.uncachedReader().List(
+		ctx,
+		&pods,
+		client.InNamespace(dn.Namespace),
+		client.MatchingLabels{resources.NodeLabel: dn.Name},
+	); err != nil {
+		return fmt.Errorf("list statefulset pods: %w", err)
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		revision := pod.Labels[appsv1.StatefulSetRevisionLabel]
+		if !pod.DeletionTimestamp.IsZero() ||
+			!metav1.IsControlledBy(pod, sts) ||
+			revision == "" || revision == sts.Status.UpdateRevision ||
+			podReady(pod) {
+			continue
+		}
+		uid := pod.UID
+		// The resourceVersion precondition rejects the delete when the pod
+		// changed since the list, such as becoming Ready.
+		resourceVersion := pod.ResourceVersion
+		if err := r.Delete(
+			ctx,
+			pod,
+			client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion},
+		); err != nil {
+			// The pod was already replaced, recreated, or changed since the
+			// list (a precondition mismatch is a Conflict). Either way the
+			// nudge is done.
+			if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+				return nil
+			}
+			return fmt.Errorf("replace stale unready pod %s: %w", pod.Name, err)
+		}
+		log.FromContext(ctx).Info(
+			"replacing stale unready pod",
+			"pod", client.ObjectKeyFromObject(pod),
+		)
+		return nil
+	}
+	return nil
+}
+
+func podReady(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
 // holdsStoppedLocalSigner reports whether a stopped StatefulSet must stay at
 // zero replicas: dn now signs through an agent, possibly for another pool, but
 // its template is held at a render that signs with a local KES key. The fence
