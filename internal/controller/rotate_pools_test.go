@@ -571,3 +571,60 @@ func TestForgetNodeIssueFailuresClearsItsPools(t *testing.T) {
 		assert.True(t, ok, k.String())
 	}
 }
+
+// hookIssuer runs before ahead of every signature, so a test can act while a
+// pool is being issued for.
+type hookIssuer struct {
+	inner  coldsigner.Issuer
+	before func()
+}
+
+func (h hookIssuer) SignOpCertFromChain(
+	ctx context.Context,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+) (*coldsigner.OpCertResult, error) {
+	h.before()
+	return h.inner.SignOpCertFromChain(ctx, kesVkey, chainCounter, kesPeriod)
+}
+
+// The on-chain counter's age is judged when each pool is issued for: a reading
+// that passes onChainCounterMaxAge while an earlier pool is issued is not used.
+func TestAutoRotatePoolsJudgesCounterAgePerPool(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	f.makeDue(t, f.pools[1])
+	first, second := 0, 1
+	if f.pools[1].id < f.pools[0].id {
+		first, second = 1, 0
+	}
+	now := time.Now()
+	f.r.Now = func() time.Time { return now }
+	read := metav1.NewTime(now.Add(-onChainCounterMaxAge + 30*time.Second))
+	for _, p := range f.pools {
+		poolStatus(f.dn, p.id).OnChainCounterAt = &read
+	}
+	signers := f.r.ColdSigner
+	f.r.ColdSigner = func(
+		ctx context.Context, n *dingov1alpha1.DingoNode,
+	) (coldsigner.Issuer, error) {
+		inner, err := signers(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		return hookIssuer{inner: inner, before: func() {
+			now = now.Add(time.Minute)
+		}}, nil
+	}
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, 1, f.issuers[first].calls)
+	assert.Zero(t, f.issuers[second].calls)
+	assert.Empty(t, f.commandsFor(f.pools[second].profile))
+	cond := meta.FindStatusCondition(f.dn.Status.Conditions, condOpCertIssued)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "OnChainCounterUnknown", cond.Reason)
+	assert.Contains(t, cond.Message, f.pools[second].id)
+}

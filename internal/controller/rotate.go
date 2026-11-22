@@ -187,7 +187,6 @@ func (r *DingoNodeReconciler) autoRotatePools(
 	dn *dingov1alpha1.DingoNode,
 ) {
 	bp := dn.Spec.BlockProducer
-	now := time.Now()
 	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
 
 	pools := slices.Clone(bp.Pools)
@@ -217,15 +216,17 @@ func (r *DingoNodeReconciler) autoRotatePools(
 			profile:   p.AgentProfile,
 			kes:       ps.KES,
 			validate: func(s *corev1.Secret) (*keyState, error) {
-				return validateBundle(s, poolChecks(dn, p, time.Now()))
+				return validateBundle(s, poolChecks(dn, p, r.now()))
 			},
 			failKey: types.NamespacedName{
 				Name: dn.Name + "/" + id, Namespace: dn.Namespace,
 			},
 			signerFor: &signer,
 		}
+		// Judged per pool: the agent and signer calls of an earlier pool
+		// can age the reading past onChainCounterMaxAge.
 		if ps.OnChainCounterAt != nil && ps.OnChainCounter >= 0 &&
-			now.Sub(ps.OnChainCounterAt.Time) <= onChainCounterMaxAge {
+			r.now().Sub(ps.OnChainCounterAt.Time) <= onChainCounterMaxAge {
 			t.chain, t.chainKnown = ps.OnChainCounter, true
 		}
 		// As for one pool, a lost Secret write is repaired whether or not
