@@ -3287,7 +3287,7 @@
           "type": "prometheus",
           "uid": "default"
         },
-        "definition": "label_values(dingo_build_info, cardano_network)",
+        "definition": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
         "hide": 0,
         "includeAll": true,
         "label": "Network",
@@ -3296,7 +3296,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(dingo_build_info, cardano_network)",
+          "query": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
           "refId": "network"
         },
         "refresh": 2,

@@ -170,7 +170,7 @@ sources**, the dashboards resolve it without renaming a UID.
 
 | Variable | Dashboards | Source | Purpose |
 |----------|-----------|--------|---------|
-| `$network` | all | `cardano_network` label | Selects the Cardano network. The operator's PodMonitor adds this label from `spec.network`. Multi-select, default All. |
+| `$network` | all | `cardano_network` label: `label_values(up{cardano_service="dingo"}, cardano_network)` on Operator and DingoNodes, `dingo_forge_credentials_valid` on Forging Health | Selects the Cardano network. The operator's PodMonitor adds this label and `cardano_service` from the pod to every scraped series, including `up`, so a network is listed before its first successful scrape. Multi-select, default All. |
 | `operator_namespace` | Operator | `label_values(controller_runtime_reconcile_total{controller="dingonode"}, namespace)` | The namespace the operator runs in. Selects its controller-runtime series. |
 | `controller` | Operator | `label_values(controller_runtime_reconcile_total{namespace="$operator_namespace"}, controller)` | The controller shown in the reconcile panels. |
 | `$pod` | Forging Health | `label_values(dingo_forge_credentials_valid{cardano_network=~"$network"}, pod)` | Selects block producers. Only pods that report `dingo_forge_credentials_valid` appear. |
