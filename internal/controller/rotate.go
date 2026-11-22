@@ -259,7 +259,43 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		}
 		parts = append(parts, fmt.Sprintf("pool %s: %s", o.id, o.message))
 	}
-	setIssueCondition(dn, status, reason, strings.Join(parts, "; "))
+	setIssueCondition(dn, status, reason, joinPoolMessages(parts))
+}
+
+// maxConditionMessage is the CRD's bound on a condition message. A longer one
+// fails the whole status update.
+const maxConditionMessage = 32768
+
+// joinPoolMessages joins per-pool messages for a condition within
+// maxConditionMessage. Trailing messages that do not fit are left out and
+// counted; each pool's Event carries its own.
+func joinPoolMessages(parts []string) string {
+	const sep = "; "
+	omitted := func(n int) string {
+		if n == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%s%d more left out, see the pool Events", sep, n)
+	}
+	var out string
+	for i, p := range parts {
+		next := p
+		if i > 0 {
+			next = out + sep + p
+		}
+		// The room kept for the count of what follows p is what the count
+		// needs if the next message is left out.
+		if len(next)+len(omitted(len(parts)-i-1)) <= maxConditionMessage {
+			out = next
+			continue
+		}
+		if i == 0 {
+			room := maxConditionMessage - len(omitted(len(parts)-1))
+			return strings.ToValidUTF8(p[:room], "") + omitted(len(parts)-1)
+		}
+		return out + omitted(len(parts)-i)
+	}
+	return out
 }
 
 // setKESObserved records the pools whose KES state the node reported in this

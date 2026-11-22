@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -763,4 +764,33 @@ func TestReconcilePoolKeysHoldsTemplateWhileInstallPending(t *testing.T) {
 			assert.Contains(t, pc.Data["dingo.yaml"], b.id)
 		})
 	}
+}
+
+// The OpCertIssued message stays within the CRD's 32768-character bound on a
+// condition message, which would otherwise fail the whole status update.
+func TestAutoRotatePoolsBoundsOpCertIssuedMessage(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	f.makeDue(t, f.pools[1])
+	first, second := f.pools[0], f.pools[1]
+	if second.id < first.id {
+		first, second = second, first
+	}
+	long := strings.Repeat("x", 20000)
+	for _, p := range f.pools {
+		f.r.recordIssueFailure(types.NamespacedName{
+			Name: f.dn.Name + "/" + p.id, Namespace: f.dn.Namespace,
+		}, "IssueFailed", long)
+	}
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := meta.FindStatusCondition(f.dn.Status.Conditions, condOpCertIssued)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "IssueFailed", cond.Reason)
+	assert.LessOrEqual(t, len(cond.Message), 32768)
+	assert.Contains(t, cond.Message, "pool "+first.id+": x")
+	assert.NotContains(t, cond.Message, second.id)
+	assert.Contains(t, cond.Message, "1 more")
 }
