@@ -555,8 +555,35 @@ func (h *harness) canGetDingoNodes(
 func (h *harness) applyDevNet(ctx context.Context) *devnet.DevNet {
 	h.t.Helper()
 
+	dn := h.applyDevNetConfig(ctx, genesisLeadTime)
+
+	data, err := dn.Keys.SecretData(0, 0)
+	require.NoError(h.t, err, "render keys secret data")
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keysSecretRef,
+			Namespace: h.namespace,
+		},
+		Data: data,
+	}
+	require.NoError(h.t, h.client.Create(ctx, secret),
+		"create keys Secret %s", keysSecretRef)
+
+	return dn
+}
+
+// applyDevNetConfig generates the devnet and writes only its config bundle,
+// for a test that supplies its own keys Secret. leadTime is how far in the
+// future systemStart is placed, which a test that has setup of its own to do
+// before the nodes start has to lengthen.
+func (h *harness) applyDevNetConfig(
+	ctx context.Context,
+	leadTime time.Duration,
+) *devnet.DevNet {
+	h.t.Helper()
+
 	// Generate requires a whole-second systemStart.
-	systemStart := time.Now().Add(genesisLeadTime).UTC().Truncate(time.Second)
+	systemStart := time.Now().Add(leadTime).UTC().Truncate(time.Second)
 	dn, err := devnet.Generate(rand.Reader, systemStart)
 	require.NoError(h.t, err, "generate devnet")
 	h.t.Logf("devnet generated: pool %s, systemStart %s",
@@ -571,19 +598,6 @@ func (h *harness) applyDevNet(ctx context.Context) *devnet.DevNet {
 	}
 	require.NoError(h.t, h.client.Create(ctx, cm),
 		"create config bundle ConfigMap %s", configMapName)
-
-	data, err := dn.Keys.SecretData(0, 0)
-	require.NoError(h.t, err, "render keys secret data")
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      keysSecretRef,
-			Namespace: h.namespace,
-		},
-		Data: data,
-	}
-	require.NoError(h.t, h.client.Create(ctx, secret),
-		"create keys Secret %s", keysSecretRef)
-
 	return dn
 }
 
@@ -733,8 +747,17 @@ func (h *harness) podKey() types.NamespacedName {
 // exists so callers can watch for the pod being replaced without treating the
 // gap between deletion and recreation as an error.
 func (h *harness) podOrNil(ctx context.Context) (*corev1.Pod, error) {
+	return h.namedPodOrNil(ctx, h.podKey().Name)
+}
+
+// namedPodOrNil is podOrNil for the pod called name.
+func (h *harness) namedPodOrNil(
+	ctx context.Context,
+	name string,
+) (*corev1.Pod, error) {
 	pod := &corev1.Pod{}
-	if err := h.client.Get(ctx, h.podKey(), pod); err != nil {
+	key := types.NamespacedName{Name: name, Namespace: h.namespace}
+	if err := h.client.Get(ctx, key, pod); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -749,11 +772,20 @@ func (h *harness) podOrNil(ctx context.Context) (*corev1.Pod, error) {
 // Fails the test: see the package comment.
 func (h *harness) waitPodReady(ctx context.Context) *corev1.Pod {
 	h.t.Helper()
+	return h.waitNamedPodReady(ctx, h.podKey().Name)
+}
+
+// waitNamedPodReady is waitPodReady for the pod called name.
+func (h *harness) waitNamedPodReady(
+	ctx context.Context,
+	name string,
+) *corev1.Pod {
+	h.t.Helper()
 	var ready corev1.Pod
 	h.waitFor(ctx, podReadyTimeout,
-		fmt.Sprintf("pod %s to become Ready", h.podKey().Name),
+		fmt.Sprintf("pod %s to become Ready", name),
 		func(ctx context.Context) (bool, error) {
-			pod, err := h.podOrNil(ctx)
+			pod, err := h.namedPodOrNil(ctx, name)
 			if err != nil || pod == nil {
 				return false, err
 			}
@@ -876,8 +908,30 @@ func (h *harness) waitForged(ctx context.Context, min int64) {
 func (h *harness) tryScrapeMetrics(
 	ctx context.Context,
 ) (*forgestatus.Status, error) {
-	var st *forgestatus.Status
-	err := h.withPortForward(ctx, metricsPort, func(local int) error {
+	return h.tryScrapeMetricsOf(ctx, h.podKey().Name)
+}
+
+// tryScrapeMetricsOf is tryScrapeMetrics for the pod called pod.
+func (h *harness) tryScrapeMetricsOf(
+	ctx context.Context,
+	pod string,
+) (*forgestatus.Status, error) {
+	body, err := h.metricsBody(ctx, pod, metricsPort)
+	if err != nil {
+		return nil, err
+	}
+	return forgestatus.Parse(strings.NewReader(body))
+}
+
+// metricsBody returns the Prometheus exposition served by port on the pod
+// called pod. Non-fataling.
+func (h *harness) metricsBody(
+	ctx context.Context,
+	pod string,
+	port int,
+) (string, error) {
+	var body string
+	err := h.withPortForwardTo(ctx, pod, port, func(local int) error {
 		url := fmt.Sprintf("http://127.0.0.1:%d/metrics", local)
 		req, err := http.NewRequestWithContext(
 			ctx, http.MethodGet, url, nil)
@@ -892,13 +946,14 @@ func (h *harness) tryScrapeMetrics(
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("metrics returned status %d", resp.StatusCode)
 		}
-		st, err = forgestatus.Parse(resp.Body)
-		return err
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", url, err)
+		}
+		body = string(b)
+		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return st, nil
+	return body, err
 }
 
 // withPortForward opens an ephemeral local port forwarded to remotePort on the
@@ -909,10 +964,20 @@ func (h *harness) withPortForward(
 	remotePort int,
 	fn func(local int) error,
 ) error {
+	return h.withPortForwardTo(ctx, h.podKey().Name, remotePort, fn)
+}
+
+// withPortForwardTo is withPortForward for the pod called pod.
+func (h *harness) withPortForwardTo(
+	ctx context.Context,
+	pod string,
+	remotePort int,
+	fn func(local int) error,
+) error {
 	req := h.clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Namespace(h.namespace).
-		Name(h.podKey().Name).
+		Name(pod).
 		SubResource("portforward")
 
 	transport, upgrader, err := spdy.RoundTripperFor(h.cfg)
@@ -949,7 +1014,7 @@ func (h *harness) withPortForward(
 	select {
 	case <-ready:
 	case err := <-forwardErr:
-		return fmt.Errorf("port-forward to %s: %w", h.podKey().Name, err)
+		return fmt.Errorf("port-forward to %s: %w", pod, err)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -969,19 +1034,25 @@ func (h *harness) withPortForward(
 // mistake a failed read for a log that genuinely lacks the line.
 // Non-fataling: safe inside any polling condition.
 func (h *harness) podLogs(ctx context.Context) (string, error) {
+	return h.logsOf(ctx, h.podKey().Name, nodeContainerName)
+}
+
+// logsOf is podLogs for a container of the pod called pod.
+func (h *harness) logsOf(
+	ctx context.Context,
+	pod, container string,
+) (string, error) {
 	stream, err := h.clientset.CoreV1().
 		Pods(h.namespace).
-		GetLogs(h.podKey().Name, &corev1.PodLogOptions{
-			Container: nodeContainerName,
-		}).
+		GetLogs(pod, &corev1.PodLogOptions{Container: container}).
 		Stream(ctx)
 	if err != nil {
-		return "", fmt.Errorf("open logs for %s: %w", h.podKey().Name, err)
+		return "", fmt.Errorf("open logs for %s: %w", pod, err)
 	}
 	defer func() { _ = stream.Close() }()
 	out, err := io.ReadAll(stream)
 	if err != nil {
-		return "", fmt.Errorf("read logs for %s: %w", h.podKey().Name, err)
+		return "", fmt.Errorf("read logs for %s: %w", pod, err)
 	}
 	return string(out), nil
 }

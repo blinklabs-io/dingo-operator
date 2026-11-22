@@ -104,6 +104,25 @@ func TestIssueOpCertHonoursCounterAndPeriod(t *testing.T) {
 	assert.Equal(t, uint64(17), oc.KesPeriod)
 }
 
+func TestIssueOpCertForCertifiesTheGivenKESKey(t *testing.T) {
+	t.Parallel()
+	pk, err := devnet.GeneratePoolKeys(rand.Reader)
+	require.NoError(t, err)
+	foreign := make([]byte, 32)
+	foreign[0] = 0x5a
+
+	env, err := pk.IssueOpCertFor(foreign, 2, 9)
+	require.NoError(t, err)
+
+	oc, coldVkey, err := opcert.Parse(env)
+	require.NoError(t, err)
+	assert.Equal(t, foreign, oc.KesVkey)
+	assert.NotEqual(t, pk.KESVKey, oc.KesVkey)
+	assert.Equal(t, uint64(2), oc.IssueNumber)
+	assert.Equal(t, uint64(9), oc.KesPeriod)
+	assert.NoError(t, ledger.VerifyOpCertSignature(oc, coldVkey))
+}
+
 func TestRotateKESChangesKeyButNotColdIdentity(t *testing.T) {
 	pk, err := devnet.GeneratePoolKeys(rand.Reader)
 	require.NoError(t, err)

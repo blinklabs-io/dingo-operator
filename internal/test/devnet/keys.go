@@ -156,8 +156,17 @@ func (p *PoolKeys) RotateKES(r io.Reader) error {
 // it as a cardano-cli text envelope. It verifies its own output before
 // returning, so a bad certificate can never reach a cluster by accident.
 func (p *PoolKeys) IssueOpCert(counter, startKESPeriod uint64) ([]byte, error) {
+	return p.IssueOpCertFor(p.KESVKey, counter, startKESPeriod)
+}
+
+// IssueOpCertFor is IssueOpCert for a KES verification key the pool does not
+// hold the signing half of, such as one a remote KES agent generated.
+func (p *PoolKeys) IssueOpCertFor(
+	kesVKey []byte,
+	counter, startKESPeriod uint64,
+) ([]byte, error) {
 	oc, err := ledger.CreateOpCert(
-		p.KESVKey, counter, startKESPeriod, p.ColdSKey,
+		kesVKey, counter, startKESPeriod, p.ColdSKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create opcert: %w", err)
