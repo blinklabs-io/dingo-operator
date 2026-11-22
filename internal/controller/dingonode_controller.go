@@ -225,14 +225,14 @@ func (r *DingoNodeReconciler) Reconcile(
 	if err := r.Get(ctx, req.NamespacedName, dn); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetOnChainAttempt(req.NamespacedName)
-			r.forgetIssueFailure(req.NamespacedName)
+			r.forgetNodeIssueFailures(req.NamespacedName)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !dn.DeletionTimestamp.IsZero() {
 		// Owner references handle garbage collection; nothing else to do.
 		r.forgetOnChainAttempt(req.NamespacedName)
-		r.forgetIssueFailure(req.NamespacedName)
+		r.forgetNodeIssueFailures(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 

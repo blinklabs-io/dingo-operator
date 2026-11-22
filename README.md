@@ -187,8 +187,20 @@ operators.
   without labelled series keep their status. `status.kes` is the pool with the
   fewest KES periods left, and `RotationDue` is true while any pool is due.
 
-  `rotation.mode` may be `Assisted` or `MonitorOnly`; `Auto` through the agent
-  per pool is not supported yet and is refused. In `Assisted`, a new opcert in
+  `rotation.mode` may be `Assisted`, `MonitorOnly` or `Auto`. With `Auto` the
+  operator rotates each pool that is due on its own KES state, as for a single
+  pool above but through that pool's `agentProfile` and into that pool's
+  `keys.secretRef` only: a pool that is not due is left alone, and the agent is
+  not contacted while none is. A pool's refusal (an unread on-chain counter,
+  say) does not hold back another; each attempted pool is reported in the
+  `OpCertIssued` condition and as an Event naming it. The same prerequisites
+  apply (`controlClientCertSecretRef`, TLS, `serverSpkiSha256`,
+  `reloadInPlace`, `nodeToClient.enabled`, a cold signer that can issue),
+  except that `controlProfile` is refused, since each pool names its profile,
+  and a Bursa signer's `coldKeyHash` must be left empty, since the signer is
+  asked for each pool's own cold key. The `secret` signer holds one cold key,
+  so it suits one pool, and is refused on mainnet as for a single pool. An
+  agent that lost a pool's key is not re-keyed. In `Assisted`, a new opcert in
   one pool's Secret reaches Dingo without rolling the pod: a container beside
   Dingo stages it once the operator has validated and approved it, and Dingo
   reloads it on its key file watch. Only a change to a pool's other Secret

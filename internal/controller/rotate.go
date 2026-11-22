@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
@@ -72,6 +74,44 @@ type ColdSignerFactory func(
 	dn *dingov1alpha1.DingoNode,
 ) (coldsigner.Issuer, error)
 
+// issueOutcome is what one rotation attempt reports: an issued opcert or the
+// reason nothing was issued.
+type issueOutcome struct {
+	issued          bool
+	reason, message string
+	// replayed marks a refusal repeated from the backoff after an earlier
+	// failure, which is shown again but not logged or evented again.
+	replayed bool
+}
+
+func refused(reason, message string) *issueOutcome {
+	return &issueOutcome{reason: reason, message: message}
+}
+
+// rotationTarget is the one key a rotation attempt issues for: the node's own
+// pool, or one pool of spec.blockProducer.pools.
+type rotationTarget struct {
+	// pool is the pool's hex ID; empty for the node's single pool.
+	pool string
+	// secretRef names the keys Secret that is read and written.
+	secretRef string
+	// profile is the signing agent profile that holds the KES key; empty
+	// selects the agent's only profile.
+	profile string
+	// kes is the KES state the node reports for the pool.
+	kes dingov1alpha1.KESStatus
+	// chain is the pool's on-chain opcert counter, valid when chainKnown.
+	chain      int64
+	chainKnown bool
+	// validate checks a candidate keys Secret as the reconcile will.
+	validate func(*corev1.Secret) (*keyState, error)
+	// failKey keys the backoff after a failed attempt.
+	failKey types.NamespacedName
+	// signerFor is the node the cold signer is built for. A pool list sets
+	// the cold key hash to the pool's own.
+	signerFor *dingov1alpha1.DingoNode
+}
+
 // autoRotate issues a new KES key and opcert into the keys Secret when an
 // Auto-rotation block producer's KES key is due for renewal. Writing the
 // Secret is the whole job: the next reconcile validates the new bundle like
@@ -92,6 +132,10 @@ func (r *DingoNodeReconciler) autoRotate(
 	if bp == nil || bp.Rotation.Mode != dingov1alpha1.RotationModeAuto {
 		return
 	}
+	if len(bp.Pools) > 0 {
+		r.autoRotatePools(ctx, dn)
+		return
+	}
 	// A node that reloads in place takes the agent's new opcert and stops
 	// reporting the rotation as due, so a lost Secret write is repaired here
 	// rather than behind RotationDue.
@@ -101,100 +145,245 @@ func (r *DingoNodeReconciler) autoRotate(
 	if !meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
 		return
 	}
-	floor, ok := observedOnChainCounter(dn, time.Now())
-	if !ok {
-		r.refuseIssue(
-			ctx, dn, "OnChainCounterUnknown",
-			"no fresh on-chain opcert counter for this pool",
-		)
+	floor, known := observedOnChainCounter(dn, time.Now())
+	t := rotationTarget{
+		secretRef:  bp.Keys.SecretRef,
+		kes:        dn.Status.KES,
+		chain:      floor,
+		chainKnown: known,
+		validate: func(s *corev1.Secret) (*keyState, error) {
+			return validateKeysSecret(s, dn)
+		},
+		failKey:   client.ObjectKeyFromObject(dn),
+		signerFor: dn,
+	}
+	if bp.SigningAgent != nil {
+		t.profile = bp.SigningAgent.ControlProfile
+	}
+	o := r.rotateKey(ctx, dn, t)
+	if o == nil {
 		return
 	}
-	st := dn.Status.KES
-	if st.CurrentPeriod <= 0 || st.ExpiryPeriod <= st.OpCertKESPeriod {
-		r.refuseIssue(
-			ctx, dn, "KESPeriodUnknown",
-			"the node's KES period has not been scraped",
+	r.reportIssue(ctx, dn, "", o)
+	setIssueCondition(dn, outcomeStatus(o), o.reason, o.message)
+}
+
+// autoRotatePools rotates each pool of spec.blockProducer.pools that is due on
+// its own KES state, through the signing agent with the pool's agentProfile,
+// writing only that pool's keys Secret. A pool that is not due is neither read
+// nor asked about, and the agent is not contacted while none is. One pool's
+// refusal does not hold back another. The outcome of every attempted pool is
+// reported in the OpCertIssued condition and as an Event naming the pool.
+func (r *DingoNodeReconciler) autoRotatePools(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) {
+	bp := dn.Spec.BlockProducer
+	now := time.Now()
+	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
+
+	pools := slices.Clone(bp.Pools)
+	slices.SortFunc(pools, func(a, b dingov1alpha1.BlockProducerPool) int {
+		return strings.Compare(
+			normalizedPoolID(a.PoolID), normalizedPoolID(b.PoolID),
 		)
+	})
+	type poolOutcome struct {
+		id string
+		*issueOutcome
+	}
+	var outcomes []poolOutcome
+	for _, p := range pools {
+		id := normalizedPoolID(p.PoolID)
+		ps := observedPoolStatus(dn, id)
+		if ps == nil || ps.KES.CurrentPeriod <= 0 || renewBefore <= 0 ||
+			ps.KES.RemainingPeriods > renewBefore {
+			continue
+		}
+		signer := *dn
+		signerSpec := *bp
+		signerSpec.Rotation.ColdSigner.ColdKeyHash = id
+		signer.Spec.BlockProducer = &signerSpec
+		t := rotationTarget{
+			pool:      id,
+			secretRef: p.Keys.SecretRef,
+			profile:   p.AgentProfile,
+			kes:       ps.KES,
+			validate: func(s *corev1.Secret) (*keyState, error) {
+				return validateBundle(s, poolChecks(dn, p, time.Now()))
+			},
+			failKey: types.NamespacedName{
+				Name: dn.Name + "/" + id, Namespace: dn.Namespace,
+			},
+			signerFor: &signer,
+		}
+		if ps.OnChainCounterAt != nil && ps.OnChainCounter >= 0 &&
+			now.Sub(ps.OnChainCounterAt.Time) <= onChainCounterMaxAge {
+			t.chain, t.chainKnown = ps.OnChainCounter, true
+		}
+		o := r.rotateKey(ctx, dn, t)
+		if o == nil {
+			continue
+		}
+		r.reportIssue(ctx, dn, id, o)
+		outcomes = append(outcomes, poolOutcome{id, o})
+	}
+	if len(outcomes) == 0 {
 		return
+	}
+	status, reason := metav1.ConditionTrue, "OpCertIssued"
+	parts := make([]string, 0, len(outcomes))
+	for _, o := range outcomes {
+		if status == metav1.ConditionTrue && !o.issued {
+			status, reason = metav1.ConditionFalse, o.reason
+		}
+		parts = append(parts, fmt.Sprintf("pool %s: %s", o.id, o.message))
+	}
+	setIssueCondition(dn, status, reason, strings.Join(parts, "; "))
+}
+
+// observedPoolStatus returns the status entry of a listed pool, or nil when
+// none has been recorded for it yet.
+func observedPoolStatus(
+	dn *dingov1alpha1.DingoNode,
+	id string,
+) *dingov1alpha1.PoolStatus {
+	for i := range dn.Status.Pools {
+		if dn.Status.Pools[i].PoolID == id {
+			return &dn.Status.Pools[i]
+		}
+	}
+	return nil
+}
+
+func outcomeStatus(o *issueOutcome) metav1.ConditionStatus {
+	if o.issued {
+		return metav1.ConditionTrue
+	}
+	return metav1.ConditionFalse
+}
+
+// reportIssue logs an attempt and records it as an Event, naming the pool of a
+// pool list. The OpCertIssued condition is the caller's.
+func (r *DingoNodeReconciler) reportIssue(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	pool string,
+	o *issueOutcome,
+) {
+	if o.replayed {
+		return
+	}
+	logger := log.FromContext(ctx)
+	if pool != "" {
+		logger = logger.WithValues("pool", pool)
+	}
+	msg := o.message
+	if pool != "" {
+		msg = fmt.Sprintf("pool %s: %s", pool, msg)
+	}
+	eventType, reason := corev1.EventTypeWarning, o.reason
+	if o.issued {
+		eventType, reason = corev1.EventTypeNormal, "OpCertIssued"
+		logger.Info(o.message)
+	} else {
+		logger.Info(
+			"auto rotation did not issue",
+			"reason", o.reason, "error", o.message,
+		)
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(
+			dn, nil, eventType, reason, "RotateKeys", "%s", msg,
+		)
+	}
+}
+
+// rotateKey issues a new opcert for one key when it is due and nothing is
+// staged for it, and writes the keys Secret. It returns nil when there was
+// nothing to report: a rotation already staged is left to finish.
+func (r *DingoNodeReconciler) rotateKey(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	t rotationTarget,
+) *issueOutcome {
+	bp := dn.Spec.BlockProducer
+	if !t.chainKnown {
+		return refused(
+			"OnChainCounterUnknown",
+			"no fresh on-chain opcert counter for this pool",
+		)
+	}
+	floor := t.chain
+	st := t.kes
+	if st.CurrentPeriod <= 0 || st.ExpiryPeriod <= st.OpCertKESPeriod {
+		return refused(
+			"KESPeriodUnknown", "the node's KES period has not been scraped",
+		)
 	}
 	maxEvolutions := st.ExpiryPeriod - st.OpCertKESPeriod
 	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
 	if renewBefore >= maxEvolutions {
-		r.refuseIssue(
-			ctx, dn, "RenewWindowTooLong",
+		return refused(
+			"RenewWindowTooLong",
 			fmt.Sprintf(
 				"renewBeforePeriods %d is not below the %d-period KES "+
 					"window, so every new opcert would be due at once",
 				renewBefore, maxEvolutions,
 			),
 		)
-		return
 	}
 
 	if r.APIReader == nil {
-		r.refuseIssue(
-			ctx, dn, "KeysSecretUnavailable", "no reader for the keys Secret",
-		)
-		return
+		return refused("KeysSecretUnavailable", "no reader for the keys Secret")
 	}
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{
-		Name:      bp.Keys.SecretRef,
-		Namespace: dn.Namespace,
-	}
+	key := types.NamespacedName{Name: t.secretRef, Namespace: dn.Namespace}
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
-		r.refuseIssue(ctx, dn, "KeysSecretUnavailable", err.Error())
-		return
+		return refused("KeysSecretUnavailable", err.Error())
 	}
 	certData, certFile, err := opCertFile(secret.Data)
 	if err == nil && certData == nil {
 		err = errors.New("keys secret holds no opcert")
 	}
 	if err != nil {
-		r.refuseIssue(ctx, dn, "KeysSecretInvalid", err.Error())
-		return
+		return refused("KeysSecretInvalid", err.Error())
 	}
 	staged, _, err := opcert.Parse(certData)
 	if err != nil {
-		r.refuseIssue(ctx, dn, "KeysSecretInvalid", err.Error())
-		return
+		return refused("KeysSecretInvalid", err.Error())
 	}
 	stagedStart, err := certField(staged.KesPeriod, "kes period")
 	if err != nil {
-		r.refuseIssue(ctx, dn, "KeysSecretInvalid", err.Error())
-		return
+		return refused("KeysSecretInvalid", err.Error())
 	}
 	// A staged bundle that does not validate can never be rolled out, so it
 	// is replaced rather than waited on.
-	if _, verr := validateKeysSecret(secret, dn); verr == nil &&
+	if _, verr := t.validate(secret); verr == nil &&
 		stagedStart+maxEvolutions-st.CurrentPeriod > renewBefore {
-		return
+		return nil
 	}
 
-	nodeKey := client.ObjectKeyFromObject(dn)
-	if last, ok := r.lastIssueFailure(nodeKey); ok &&
+	if last, ok := r.lastIssueFailure(t.failKey); ok &&
 		time.Since(last.at) < issueRetryInterval {
-		setIssueCondition(
-			dn, metav1.ConditionFalse, last.reason, last.message,
-		)
-		return
+		return &issueOutcome{
+			reason: last.reason, message: last.message, replayed: true,
+		}
 	}
-	fail := func(reason, message string) {
-		r.recordIssueFailure(nodeKey, reason, message)
-		r.refuseIssue(ctx, dn, reason, message)
+	fail := func(reason, message string) *issueOutcome {
+		r.recordIssueFailure(t.failKey, reason, message)
+		return refused(reason, message)
 	}
 
 	// Check the write is allowed before a signature is spent on it.
 	if err := r.Update(ctx, secret.DeepCopy(), client.DryRunAll); err != nil {
-		fail("SecretUpdateFailed", err.Error())
-		return
+		return fail("SecretUpdateFailed", err.Error())
 	}
-	issuer, err := r.issuerFor(ctx, dn)
+	issuer, err := r.issuerFor(ctx, t.signerFor)
 	if err != nil {
-		fail("ColdSignerUnavailable", err.Error())
-		return
+		return fail("ColdSignerUnavailable", err.Error())
 	}
-	// Both are positive: onChainFloor and the period check above.
+	// Both are positive: the counter is known and the period check above.
 	chainCounter := uint64(floor)         //nolint:gosec
 	kesPeriod := uint64(st.CurrentPeriod) //nolint:gosec
 	var (
@@ -204,12 +393,11 @@ func (r *DingoNodeReconciler) autoRotate(
 	if bp.SigningAgent != nil {
 		var reason string
 		candidate, install, reason, err = r.issueThroughAgent(
-			ctx, dn, issuer, secret, certFile, chainCounter, kesPeriod,
-			maxEvolutions, renewBefore,
+			ctx, dn, t.profile, issuer, secret, certFile, chainCounter,
+			kesPeriod, maxEvolutions, renewBefore,
 		)
 		if err != nil {
-			fail(reason, err.Error())
-			return
+			return fail(reason, err.Error())
 		}
 	} else {
 		var kesEnv []byte
@@ -220,15 +408,13 @@ func (r *DingoNodeReconciler) autoRotate(
 		if len(kesEnv) == 0 {
 			kesEnv, vkey, err = generateKESKey()
 			if err != nil {
-				fail("PendingKESKeyFailed", err.Error())
-				return
+				return fail("PendingKESKeyFailed", err.Error())
 			}
 			if bp.Rotation.ColdSigner.Type == dingov1alpha1.ColdSignerBursa {
 				pending := secret.DeepCopy()
 				pending.Data[keyFilePendingKES] = kesEnv
 				if err := r.Update(ctx, pending); err != nil {
-					fail("SecretUpdateFailed", err.Error())
-					return
+					return fail("SecretUpdateFailed", err.Error())
 				}
 				secret = pending
 			}
@@ -236,15 +422,13 @@ func (r *DingoNodeReconciler) autoRotate(
 			vkey, err = pendingKESVKey(kesEnv)
 		}
 		if err != nil {
-			fail("PendingKESKeyFailed", err.Error())
-			return
+			return fail("PendingKESKeyFailed", err.Error())
 		}
 		cert, err := issueBundle(
 			ctx, issuer, vkey, chainCounter, kesPeriod,
 		)
 		if err != nil {
-			fail("IssueFailed", err.Error())
-			return
+			return fail("IssueFailed", err.Error())
 		}
 		candidate = secret.DeepCopy()
 		candidate.Data[keyFileKES] = kesEnv
@@ -255,10 +439,9 @@ func (r *DingoNodeReconciler) autoRotate(
 			candidate.Data[keyFileNodeCert] = cert
 		}
 	}
-	state, err := validateKeysSecret(candidate, dn)
+	state, err := t.validate(candidate)
 	if err != nil {
-		fail("IssuedBundleRejected", err.Error())
-		return
+		return fail("IssuedBundleRejected", err.Error())
 	}
 	// install promotes the new key in the agent, so the write below is the
 	// only step left that can fail. If it does, the agent serves the new
@@ -266,30 +449,24 @@ func (r *DingoNodeReconciler) autoRotate(
 	// publishes the opcert the agent serves instead of issuing another.
 	if install != nil {
 		if err := install(); err != nil {
-			fail("AgentInstallFailed", err.Error())
-			return
+			return fail("AgentInstallFailed", err.Error())
 		}
 	}
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
 	if err := r.Update(ctx, candidate); err != nil {
-		fail("SecretUpdateFailed", err.Error())
-		return
+		return fail("SecretUpdateFailed", err.Error())
 	}
 
-	r.forgetIssueFailure(nodeKey)
-	msg := fmt.Sprintf(
-		"issued opcert counter %d, kes start period %d",
-		state.Counter, state.KESPeriod,
-	)
-	log.FromContext(ctx).Info(msg, "secret", bp.Keys.SecretRef)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(
-			dn, nil, corev1.EventTypeNormal, "OpCertIssued", "RotateKeys",
-			"%s", msg,
-		)
+	r.forgetIssueFailure(t.failKey)
+	return &issueOutcome{
+		issued: true,
+		reason: "OpCertIssued",
+		message: fmt.Sprintf(
+			"issued opcert counter %d, kes start period %d",
+			state.Counter, state.KESPeriod,
+		),
 	}
-	setIssueCondition(dn, metav1.ConditionTrue, "OpCertIssued", msg)
 }
 
 // issueOpCert has issuer sign an opcert for kesVkey and verifies it.
@@ -397,13 +574,14 @@ func issueBundle(
 func (r *DingoNodeReconciler) issueThroughAgent(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	profile string,
 	issuer coldsigner.Issuer,
 	secret *corev1.Secret,
 	certFile string,
 	chainCounter, kesPeriod uint64,
 	maxEvolutions, renewBefore int64,
 ) (candidate *corev1.Secret, install func() error, reason string, err error) {
-	cfg, problem, err := r.agentControlConfig(ctx, dn)
+	cfg, problem, err := r.agentControlConfig(ctx, dn, profile)
 	if err != nil {
 		return nil, nil, "ControlCertUnavailable", err
 	}
@@ -586,7 +764,9 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 		r.recordIssueFailure(nodeKey, reason, message)
 		r.refuseIssue(ctx, dn, reason, message)
 	}
-	cfg, problem, err := r.agentControlConfig(ctx, dn)
+	cfg, problem, err := r.agentControlConfig(
+		ctx, dn, bp.SigningAgent.ControlProfile,
+	)
 	if err != nil {
 		fail("ControlCertUnavailable", err.Error())
 		return false
@@ -771,4 +951,21 @@ func (r *DingoNodeReconciler) forgetIssueFailure(key types.NamespacedName) {
 	r.issueMu.Lock()
 	defer r.issueMu.Unlock()
 	delete(r.issueFailures, key)
+}
+
+// forgetNodeIssueFailures drops the remembered failure of a node and of each
+// of its pools, which are keyed "<node>/<pool id>": no object name holds a
+// slash, so no other node's key matches.
+func (r *DingoNodeReconciler) forgetNodeIssueFailures(
+	node types.NamespacedName,
+) {
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+	delete(r.issueFailures, node)
+	prefix := node.Name + "/"
+	for k := range r.issueFailures {
+		if k.Namespace == node.Namespace && strings.HasPrefix(k.Name, prefix) {
+			delete(r.issueFailures, k)
+		}
+	}
 }

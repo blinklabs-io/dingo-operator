@@ -420,8 +420,11 @@ type BlockProducerSpec struct {
 	// forging; with every bundle invalid the node is refused as a whole. A
 	// new opcert in one pool's Secret is loaded into the running node
 	// without a roll; adding, removing or dropping a pool rolls the pod.
-	// Rotation mode Auto is not supported with pools, and more than one pool
-	// is refused with Leios (a vote key, runMode leios or the Musashi
+	// Rotation mode Auto rotates each pool that is due on its own KES state,
+	// through the signing agent with the pool's agentProfile; it takes
+	// the signing agent's control settings except controlProfile, and an empty
+	// coldSigner.coldKeyHash (the signer is asked for each pool's own cold
+	// key). More than one pool is refused with Leios (a vote key, runMode leios or the Musashi
 	// network).
 	// +optional
 	Pools []BlockProducerPool `json:"pools,omitempty"`

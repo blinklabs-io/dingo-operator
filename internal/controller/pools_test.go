@@ -173,12 +173,12 @@ func TestValidateSpecPoolList(t *testing.T) {
 			wantErr: "need distinct profiles",
 		},
 		{
-			name: "auto rotation",
+			name: "auto rotation without its control certificate",
 			mutate: func(dn *dingov1alpha1.DingoNode) {
 				dn.Spec.BlockProducer.Rotation.Mode =
 					dingov1alpha1.RotationModeAuto
 			},
-			wantErr: "Auto is not supported with spec.blockProducer.pools",
+			wantErr: "requires controlClientCertSecretRef",
 		},
 		{
 			name: "pool without a keys Secret",
