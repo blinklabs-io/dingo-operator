@@ -92,8 +92,8 @@ func TestTopologyDialsReferencedNodesRelayPort(t *testing.T) {
 		ports[ap.Address] = ap.Port
 	}
 	assert.Equal(t, map[string]int32{
-		"musashi-headless.ns.svc.cluster.local":     3010,
-		"plain-headless.ns.svc.cluster.local":       3001,
-		"not-created-headless.ns.svc.cluster.local": 3001,
+		"musashi-0.musashi-headless.ns.svc.cluster.local": 3010,
+		"plain-0.plain-headless.ns.svc.cluster.local":     3001,
+		"not-created-headless.ns.svc.cluster.local":       3001,
 	}, ports)
 }

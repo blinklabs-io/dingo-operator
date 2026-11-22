@@ -150,6 +150,13 @@ Block producers admit node-to-node ingress from same-namespace
 `relayService.ingressFrom`. Relays keep unrestricted node-to-node ingress when
 that list is empty. Node-to-client, API, and metrics grants remain separate.
 
+A `relayRefs` entry naming a DingoNode renders one access point per pod
+(`<ref>-<i>.<ref>-headless`, `i < desiredReplicas`), not the headless name: a
+node dials one resolved address per access point, so sibling pods of an
+agent-signed producer or a scaled relay would otherwise never be peers
+(`relayRefPeers`, `topology.Peer`). A peer scaled to zero keeps the headless
+name so the topology is never emptied. Unknown refs stay on the headless name.
+
 ### Dingo constraints that shape the design
 
 - KES auto-evolves in memory while forging — no action within an opcert's

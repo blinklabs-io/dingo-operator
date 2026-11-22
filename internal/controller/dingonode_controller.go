@@ -438,18 +438,21 @@ func (r *DingoNodeReconciler) haltForger(
 	return nil
 }
 
-// relayRefPorts resolves the relay port of every in-cluster node listed in
-// topology.relayRefs, so peers are dialed on the port the referenced DingoNode
-// serves rather than an assumed one. A ref with no DingoNode is left out and
-// keeps the default port: it may be created later, or be a node this operator
-// does not manage. The peer's creation, deletion or spec change enqueues this
-// node (dingoNodesForRelayRef), as does a change to the peer's pod template,
-// which is when a new port is served (dingoNodesForPeerStatefulSet).
-func (r *DingoNodeReconciler) relayRefPorts(
+// relayRefPeers resolves the relay port and pod count of every in-cluster node
+// listed in topology.relayRefs, so every pod of a peer is dialed, on the port
+// the referenced DingoNode serves rather than an assumed one. A ref with no
+// DingoNode is left out and keeps the default port and its headless name: it
+// may be created later, or be a node this operator does not manage. The pod
+// count is desiredReplicas, which the peer's own reconcile applies to its
+// StatefulSet. The peer's creation, deletion or spec change, replicas
+// included, enqueues this node (dingoNodesForRelayRef), as does a change to
+// the peer's pod template, which is when a new port is served
+// (dingoNodesForPeerStatefulSet).
+func (r *DingoNodeReconciler) relayRefPeers(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) (map[string]int32, error) {
-	ports := make(map[string]int32, len(dn.Spec.Topology.RelayRefs))
+) (map[string]topology.Peer, error) {
+	peers := make(map[string]topology.Peer, len(dn.Spec.Topology.RelayRefs))
 	for _, ref := range dn.Spec.Topology.RelayRefs {
 		peer := &dingov1alpha1.DingoNode{}
 		key := types.NamespacedName{Name: ref, Namespace: dn.Namespace}
@@ -463,9 +466,9 @@ func (r *DingoNodeReconciler) relayRefPorts(
 		if err != nil {
 			return nil, fmt.Errorf("relayRef %q: %w", ref, err)
 		}
-		ports[ref] = port
+		peers[ref] = topology.Peer{Port: port, Replicas: desiredReplicas(peer)}
 	}
-	return ports, nil
+	return peers, nil
 }
 
 // servedRelayPort returns the relay port the node's pods listen on: the port
@@ -573,7 +576,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) error {
-	peerPorts, err := r.relayRefPorts(ctx, dn)
+	peers, err := r.relayRefPeers(ctx, dn)
 	if err != nil {
 		return err
 	}
@@ -581,7 +584,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 	if err != nil {
 		return &peerSnapshotError{err: err}
 	}
-	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace, peerPorts)
+	topoJSON, hasTopo, err := topology.Render(dn, dn.Namespace, peers)
 	if err != nil {
 		return err
 	}

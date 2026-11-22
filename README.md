@@ -822,6 +822,12 @@ port, the readiness-probe port of images without the health listener, and
 in this node's pod template, which follows `relayService.port`. Peers move to a
 new port when the template changes: as soon as this node is reconciled, or, for
 a block producer whose template is held, only when the hold is released.
+
+A `topology.relayRefs` entry that names a DingoNode is listed once per pod,
+as `<name>-<ordinal>.<name>-headless`, so every pod of a referenced node is a
+peer rather than the one address its headless name resolves to. The count is
+the node's replicas as the operator runs them (a key-file block producer is
+always one pod); a node scaled to zero keeps its headless name.
 Publish the relay elsewhere with `relayService.hostPort` (the container's host
 port) or `relayService.nodePort` on a NodePort or
 LoadBalancer Service.

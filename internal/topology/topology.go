@@ -62,15 +62,35 @@ type document struct {
 	UseLedgerAfterSlot *int64        `json:"useLedgerAfterSlot,omitempty"`
 }
 
+// Peer is what Render knows about a relayRefs entry that has a DingoNode:
+// the node-to-node port its pods serve and how many pods it runs.
+type Peer struct {
+	Port     int32
+	Replicas int32
+}
+
 // InClusterPeerAddress returns the headless-service DNS name for a sibling
-// DingoNode relay in the given namespace.
+// DingoNode in the given namespace. It resolves to every ready or not-ready
+// pod, so it names a peer whose pods are not known.
 func InClusterPeerAddress(name, namespace string) string {
 	return fmt.Sprintf("%s-headless.%s.svc.cluster.local", name, namespace)
 }
 
-// Render builds a topology.json document for the node. peerPorts maps a
-// relayRefs name to the relay port its DingoNode configures; names without an
-// entry are dialed on 3001. It returns the rendered
+// InClusterPodAddress returns the DNS name of one pod of a sibling DingoNode.
+func InClusterPodAddress(name string, ordinal int32, namespace string) string {
+	return fmt.Sprintf(
+		"%s-%d.%s-headless.%s.svc.cluster.local",
+		name, ordinal, name, namespace,
+	)
+}
+
+// Render builds a topology.json document for the node. peers maps a relayRefs
+// name to its DingoNode's relay port and pod count. A peer with pods is listed
+// once per pod, so every pod of it is dialed rather than the one address its
+// headless name happens to resolve to. A peer scaled to zero keeps its
+// headless name, so the topology never loses its only peers and falls back to
+// Dingo's built-in bootstrap peers. A name without an entry is dialed on 3001
+// through its headless name. It returns the rendered
 // JSON and whether any custom topology content exists. When false, the caller
 // should omit the topology so Dingo falls back to its built-in bootstrap peers
 // (relays with no explicit topology). Block producers should always configure
@@ -78,7 +98,7 @@ func InClusterPeerAddress(name, namespace string) string {
 func Render(
 	dn *dingov1alpha1.DingoNode,
 	namespace string,
-	peerPorts map[string]int32,
+	peers map[string]Peer,
 ) (string, bool, error) {
 	spec := dn.Spec.Topology
 
@@ -87,14 +107,23 @@ func Render(
 	autoPeer := spec.AutoPeerRelays == nil || *spec.AutoPeerRelays
 	if autoPeer {
 		for _, ref := range spec.RelayRefs {
-			port, ok := peerPorts[ref]
+			peer, ok := peers[ref]
 			if !ok {
-				port = defaultRelayPort
+				peer.Port = defaultRelayPort
 			}
-			roots = append(roots, accessPoint{
-				Address: InClusterPeerAddress(ref, namespace),
-				Port:    port,
-			})
+			if peer.Replicas < 1 {
+				roots = append(roots, accessPoint{
+					Address: InClusterPeerAddress(ref, namespace),
+					Port:    peer.Port,
+				})
+				continue
+			}
+			for i := range peer.Replicas {
+				roots = append(roots, accessPoint{
+					Address: InClusterPodAddress(ref, i, namespace),
+					Port:    peer.Port,
+				})
+			}
 		}
 	}
 
