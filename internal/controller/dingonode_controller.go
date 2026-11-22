@@ -1119,8 +1119,9 @@ func (r *DingoNodeReconciler) reconcileStatus(
 
 	// Scraped for every node, not just block producers: a relay that stops
 	// following the chain serves stale answers to everything downstream.
-	r.refreshForgeStatus(ctx, dn)
-	r.autoRotate(ctx, dn)
+	if r.refreshForgeStatus(ctx, dn) {
+		r.autoRotate(ctx, dn)
+	}
 
 	// A wedged node keeps its pod Ready, so Ready alone would report it
 	// healthy. Phase is downgraded to Degraded while the pipeline is unhealthy,
@@ -1195,11 +1196,13 @@ func (r *DingoNodeReconciler) reconcileStatus(
 
 // refreshForgeStatus scrapes the node's metrics to populate KES and ledger
 // pipeline status. Errors are non-fatal, but mark the derived conditions
-// Unknown so stale data is never mistaken for a fresh observation.
+// Unknown so stale data is never mistaken for a fresh observation. It reports
+// whether every replica was scraped this call, which is the only observation
+// a rotation may act on.
 func (r *DingoNodeReconciler) refreshForgeStatus(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) {
+) bool {
 	bp := dn.Spec.BlockProducer
 	isBP := bp != nil
 	if desiredReplicas(dn) == 0 {
@@ -1220,7 +1223,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 				dn.Status.Pools[i].KES = dingov1alpha1.KESStatus{}
 			}
 		}
-		return
+		return false
 	}
 	if r.ForgeStatus == nil {
 		dn.Status.Tip = dingov1alpha1.TipStatus{}
@@ -1237,7 +1240,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 				"forge status fetcher is not configured",
 			)
 		}
-		return
+		return false
 	}
 	logger := log.FromContext(ctx)
 	// Scrape through the headless Service, not the client Service. The client
@@ -1309,7 +1312,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 				"forge status metrics could not be fetched",
 			)
 		}
-		return
+		return false
 	}
 	aggregate := &forgestatus.Status{
 		HasPipelineStuckMetric:  true,
@@ -1342,7 +1345,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		)
 	}
 	if !isBP {
-		return
+		return true
 	}
 	// KES status is tied to the replicas' keys rather than the aggregate
 	// pipeline observation: pods differ while a rotation rolls through them,
@@ -1353,7 +1356,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			ctx, dn, podNames, statuses, before, st,
 		)
 		r.observePools(dn, st, running, known)
-		return
+		return true
 	}
 	st := furthestBehind(statuses)
 	r.observeLoadedOpCert(dn, st)
@@ -1363,7 +1366,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			"KESMetricsUnavailable",
 			"KES metrics are not available",
 		)
-		return
+		return true
 	}
 	dn.Status.KES = dingov1alpha1.KESStatus{
 		CurrentPeriod:    st.CurrentKESPeriod,
@@ -1390,6 +1393,7 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			ObservedGeneration: dn.Generation,
 		})
 	}
+	return true
 }
 
 // replicaStatusOf is the per-pod report of a scraped pod.
