@@ -408,7 +408,7 @@ list only namespaces one party controls.
 | `coldSigner.type` | Use | Fields |
 |---|---|---|
 | `bursa` (default) | Bursa signer service; the cold key stays outside the cluster. | `endpoint` (https URL), `mtlsSecretRef` (Secret with `tls.crt`, `tls.key`, optionally `ca.crt`), `coldKeyHash`, optional `profile` |
-| `secret` | The cold key is a cardano-cli text envelope in the `cold.skey` entry of a Secret in the cluster. Testnets only. | `secretRef` |
+| `secret` | The cold key is a cardano-cli text envelope in the `cold.skey` entry of a Secret in the cluster. Testnets only. | `secretRef`, optional `allowMainnet` |
 | `none` | Assisted and MonitorOnly, which never issue. | none |
 
 `coldKeyHash` is the hex blake2b-224 hash of the cold verification key and
@@ -417,7 +417,10 @@ must equal the pool ID in hex under Auto, even when `poolId` is bech32.
 only when the signer holds the same key in several profiles. The `secret`
 signer is refused under Auto when `spec.network` is `mainnet` or
 `spec.networkMagic` is 764824073, because it keeps the cold key in the cluster.
-`none` cannot issue under Auto.
+`allowMainnet: true` lifts that refusal for a network that reuses the mainnet
+magic without being Cardano mainnet; set it only when the cold key does not
+guard a mainnet pool or funds. It is refused with any signer type other than
+`secret`. `none` cannot issue under Auto.
 
 Validation refuses Auto unless the spec has both of these:
 
@@ -425,7 +428,7 @@ Validation refuses Auto unless the spec has both of these:
   on-chain opcert counter.
 - A cold signer that can issue: `bursa` with an https `endpoint`,
   `mtlsSecretRef` and a `coldKeyHash` equal to the pool ID, or `secret` with a
-  `secretRef` on a non-mainnet network.
+  `secretRef` on a non-mainnet network or with `allowMainnet: true`.
 
 Auto also needs `spec.networkMagic` on any network the operator does not know
 by name. Validation requires it only for `network: custom`; on another unknown
