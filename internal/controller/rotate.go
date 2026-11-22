@@ -82,6 +82,9 @@ type issueOutcome struct {
 	// replayed marks a refusal repeated from the backoff after an earlier
 	// failure, which is shown again but not logged or evented again.
 	replayed bool
+	// pendingInstall is the counter of an opcert the signing agent serves
+	// that could not be written to the keys Secret; zero means none.
+	pendingInstall int64
 }
 
 func refused(reason, message string) *issueOutcome {
@@ -244,6 +247,11 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		}
 		if o == nil {
 			continue
+		}
+		// Recorded in status so the next reconcile, which applies resources
+		// before it scrapes the node, holds the pool rather than dropping it.
+		if o.pendingInstall > 0 {
+			ps.PendingInstallCounter = o.pendingInstall
 		}
 		r.reportIssue(ctx, dn, id, o)
 		outcomes = append(outcomes, poolOutcome{id, o})
@@ -540,7 +548,13 @@ func (r *DingoNodeReconciler) rotateKey(
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
 	if err := r.Update(ctx, candidate); err != nil {
-		return fail("SecretUpdateFailed", err.Error())
+		o := fail("SecretUpdateFailed", err.Error())
+		if bp.SigningAgent != nil {
+			// The agent serves the candidate's opcert, installed above or
+			// adopted from an earlier attempt.
+			o.pendingInstall = state.Counter
+		}
+		return o
 	}
 
 	r.forgetIssueFailure(t.failKey)

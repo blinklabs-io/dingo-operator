@@ -289,9 +289,10 @@ func (r *DingoNodeReconciler) upsertPoolsConfigMap(
 // A pool whose bundle is refused is left out of the pool list and reported in
 // status.pools, so the other pools keep forging; when every bundle is refused
 // the live pod template is kept, as for a refused single-pool bundle. In Auto
-// rotation the live template is also kept while a refused pool's node forges
-// a later opcert than its Secret holds (installPending), until autoRotate
-// writes that opcert back. It reports whether the template is held and why.
+// rotation the live template is also kept while a refused pool's Secret holds
+// an older opcert than its node forges with or than autoRotate recorded
+// installing in the agent (poolInstallPending), until autoRotate writes that
+// opcert back. It reports whether the template is held and why.
 func (r *DingoNodeReconciler) reconcilePoolKeys(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -342,13 +343,12 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		}
 	}
 
-	// A refused pool whose node forges a later opcert than its Secret holds
+	// A refused pool with a later opcert in its agent than its Secret holds
 	// waits on autoRotate to write that opcert back. Dropping it would roll
 	// the pod without the pool, and the node would stop reporting the
 	// counter the repair is made from.
 	if liveHasKeys && slices.ContainsFunc(bundles, func(b *poolBundle) bool {
-		return !b.accepted() && b.secret != nil &&
-			installPending(dn, b.secret, poolStatus(dn, b.id).LoadedCounter)
+		return !b.accepted() && b.secret != nil && poolInstallPending(dn, b)
 	}) {
 		opts.KeysChecksum = live.checksum
 		opts.KeysPool = live.pool
@@ -396,6 +396,20 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 	return keepTemplate, holdMessage, nil
 }
 
+// poolInstallPending reports whether a pool's Secret holds an older opcert
+// than its node reports loaded or than Auto rotation recorded installing in
+// the agent. The loaded counter is the previous reconcile's: resources are
+// applied before the node is scraped, so only the recorded install covers the
+// reconcile right after a failed write.
+func poolInstallPending(dn *dingov1alpha1.DingoNode, b *poolBundle) bool {
+	ps := poolStatus(dn, b.id)
+	if installPending(dn, b.secret, ps.LoadedCounter) {
+		return true
+	}
+	return ps.PendingInstallCounter > 0 &&
+		installPending(dn, b.secret, &ps.PendingInstallCounter)
+}
+
 func poolIDsOf(pools []resources.RenderPool) []string {
 	ids := make([]string, 0, len(pools))
 	for _, p := range pools {
@@ -422,6 +436,9 @@ func (r *DingoNodeReconciler) recordPoolKeys(
 				b.state.Counter, b.state.KESPeriod,
 			)
 			ps.OnDiskCounter = b.state.Counter
+			if b.state.Counter >= ps.PendingInstallCounter {
+				ps.PendingInstallCounter = 0
+			}
 			continue
 		}
 		ps.KeysValid = false

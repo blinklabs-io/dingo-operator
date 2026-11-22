@@ -84,7 +84,7 @@ const (
 	signingAgentCertHeldMessage = "pod template update held until the " +
 		"signing agent client certificate Secret validates"
 	// installPendingHeldMessage replaces templateHeldMessage when a pool's
-	// Secret holds an older opcert than its node forges with.
+	// Secret holds an older opcert than the one its agent serves.
 	installPendingHeldMessage = "pod template update held until a pool's " +
 		"keys Secret holds the opcert its node forges with"
 )

@@ -967,6 +967,13 @@ type PoolStatus struct {
 	// forging with for this pool. Unset means not observed.
 	// +optional
 	LoadedCounter *int64 `json:"loadedCounter,omitempty"`
+	// PendingInstallCounter is the issue number of an opcert Auto rotation
+	// installed in the signing agent but could not write to the pool's keys
+	// Secret. While the Secret's opcert is below it, a refused bundle holds
+	// the pod template instead of dropping the pool. It is cleared once the
+	// pool's accepted bundle reaches it; zero means none.
+	// +optional
+	PendingInstallCounter int64 `json:"pendingInstallCounter,omitempty"`
 	// KES is the pool's KES state as the node reports it.
 	// +optional
 	KES KESStatus `json:"kes,omitempty"`

@@ -788,10 +788,15 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   template and checksum are kept. Dropping applies to a pool that was forging
   as well: a bad opcert delivered for a running pool stops that pool at the
   roll, unlike a refused single-pool bundle, which keeps its pod. The
-  exception is a pending install in Auto rotation (`installPending`): a refused
-  pool whose node forges a later opcert than its Secret holds keeps the live
-  template, since dropping it would clear the loaded counter
-  `adoptPendingInstall` repairs the Secret from.
+  exception is a pending install in Auto rotation (`poolInstallPending`): a
+  refused pool whose Secret holds an older opcert than its node's loaded
+  counter, or than `pendingInstallCounter`, keeps the live template, since
+  dropping it would clear the loaded counter `adoptPendingInstall` repairs the
+  Secret from. `pendingInstallCounter` is set by `autoRotatePools` when the
+  Secret write fails after the agent serves the new opcert, because resources
+  are applied before the node is scraped: the reconcile right after the
+  failure still sees the old loaded counter. An accepted bundle at or above it
+  clears it.
 - Template stability. `keys-checksum` is the checksum of each accepted pool's
   Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
   ID, so it covers every Secret's static entries and the set of pools but not
@@ -831,8 +836,8 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   reporting the replacement.
 - Status. `status.pools[]` (keyed by hex pool ID, cleared once the node no
   longer uses a pool list) holds `keysValid`,
-  reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter` and
-  `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
+  reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter`,
+  `pendingInstallCounter` and `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
   `lcommon.PoolId.String`) and normalizes it; Dingo labels them only while the
   node forges for more than one pool, so a node left with one pool is read from
   the unlabelled series. The loaded counter is

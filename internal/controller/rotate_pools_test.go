@@ -129,6 +129,7 @@ func newPoolRotateFixture(t *testing.T) *poolRotateFixture {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	r := &DingoNodeReconciler{
 		Client:    c,
@@ -793,4 +794,104 @@ func TestAutoRotatePoolsBoundsOpCertIssuedMessage(t *testing.T) {
 	assert.Contains(t, cond.Message, "pool "+first.id+": x")
 	assert.NotContains(t, cond.Message, second.id)
 	assert.Contains(t, cond.Message, "1 more")
+}
+
+// denySecretWrites makes every non-dry-run update of the named Secret fail,
+// on f.r only.
+func (f *poolRotateFixture) denySecretWrites(name string) {
+	denied := interceptor.NewClient(
+		f.c.(client.WithWatch),
+		interceptor.Funcs{Update: func(
+			ctx context.Context, c client.WithWatch, o client.Object,
+			opts ...client.UpdateOption,
+		) error {
+			var uo client.UpdateOptions
+			uo.ApplyOptions(opts)
+			if len(uo.DryRun) == 0 && o.GetName() == name {
+				return apierrors.NewForbidden(
+					corev1.Resource("secrets"), o.GetName(),
+					errors.New("update not granted"),
+				)
+			}
+			return c.Update(ctx, o, opts...)
+		}},
+	)
+	f.r.Client, f.r.APIReader = denied, denied
+}
+
+// A pool whose keys Secret write failed after install-key is held from the
+// next reconcile on. Resources are reconciled before the node is scraped, so
+// that reconcile still sees the counter loaded before the install; once the
+// chain has the installed counter, only a pending install recorded in status
+// keeps the running pool from being dropped. A new reconciler stands for an
+// operator restart.
+func TestReconcilePoolKeysHoldsTemplateForRecordedInstall(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	a := f.pools[0]
+	ctx := context.Background()
+	for _, p := range f.pools {
+		poolStatus(f.dn, p.id).LoadedCounter = new(int64(3))
+	}
+	initial := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := f.r.reconcilePoolKeys(ctx, f.dn, &initial)
+	require.NoError(t, err)
+	require.False(t, keep)
+	require.Contains(t, initial.KeysPool, a.id)
+	require.NoError(t, f.c.Create(ctx, resources.BuildStatefulSet(f.dn, initial)))
+
+	f.denySecretWrites(a.secret)
+	f.r.autoRotate(ctx, f.dn)
+	_, issue := f.agent.Active(a.profile)
+	require.Equal(t, uint64(4), issue)
+
+	read := metav1.Now()
+	ps := poolStatus(f.dn, a.id)
+	assert.Equal(t, int64(4), ps.PendingInstallCounter)
+	ps.OnChainCounter, ps.OnChainCounterAt = 4, &read
+	require.Equal(t, int64(3), *ps.LoadedCounter)
+
+	restarted := &DingoNodeReconciler{
+		Client: f.c, APIReader: f.c, Scheme: f.r.Scheme,
+	}
+	observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, msg, err := restarted.reconcilePoolKeys(ctx, f.dn, &observed)
+	require.NoError(t, err)
+	assert.False(t, poolStatus(f.dn, a.id).KeysValid)
+	assert.True(t, keep)
+	assert.Equal(t, installPendingHeldMessage, msg)
+	assert.Equal(t, initial.KeysPool, observed.KeysPool)
+	assert.Equal(t, initial.KeysChecksum, observed.KeysChecksum)
+}
+
+// A recorded install is cleared once the pool's bundle is accepted at its
+// counter, so a later refusal drops the pool as before.
+func TestReconcilePoolKeysClearsRecordedInstall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	a, b := pools[0], pools[1]
+	dn := poolListNode("bp", "ns", 0, pools...)
+	dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAuto
+	c := conflictClient(t, dn,
+		poolSecret(t, "ns", a, 4), poolSecret(t, "ns", b, 3),
+	)
+	r := poolReconciler(c)
+	poolStatus(dn, a.id).PendingInstallCounter = 4
+
+	initial := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := r.reconcilePoolKeys(ctx, dn, &initial)
+	require.NoError(t, err)
+	require.False(t, keep)
+	assert.Zero(t, poolStatus(dn, a.id).PendingInstallCounter)
+	require.NoError(t, c.Create(ctx, resources.BuildStatefulSet(dn, initial)))
+
+	read := metav1.Now()
+	ps := poolStatus(dn, a.id)
+	ps.OnChainCounter, ps.OnChainCounterAt = 5, &read
+	observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err = r.reconcilePoolKeys(ctx, dn, &observed)
+	require.NoError(t, err)
+	assert.False(t, keep)
+	assert.NotContains(t, observed.KeysPool, a.id)
 }
