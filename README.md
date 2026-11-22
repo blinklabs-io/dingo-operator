@@ -431,13 +431,17 @@ Auto also needs `spec.networkMagic` on any network the operator does not know
 by name. Validation requires it only for `network: custom`; on another unknown
 name the spec is accepted, but the operator cannot derive the magic, so the
 counter query never runs. `OnChainCounterAvailable` is then False with reason
-`UnknownNetworkMagic`, and `OpCertIssued` is False with reason
-`OnChainCounterUnknown`.
+`UnknownNetworkMagic`, and once rotation falls due each issuance attempt sets
+`OpCertIssued` False with reason `OnChainCounterUnknown`.
 
 Under Auto the operator writes each new opcert, and the new KES key unless a
 signing agent holds it, to the keys Secret. Do not re-apply that Secret from
 Helm or GitOps after creation: an upgrade would restore the old KES key.
-Create it once and exclude it from reconciliation.
+Create it once and keep it out of reconciliation without deleting it: removing
+it from a Helm release or from a pruning GitOps source deletes the live Secret,
+and with it the rotated KES key and opcert. Annotate it first so it is kept,
+for example `helm.sh/resource-policy: keep` for Helm or
+`kustomize.toolkit.fluxcd.io/prune: disabled` for Flux.
 
 ## Installation
 
