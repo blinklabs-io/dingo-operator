@@ -45,9 +45,15 @@ func TestKeysReaderRBACIsNamespaceScoped(t *testing.T) {
 
 	h := newHarness(t)
 
-	// Granted: newHarness created a Role+RoleBinding for this namespace.
-	assert.True(t, h.canGetSecrets(ctx, h.namespace),
-		"operator must be able to read Secrets in the namespace it was granted")
+	// Granted: newHarness created a Role+RoleBinding for this namespace. The
+	// authorizer answers from an informer cache, so a review sent right after
+	// the binding is created can still report it as not allowed; wait for it
+	// to become visible instead of asking once.
+	h.waitFor(ctx, rbacPropagationTimeout,
+		"operator to be allowed to read Secrets in the namespace it was granted",
+		func(ctx context.Context) (bool, error) {
+			return h.canGetSecrets(ctx, h.namespace), nil
+		})
 
 	// Ungranted: a second namespace with no keys-reader Role. If a cluster-wide
 	// grant crept back into the manifests, this is the assertion that fails.
