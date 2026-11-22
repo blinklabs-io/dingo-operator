@@ -203,7 +203,7 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
 			if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
-				if scaleUpBehindLocalSigner(sts, desired) {
+				if scaleUpBehindLocalSigner(dn, sts, desired) {
 					sts.Spec.Replicas = new(liveReplicas(sts))
 				} else {
 					sts.Spec.Replicas = desired.Spec.Replicas
@@ -335,16 +335,19 @@ func holdsStoppedLocalSigner(
 		forgesWithLocalKES(sts.Spec.Template.Spec)
 }
 
-// scaleUpBehindLocalSigner reports whether a StatefulSet must stay at its
-// live replica count rather than scale up to desired. Only the agent's
-// one-header-per-slot guard makes several producer pods safe, and it never
-// sees a pod that signs with a local KES key. A StatefulSet scaled up while it
-// runs a local-KES template, or while a roll is unfinished, starts the new
-// ordinal beside such a pod: on the agent beside the old revision, or on the
-// same kes.skey when the template is held. live is the StatefulSet as read,
-// before desired is applied.
-func scaleUpBehindLocalSigner(live, desired *appsv1.StatefulSet) bool {
-	if desired.Spec.Replicas == nil ||
+// scaleUpBehindLocalSigner reports whether a block producer's StatefulSet
+// must stay at its live replica count rather than scale up to desired. Only
+// the agent's one-header-per-slot guard makes several producer pods safe, and
+// it never sees a pod that signs with a local KES key. A StatefulSet scaled up
+// while it runs a local-KES template, or while a roll is unfinished, starts
+// the new ordinal beside such a pod: on the agent beside the old revision, or
+// on the same kes.skey when the template is held. A relay holds no key, so it
+// scales at once. live is the StatefulSet as read, before desired is applied.
+func scaleUpBehindLocalSigner(
+	dn *dingov1alpha1.DingoNode,
+	live, desired *appsv1.StatefulSet,
+) bool {
+	if !resources.IsBlockProducer(dn) || desired.Spec.Replicas == nil ||
 		*desired.Spec.Replicas <= liveReplicas(live) {
 		return false
 	}

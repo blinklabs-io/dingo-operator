@@ -454,3 +454,38 @@ func TestUpsertStatefulSetHoldsScaleUpBehindLocalSigner(t *testing.T) {
 		})
 	}
 }
+
+// A relay holds no key, so a roll does not delay its scaling up.
+func TestUpsertStatefulSetScalesRollingRelay(t *testing.T) {
+	t.Parallel()
+	dn := relayNodeForStatus("relay", "ns")
+	dn.UID = types.UID("uid-relay")
+	dn.Spec.Replicas = new(int32(3))
+	sts := resources.BuildStatefulSet(dn, resources.RenderOptions{Replicas: 1})
+	sts.CreationTimestamp = metav1.Now()
+	sts.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: dingov1alpha1.GroupVersion.String(),
+		Kind:       "DingoNode", Name: dn.Name, UID: dn.UID,
+		Controller: new(true),
+	}}
+	sts.Generation = 3
+	sts.Status = appsv1.StatefulSetStatus{
+		ObservedGeneration: 3, Replicas: 1,
+		CurrentRevision: "relay-a", UpdateRevision: "relay-b",
+	}
+	c := conflictClient(t, dn, sts)
+	r := reconcilerFor(c)
+
+	_, err := r.upsertStatefulSet(
+		context.Background(), dn,
+		resources.RenderOptions{Replicas: desiredReplicas(dn)}, false,
+	)
+	require.NoError(t, err)
+
+	var got appsv1.StatefulSet
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKeyFromObject(dn), &got,
+	))
+	require.NotNil(t, got.Spec.Replicas)
+	assert.Equal(t, int32(3), *got.Spec.Replicas)
+}
