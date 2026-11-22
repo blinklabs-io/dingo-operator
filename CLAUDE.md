@@ -864,7 +864,11 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   A producer that signs through `spec.blockProducer.signingAgent` may set
   `spec.replicas` above 1: every pod forges and the agent's one-header-per-slot
   guard admits the first, so a roll does not stop forging, and the PDB
-  (`minAvailable: 1`) allows voluntary evictions until one pod is left. The guard is Bursa's (v0.23.0 and
+  (`minAvailable: 1`) allows voluntary evictions until one pod is left. A change
+  of agent address or server key pin never leaves pods on two agents, which
+  could hold independent guards: the StatefulSet shrinks to one pod on the old
+  template, the template moves once the others are gone, and it scales up when
+  the roll finishes (`movesToAnotherAgent`, `upsertStatefulSet`). The guard is Bursa's (v0.23.0 and
   later), and it holds only when every pod reaches one guard. Anti-affinity is
   preferred, not required, so two pods can share a node. A producer that holds
   its KES key in a Secret runs one pod, and `validateSpec` refuses a larger
