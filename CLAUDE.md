@@ -787,7 +787,11 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   Only when every pool is dropped is the node refused as a whole: the live
   template and checksum are kept. Dropping applies to a pool that was forging
   as well: a bad opcert delivered for a running pool stops that pool at the
-  roll, unlike a refused single-pool bundle, which keeps its pod.
+  roll, unlike a refused single-pool bundle, which keeps its pod. The
+  exception is a pending install in Auto rotation (`installPending`): a refused
+  pool whose node forges a later opcert than its Secret holds keeps the live
+  template, since dropping it would clear the loaded counter
+  `adoptPendingInstall` repairs the Secret from.
 - Template stability. `keys-checksum` is the checksum of each accepted pool's
   Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
   ID, so it covers every Secret's static entries and the set of pools but not

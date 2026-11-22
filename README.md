@@ -174,7 +174,11 @@ operators.
   reported in `status.pools` with `keysValid: false` and the reason, and the
   node is `Degraded`. Only when every bundle fails is the node refused as a
   whole and its live pod template kept, as for a refused single-pool bundle;
-  the pools that template runs are still observed.
+  the pools that template runs are still observed. In Auto rotation, a pool
+  refused because its node forges a later opcert than its Secret holds (an
+  opcert installed in the signing agent whose Secret write failed) is not left
+  out: the live pod template is kept until the operator writes the agent's
+  opcert back to the Secret.
   `status.pools` also holds each pool's on-disk, on-chain (one
   node-to-client query reads all of them) and loaded opcert counters and KES
   periods, read from the `pool_id`-labelled series Dingo exposes with several

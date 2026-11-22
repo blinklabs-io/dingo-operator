@@ -288,8 +288,10 @@ func (r *DingoNodeReconciler) upsertPoolsConfigMap(
 // the approval that lets a new opcert reach the running node without a roll.
 // A pool whose bundle is refused is left out of the pool list and reported in
 // status.pools, so the other pools keep forging; when every bundle is refused
-// the live pod template is kept, as for a refused single-pool bundle. It
-// reports whether the template is held and why.
+// the live pod template is kept, as for a refused single-pool bundle. In Auto
+// rotation the live template is also kept while a refused pool's node forges
+// a later opcert than its Secret holds (installPending), until autoRotate
+// writes that opcert back. It reports whether the template is held and why.
 func (r *DingoNodeReconciler) reconcilePoolKeys(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
