@@ -10,6 +10,11 @@
 #   its series are found by controller="dingonode", so no job name is assumed
 # - the DingoNodes scraped (spec.metrics.podMonitor.enabled)
 # - kube-state-metrics and kubelet volume stats (kube-prometheus-stack defaults)
+# - Dingo pods are identified by the dingo-data volume in the pod spec
+#   (kube_pod_spec_volumes_persistentvolumeclaims_info), which exists for a pod
+#   waiting on an unbound claim that has no container status or Ready condition
+#   yet, or by a started container named dingo (kube_pod_container_info), which
+#   covers a StatefulSet that kept an older claim name.
 #
 # Thresholds assume the operator default rotation.renewBeforePeriods: 8. If a
 # DingoNode sets another value, adjust DingoKESRotationDue and
@@ -51,7 +56,7 @@ groups:
           description: A DingoNode reconcile panicked in the last 10 minutes. This is an operator bug; collect the log.
 
       - alert: DingoOperatorWorkqueueBacklog
-        expr: max by (namespace) (workqueue_depth{name="dingonode"}) > 10
+        expr: max by (namespace) (sum without (priority) (workqueue_depth{name="dingonode"})) > 10
         for: 15m
         labels:
           severity: warning
@@ -77,8 +82,11 @@ groups:
     rules:
       - alert: DingoNodePodNotReady
         expr: |
-          kube_pod_status_ready{condition="true"} == 0
-          and on (namespace, pod) kube_pod_container_info{container="dingo"}
+          (
+            group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume="dingo-data"})
+            or group by (namespace, pod) (kube_pod_container_info{container="dingo"})
+          )
+          unless on (namespace, pod) (kube_pod_status_ready{condition="true"} == 1)
         for: 15m
         labels:
           severity: warning
@@ -92,7 +100,10 @@ groups:
           and on (namespace, statefulset) group by (namespace, statefulset) (
             label_replace(
               kube_pod_owner{owner_kind="StatefulSet"}
-                and on (namespace, pod) kube_pod_container_info{container="dingo"},
+                and on (namespace, pod) (
+                  kube_pod_spec_volumes_persistentvolumeclaims_info{volume="dingo-data"}
+                  or kube_pod_container_info{container="dingo"}
+                ),
               "statefulset", "$1", "owner_name", "(.+)"
             )
           )

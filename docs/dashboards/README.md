@@ -49,7 +49,12 @@ unit tests.
   allowed through the node's NetworkPolicy: label its pods (and namespace, when
   it differs from the node's) `dingo.blinklabs.io/metrics=allowed`.
 - **[kube-state-metrics](https://github.com/kubernetes/kube-state-metrics)**
-  for pod, container and StatefulSet state.
+  for pod, container and StatefulSet state. Dingo pods are identified from
+  `kube_pod_spec_volumes_persistentvolumeclaims_info{volume="dingo-data"}`,
+  which comes from the pod spec, so a pod that cannot start (for example on an
+  unbound claim) still counts as not ready, and from a started container named
+  `dingo` or a `dingo_build_info` series, which cover a StatefulSet that kept an
+  older claim template name.
 - **Kubelet volume stats** (`kubelet_volume_stats_*`, scraped from the kubelet
   by default in kube-prometheus-stack) for the storage runway panels, and
   cAdvisor container metrics for memory and CPU.
@@ -143,7 +148,8 @@ under `rule_files:` in `prometheus.yml`.
 
 The KES thresholds assume the default `rotation.renewBeforePeriods: 8`. If a
 DingoNode sets another value, adjust `DingoKESRotationDue` and
-`DingoKESRotationNotProgressing` to match.
+`DingoKESRotationNotProgressing` to match. Only rotation mode Auto renews a
+key; MonitorOnly, the default, reports and never renews.
 
 Run the unit tests with:
 
@@ -165,7 +171,6 @@ sources**, the dashboards resolve it without renaming a UID.
 | Variable | Dashboards | Source | Purpose |
 |----------|-----------|--------|---------|
 | `$network` | all | `cardano_network` label | Selects the Cardano network. The operator's PodMonitor adds this label from `spec.network`. Multi-select, default All. |
-| `netpod` (hidden) | Operator, DingoNodes | `label_values(dingo_build_info{cardano_network=~"$network"}, pod)` | The pods on the selected networks. Scopes the kube-state-metrics, kubelet and cAdvisor panels, which have no `cardano_network` label. |
 | `operator_namespace` | Operator | `label_values(controller_runtime_reconcile_total{controller="dingonode"}, namespace)` | The namespace the operator runs in. Selects its controller-runtime series. |
 | `controller` | Operator | `label_values(controller_runtime_reconcile_total{namespace="$operator_namespace"}, controller)` | The controller shown in the reconcile panels. |
 | `$pod` | Forging Health | `label_values(dingo_forge_credentials_valid{cardano_network=~"$network"}, pod)` | Selects block producers. Only pods that report `dingo_forge_credentials_valid` appear. |
@@ -197,7 +202,8 @@ exist.
 | Leader schedule: next slot, epoch progress, scheduled vs adopted, scheduled slots never checked, signer not ready (`dingo_leader_*`, `dingo_forge_remote_kes_signer_not_ready_total`) | A newer Dingo release than the one that lacks these metrics. They fill in after an upgrade. |
 | KES agent: sign round trip, dial failures, agent signs, agent connected (`dingo_kes_agent_*`) | A producer with `spec.blockProducer.signingAgent`. Producers with local KES keys never emit them. |
 | KES rotation timeline, KES periods left, opcert counters | A producer with a KES key and opcert loaded. |
-| Forge Anatomy: agent split (network and TLS, agent sign, slot guard) | Agent-side series keyed by agent profile. No query in the dashboard reads them, so the sign round trip shows as one stage. |
+| KES rotation timeline: agent key rows (`bursa_kesagent_last_period`, `bursa_kesagent_current_period`, `bursa_kesagent_opcert_issue_number`) | The bursa KES agent's metrics scraped. They carry a `profile` label, not the producer pod, so they are listed on their own rows; replicas that report different last periods or issue numbers are flagged. |
+| Forge Anatomy: agent split (network and TLS, agent sign, slot guard) | Agent-side series keyed by agent profile. No query in the dashboard reads them, so the sign round trip shows as one stage. When a block was rejected in self-validation, the stage split is withheld and the averages are listed separately. |
 | Slot battles, validation failures, stale tip skips | Series appear only after the first event; a flat baseline is the healthy state. |
 
 The dashboards show only DingoNodes that report the metrics a panel reads:

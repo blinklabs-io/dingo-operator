@@ -105,6 +105,35 @@ tests:
                 minutes (11 queued). The operator runs one worker, so a
                 slow reconcile delays every other node, including rotations.
 
+  # Six requests in each priority lane are twelve waiting: the lanes are summed
+  # before the threshold. One lane at 10 stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'workqueue_depth{name="dingonode",namespace="ops",priority="0"}'
+        values: '6+0x40'
+      - series: 'workqueue_depth{name="dingonode",namespace="ops",priority="-100"}'
+        values: '6+0x40'
+      - series: 'workqueue_depth{name="dingonode",namespace="edge",priority="0"}'
+        values: '10+0x40'
+      - series: 'workqueue_depth{name="dingonode",namespace="edge",priority="-100"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DingoOperatorWorkqueueBacklog
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DingoOperatorWorkqueueBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: ops
+            exp_annotations:
+              summary: dingo-operator work queue is backing up in ops
+              description: >-
+                More than 10 DingoNodes have been waiting for the operator for 15
+                minutes (12 queued). The operator runs one worker, so a
+                slow reconcile delays every other node, including rotations.
+
   # A reconcile running over 300 s for 5 minutes.
   - interval: 1m
     input_series:
@@ -129,19 +158,38 @@ tests:
                 With a single worker this blocks every other DingoNode.
 
   # A Dingo pod that is not ready; a ready one and a non-Dingo pod are ignored.
+  # A pod pending on an unbound claim has neither a container status nor a
+  # Ready condition, and still fires. A ready pod of the same name in another
+  # namespace does not hide it.
   - interval: 1m
     input_series:
       - series: 'kube_pod_status_ready{namespace="n1",pod="a-0",condition="true"}'
         values: '0+0x30'
-      - series: 'kube_pod_container_info{namespace="n1",pod="a-0",container="dingo"}'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="a-0",volume="dingo-data",persistentvolumeclaim="dingo-data-a-0"}'
         values: '1+0x30'
       - series: 'kube_pod_status_ready{namespace="n1",pod="b-0",condition="true"}'
         values: '1+0x30'
-      - series: 'kube_pod_container_info{namespace="n1",pod="b-0",container="dingo"}'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="b-0",volume="dingo-data",persistentvolumeclaim="dingo-data-b-0"}'
         values: '1+0x30'
       - series: 'kube_pod_status_ready{namespace="n1",pod="other-0",condition="true"}'
         values: '0+0x30'
-      - series: 'kube_pod_container_info{namespace="n1",pod="other-0",container="app"}'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="other-0",volume="data",persistentvolumeclaim="data-other-0"}'
+        values: '1+0x30'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="pending-0",volume="dingo-data",persistentvolumeclaim="dingo-data-pending-0"}'
+        values: '1+0x30'
+      - series: 'kube_pod_status_ready{namespace="n1",pod="relay-0",condition="true"}'
+        values: '0+0x30'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="relay-0",volume="dingo-data",persistentvolumeclaim="dingo-data-relay-0"}'
+        values: '1+0x30'
+      - series: 'kube_pod_status_ready{namespace="n1",pod="legacy-0",condition="true"}'
+        values: '0+0x30'
+      - series: 'kube_pod_container_info{namespace="n1",pod="legacy-0",container="dingo"}'
+        values: '1+0x30'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="legacy-0",volume="data",persistentvolumeclaim="data-legacy-0"}'
+        values: '1+0x30'
+      - series: 'kube_pod_status_ready{namespace="n2",pod="relay-0",condition="true"}'
+        values: '1+0x30'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n2",pod="relay-0",volume="dingo-data",persistentvolumeclaim="dingo-data-relay-0"}'
         values: '1+0x30'
     alert_rule_test:
       - eval_time: 10m
@@ -154,13 +202,34 @@ tests:
               severity: warning
               namespace: n1
               pod: a-0
-              condition: "true"
             exp_annotations:
               summary: Dingo pod n1/a-0 is not ready
               description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: legacy-0
+            exp_annotations:
+              summary: Dingo pod n1/legacy-0 is not ready
+              description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: pending-0
+            exp_annotations:
+              summary: Dingo pod n1/pending-0 is not ready
+              description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: relay-0
+            exp_annotations:
+              summary: Dingo pod n1/relay-0 is not ready
+              description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
 
   # A Dingo StatefulSet with an outdated replica. Another StatefulSet in the
-  # same namespace that runs no dingo container does not fire.
+  # same namespace without the dingo-data volume or a dingo container does not
+  # fire; one that kept an older claim name still does through its dingo container.
   - interval: 1m
     input_series:
       - series: 'kube_statefulset_replicas{namespace="n1",statefulset="a"}'
@@ -179,11 +248,19 @@ tests:
         values: '1+0x60'
       - series: 'kube_statefulset_status_replicas_updated{namespace="n1",statefulset="pg"}'
         values: '0+0x60'
-      - series: 'kube_pod_container_info{namespace="n1",pod="a-0",container="dingo"}'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="a-0",volume="dingo-data",persistentvolumeclaim="dingo-data-a-0"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_replicas{namespace="n3",statefulset="d"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_status_replicas_updated{namespace="n3",statefulset="d"}'
+        values: '0+0x60'
+      - series: 'kube_pod_container_info{namespace="n3",pod="d-0",container="dingo"}'
+        values: '1+0x60'
+      - series: 'kube_pod_owner{namespace="n3",pod="d-0",owner_kind="StatefulSet",owner_name="d"}'
         values: '1+0x60'
       - series: 'kube_pod_owner{namespace="n1",pod="a-0",owner_kind="StatefulSet",owner_name="a"}'
         values: '1+0x60'
-      - series: 'kube_pod_container_info{namespace="n1",pod="pg-0",container="postgres"}'
+      - series: 'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="n1",pod="pg-0",volume="pgdata",persistentvolumeclaim="pgdata-pg-0"}'
         values: '1+0x60'
       - series: 'kube_pod_owner{namespace="n1",pod="pg-0",owner_kind="StatefulSet",owner_name="pg"}'
         values: '1+0x60'
@@ -200,6 +277,16 @@ tests:
               statefulset: a
             exp_annotations:
               summary: StatefulSet n1/a has not finished rolling out
+              description: >-
+                Pods are still on the old revision 30 minutes after a change. The
+                operator rolls a producer after an accepted key bundle or a config
+                change; a stuck rollout keeps the old keys or config live.
+          - exp_labels:
+              severity: warning
+              namespace: n3
+              statefulset: d
+            exp_annotations:
+              summary: StatefulSet n3/d has not finished rolling out
               description: >-
                 Pods are still on the old revision 30 minutes after a change. The
                 operator rolls a producer after an accepted key bundle or a config
