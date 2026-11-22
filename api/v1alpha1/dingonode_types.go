@@ -775,7 +775,13 @@ type DingoNodeSpec struct {
 	ConfigRef string `json:"configRef,omitempty"`
 	// +optional
 	Image ImageSpec `json:"image,omitempty"`
-	// Replicas applies to relays. Block-producer active count is HA-managed.
+	// Replicas is the number of pods. A block producer honours it only when it
+	// signs through spec.blockProducer.signingAgent, where every pod forges and
+	// the agent's one-header-per-slot guard admits the first. That guard needs
+	// a Bursa KES agent of v0.23.0 or later, and every pod must reach one
+	// guard. A block producer that holds its KES key in a Secret runs one pod,
+	// and a larger value is refused. A producer scales above its running pod
+	// count only once none of its pods signs with a local KES key.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	// +optional
@@ -996,6 +1002,33 @@ type TipStatus struct {
 	LastProgressAt *metav1.Time `json:"lastProgressAt,omitempty"`
 }
 
+// ReplicaStatus reports one pod of a block producer as the last scrape saw it.
+type ReplicaStatus struct {
+	// Name is the pod name.
+	Name string `json:"name"`
+	// Scraped reports whether the pod's metrics were fetched. The fields below
+	// are unset when it is false.
+	Scraped bool `json:"scraped"`
+	// TipSlot is the pod's tip slot.
+	// +optional
+	TipSlot *int64 `json:"tipSlot,omitempty"`
+	// PipelineStuck is set when the pod's ledger pipeline reports it is stuck.
+	// +optional
+	PipelineStuck bool `json:"pipelineStuck,omitempty"`
+	// PipelineHalted is set when the pod's ledger pipeline reports it halted.
+	// +optional
+	PipelineHalted bool `json:"pipelineHalted,omitempty"`
+	// RemainingKESPeriods is the KES periods the pod's key has left. Unset for
+	// a pod that reports no KES state, or reports it per pool; see
+	// status.pools.
+	// +optional
+	RemainingKESPeriods *int64 `json:"remainingKesPeriods,omitempty"`
+	// OpCertKESPeriod is the KES period the pod's loaded opcert starts at.
+	// Unset under the same conditions as remainingKesPeriods.
+	// +optional
+	OpCertKESPeriod *int64 `json:"opcertKesPeriod,omitempty"`
+}
+
 // HAStatus reports the high-availability state of a block producer. Nothing
 // writes it yet: it is reserved for ActiveStandby, which validation rejects.
 type HAStatus struct {
@@ -1032,6 +1065,13 @@ type DingoNodeStatus struct {
 	// +listMapKey=poolId
 	// +optional
 	Pools []PoolStatus `json:"pools,omitempty"`
+	// Replicas reports what the last scrape saw of each pod of a block
+	// producer. status.kes and status.opcert.loadedCounter summarize the pod
+	// that is furthest behind.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Replicas []ReplicaStatus `json:"replicas,omitempty"`
 	// Tip tracks tip slot progress; see the LedgerPipelineHealthy condition.
 	// +optional
 	Tip TipStatus `json:"tip,omitempty"`

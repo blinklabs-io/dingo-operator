@@ -854,6 +854,19 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   NetworkPolicy → exactly one forger; rely on reschedule. With one replica the
   PDB blocks every voluntary eviction, so a drain never completes;
   `spec.blockProducer.podDisruptionBudget.enabled: false` removes it.
+  A producer that signs through `spec.blockProducer.signingAgent` may set
+  `spec.replicas` above 1: every pod forges and the agent's one-header-per-slot
+  guard admits the first, so a roll does not stop forging, and the PDB then
+  allows one voluntary eviction at a time. The guard is Bursa's (v0.23.0 and
+  later), and it holds only when every pod reaches one guard. Anti-affinity is
+  preferred, not required, so two pods can share a node. A producer that holds
+  its KES key in a Secret runs one pod, and `validateSpec` refuses a larger
+  `spec.replicas`. `upsertStatefulSet` keeps the live replica count while the
+  StatefulSet runs a local-KES template or has a roll unfinished
+  (`scaleUpBehindLocalSigner`): a new ordinal would otherwise start beside a
+  pod the agent's guard never sees. `status.replicas` reports each pod's
+  scrape; `status.kes` and `status.opcert.loadedCounter` summarize the pod
+  furthest behind.
 - `ActiveStandby` (not implemented): `validateSpec` rejects it. The intended
   design is a keyless hot standby with the operator holding a Lease so only the
   holder is keyed, and fenced promotion (old primary confirmed down/keyless).

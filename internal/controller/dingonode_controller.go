@@ -1204,11 +1204,13 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		// result from before scale-down, then report the current state as unknown.
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condPipelineHealthy)
 		dn.Status.Tip = dingov1alpha1.TipStatus{}
+		dn.Status.Replicas = nil
 		setPipelineUnknown(dn, "NoReplicas", "node has no desired replicas")
 		return
 	}
 	if r.ForgeStatus == nil {
 		dn.Status.Tip = dingov1alpha1.TipStatus{}
+		dn.Status.Replicas = nil
 		setPipelineUnknown(
 			dn,
 			"MetricsUnavailable",
@@ -1231,14 +1233,22 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	// PublishNotReadyAddresses, so an unready node stays scrapable.
 	// A pool list's unlabelled series are attributed by the pod that answered,
 	// read before and after the scrape.
-	var scraped scrapedPodRead
-	if isBP && resources.UsesPoolList(dn) {
-		scraped = r.readScrapedPod(ctx, dn)
+	replicas := desiredReplicas(dn)
+	usesPoolList := isBP && resources.UsesPoolList(dn)
+	podNames := make([]string, 0, replicas)
+	before := make(map[string]scrapedPodRead, replicas)
+	for replica := range replicas {
+		podNames = append(podNames, fmt.Sprintf("%s-%d", dn.Name, replica))
+	}
+	if usesPoolList {
+		for _, podName := range podNames {
+			before[podName] = r.readScrapedPod(ctx, dn, podName)
+		}
 	}
 	var statuses []*forgestatus.Status
 	var scrapeFailed bool
-	for replica := range desiredReplicas(dn) {
-		podName := fmt.Sprintf("%s-%d", dn.Name, replica)
+	var perPod []dingov1alpha1.ReplicaStatus
+	for _, podName := range podNames {
 		url := fmt.Sprintf(
 			"http://%s.%s.%s.svc.cluster.local:%d/metrics",
 			podName,
@@ -1251,17 +1261,25 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			logger.V(1).
 				Info("forge status unavailable", "pod", podName, "error", err.Error())
 			scrapeFailed = true
+			perPod = append(perPod, dingov1alpha1.ReplicaStatus{Name: podName})
 			continue
 		}
 		if st == nil {
 			logger.V(1).
 				Info("forge status unavailable", "pod", podName, "error", "empty metrics")
 			scrapeFailed = true
+			perPod = append(perPod, dingov1alpha1.ReplicaStatus{Name: podName})
 			continue
 		}
 		statuses = append(statuses, st)
+		perPod = append(perPod, replicaStatusOf(podName, st))
 	}
-	if scrapeFailed || len(statuses) != int(desiredReplicas(dn)) {
+	if isBP {
+		dn.Status.Replicas = perPod
+	} else {
+		dn.Status.Replicas = nil
+	}
+	if scrapeFailed || len(statuses) != int(replicas) {
 		// The node was not watched, so the persisted last-progress time says
 		// nothing about what it does once reachable again.
 		dn.Status.Tip = dingov1alpha1.TipStatus{}
@@ -1312,14 +1330,18 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	if !isBP {
 		return
 	}
-	// Block producers have one replica in v1; keep KES status tied to that
-	// replica's keys rather than an aggregate pipeline observation.
-	st := statuses[0]
-	if resources.UsesPoolList(dn) {
-		running, known := r.runningPools(ctx, dn, scraped)
+	// KES status is tied to the replicas' keys rather than the aggregate
+	// pipeline observation: pods differ while a rotation rolls through them,
+	// so it reports the one furthest behind.
+	if usesPoolList {
+		st := new(forgestatus.Status)
+		running, known := r.mergePoolPods(
+			ctx, dn, podNames, statuses, before, st,
+		)
 		r.observePools(dn, st, running, known)
 		return
 	}
+	st := furthestBehind(statuses)
 	r.observeLoadedOpCert(dn, st)
 	if !st.HasKESData {
 		setRotationDueUnknown(
@@ -1354,6 +1376,57 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 			ObservedGeneration: dn.Generation,
 		})
 	}
+}
+
+// replicaStatusOf is the per-pod report of a scraped pod.
+func replicaStatusOf(
+	name string,
+	st *forgestatus.Status,
+) dingov1alpha1.ReplicaStatus {
+	rs := dingov1alpha1.ReplicaStatus{
+		Name:           name,
+		Scraped:        true,
+		PipelineStuck:  st.PipelineStuck,
+		PipelineHalted: st.PipelineHalted,
+	}
+	if st.HasTipSlot {
+		rs.TipSlot = new(st.TipSlot)
+	}
+	if st.HasKESData {
+		rs.RemainingKESPeriods = new(st.RemainingKESPeriods)
+		rs.OpCertKESPeriod = new(st.OpCertStartKESPeriod)
+	}
+	return rs
+}
+
+// furthestBehind folds the pods' scrapes into the one status KES and the
+// loaded opcert counter are taken from. KES is the pod with the fewest periods
+// left; a pod without KES data wins, so RotationDue stays Unknown rather than
+// judging the others. The counter is the lowest any pod reports, and is
+// reported only when every pod does, so a rolled or in-place-reloaded counter
+// is confirmed only once every pod has loaded it. One pod is returned as is.
+func furthestBehind(statuses []*forgestatus.Status) *forgestatus.Status {
+	if len(statuses) == 1 {
+		return statuses[0]
+	}
+	worst := statuses[0]
+	for _, st := range statuses[1:] {
+		switch {
+		case !worst.HasKESData:
+		case !st.HasKESData ||
+			st.RemainingKESPeriods < worst.RemainingKESPeriods:
+			worst = st
+		}
+	}
+	merged := *worst
+	merged.HasOpCertCounter = true
+	for i, st := range statuses {
+		merged.HasOpCertCounter = merged.HasOpCertCounter && st.HasOpCertCounter
+		if i == 0 || st.OpCertCounter < merged.OpCertCounter {
+			merged.OpCertCounter = st.OpCertCounter
+		}
+	}
+	return &merged
 }
 
 func setRotationDueUnknown(
@@ -1794,11 +1867,12 @@ func (r *DingoNodeReconciler) updateStatus(
 	})
 }
 
-// desiredReplicas returns the StatefulSet replica count for the node's role and
-// HA strategy. Block producers run a single forging pod in v1; active/standby
-// (multiple pods, one keyed) is handled by the HA controller in a later phase.
+// desiredReplicas returns the StatefulSet replica count. A block producer that
+// holds its KES key in a Secret runs one pod whatever spec.replicas says: two
+// would each forge a different block for a slot. One that signs through an
+// agent may run several, because the agent signs one header per slot.
 func desiredReplicas(dn *dingov1alpha1.DingoNode) int32 {
-	if resources.IsBlockProducer(dn) {
+	if resources.IsBlockProducer(dn) && !resources.UsesSigningAgent(dn) {
 		return 1
 	}
 	if dn.Spec.Replicas != nil {

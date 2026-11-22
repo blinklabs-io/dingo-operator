@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"sort"
@@ -520,12 +521,13 @@ type scrapedPodRead struct {
 	err error
 }
 
-// readScrapedPod reads replica 0 of dn, the pod whose metrics a block
-// producer's status is taken from. Pods are listed, not read by name: the
-// operator may list them but not get them, and holds no Pod informer.
+// readScrapedPod reads the pod of dn called name, one of the pods whose
+// metrics a block producer's status is taken from. Pods are listed, not read by
+// name: the operator may list them but not get them, and holds no Pod informer.
 func (r *DingoNodeReconciler) readScrapedPod(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	name string,
 ) scrapedPodRead {
 	if r.APIReader == nil && r.Client == nil {
 		return scrapedPodRead{}
@@ -537,7 +539,6 @@ func (r *DingoNodeReconciler) readScrapedPod(
 	); err != nil {
 		return scrapedPodRead{err: err}
 	}
-	name := dn.Name + "-0"
 	for i := range pods.Items {
 		if pods.Items[i].Name == name {
 			return scrapedPodRead{pod: &pods.Items[i]}
@@ -546,7 +547,7 @@ func (r *DingoNodeReconciler) readScrapedPod(
 	return scrapedPodRead{}
 }
 
-// runningPools returns the pools the scraped pod stages, from the keys-pool
+// runningPools returns the pools the pod called name stages, from the keys-pool
 // annotation its template gave it, and whether they are known. before is the
 // pod as read before the scrape; it is read again here, and only the same pod
 // at both reads is the one that answered. During a roll the StatefulSet
@@ -562,10 +563,11 @@ func (r *DingoNodeReconciler) readScrapedPod(
 func (r *DingoNodeReconciler) runningPools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	name string,
 	before scrapedPodRead,
 ) (map[string]bool, bool) {
 	running := map[string]bool{}
-	after := r.readScrapedPod(ctx, dn)
+	after := r.readScrapedPod(ctx, dn, name)
 	if before.err != nil || after.err != nil {
 		return nil, false
 	}
@@ -601,6 +603,66 @@ func (r *DingoNodeReconciler) runningPools(
 		running[normalizedPoolID(p)] = true
 	}
 	return running, true
+}
+
+// mergePoolPods folds the scrapes of a pool-list producer's pods into merged,
+// the one status observePools reads, and returns the pools that run and
+// whether they are known. Each pod's pools are attributed by that pod's own
+// before/after read, then every pool keeps the metrics of the pod that is
+// furthest behind on it, and a pool counts as running when any pod runs it.
+// The pools are known only when they are known for every pod. statuses holds
+// one scrape per pod of podNames, in order.
+func (r *DingoNodeReconciler) mergePoolPods(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	podNames []string,
+	statuses []*forgestatus.Status,
+	before map[string]scrapedPodRead,
+	merged *forgestatus.Status,
+) (map[string]bool, bool) {
+	if len(statuses) == 1 {
+		if st := statuses[0]; st != nil {
+			*merged = *st
+			return r.runningPools(ctx, dn, podNames[0], before[podNames[0]])
+		}
+	}
+	merged.Pools = map[string]*forgestatus.PoolMetrics{}
+	running := map[string]bool{}
+	allKnown := true
+	for i, st := range statuses {
+		if st == nil {
+			continue
+		}
+		podRunning, known := r.runningPools(
+			ctx, dn, podNames[i], before[podNames[i]],
+		)
+		allKnown = allKnown && known
+		maps.Copy(running, podRunning)
+		for id, pm := range poolMetricsByID(podRunning, st) {
+			if prev, ok := merged.Pools[id]; ok {
+				pm = furthestBehindPool(prev, pm)
+			}
+			merged.Pools[id] = pm
+		}
+	}
+	return running, allKnown
+}
+
+// furthestBehindPool is furthestBehind for one pool's metrics of two pods.
+func furthestBehindPool(
+	a, b *forgestatus.PoolMetrics,
+) *forgestatus.PoolMetrics {
+	worst := a
+	if a.HasKESData &&
+		(!b.HasKESData || b.RemainingKESPeriods < a.RemainingKESPeriods) {
+		worst = b
+	}
+	merged := *worst
+	merged.HasOpCertCounter = a.HasOpCertCounter && b.HasOpCertCounter
+	merged.OpCertUnloaded = !merged.HasOpCertCounter &&
+		(a.OpCertUnloaded || b.OpCertUnloaded)
+	merged.OpCertCounter = min(a.OpCertCounter, b.OpCertCounter)
+	return &merged
 }
 
 // poolMetricsByID returns the node's per-pool metrics keyed by normalized pool

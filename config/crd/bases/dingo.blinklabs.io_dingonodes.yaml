@@ -2237,8 +2237,14 @@ spec:
                 type: object
               replicas:
                 default: 1
-                description: Replicas applies to relays. Block-producer active count
-                  is HA-managed.
+                description: |-
+                  Replicas is the number of pods. A block producer honours it only when it
+                  signs through spec.blockProducer.signingAgent, where every pod forges and
+                  the agent's one-header-per-slot guard admits the first. That guard needs
+                  a Bursa KES agent of v0.23.0 or later, and every pod must reach one
+                  guard. A block producer that holds its KES key in a Secret runs one pod,
+                  and a larger value is refused. A producer scales above its running pod
+                  count only once none of its pods signs with a local KES key.
                 format: int32
                 minimum: 0
                 type: integer
@@ -2794,6 +2800,56 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - poolId
+                x-kubernetes-list-type: map
+              replicas:
+                description: |-
+                  Replicas reports what the last scrape saw of each pod of a block
+                  producer. status.kes and status.opcert.loadedCounter summarize the pod
+                  that is furthest behind.
+                items:
+                  description: ReplicaStatus reports one pod of a block producer as
+                    the last scrape saw it.
+                  properties:
+                    name:
+                      description: Name is the pod name.
+                      type: string
+                    opcertKesPeriod:
+                      description: |-
+                        OpCertKESPeriod is the KES period the pod's loaded opcert starts at.
+                        Unset under the same conditions as remainingKesPeriods.
+                      format: int64
+                      type: integer
+                    pipelineHalted:
+                      description: PipelineHalted is set when the pod's ledger pipeline
+                        reports it halted.
+                      type: boolean
+                    pipelineStuck:
+                      description: PipelineStuck is set when the pod's ledger pipeline
+                        reports it is stuck.
+                      type: boolean
+                    remainingKesPeriods:
+                      description: |-
+                        RemainingKESPeriods is the KES periods the pod's key has left. Unset for
+                        a pod that reports no KES state, or reports it per pool; see
+                        status.pools.
+                      format: int64
+                      type: integer
+                    scraped:
+                      description: |-
+                        Scraped reports whether the pod's metrics were fetched. The fields below
+                        are unset when it is false.
+                      type: boolean
+                    tipSlot:
+                      description: TipSlot is the pod's tip slot.
+                      format: int64
+                      type: integer
+                  required:
+                  - name
+                  - scraped
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
                 x-kubernetes-list-type: map
               tip:
                 description: Tip tracks tip slot progress; see the LedgerPipelineHealthy

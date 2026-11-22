@@ -190,6 +190,16 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 		if err := validateSigningAgent(bp); err != nil {
 			return err
 		}
+		// Two pods holding the KES key each forge a block for the same slot.
+		// Only the agent's one-header-per-slot guard makes several pods safe.
+		if bp.SigningAgent == nil && dn.Spec.Replicas != nil &&
+			*dn.Spec.Replicas > 1 {
+			return fmt.Errorf(
+				"spec.replicas %d: a block producer runs one pod unless it "+
+					"signs through spec.blockProducer.signingAgent",
+				*dn.Spec.Replicas,
+			)
+		}
 		// An image that predates the remote agent ignores its address and,
 		// with no local kes.skey, cannot start, so refuse it before the
 		// producer template changes.

@@ -255,6 +255,12 @@ operators.
   its node does not complete. Set
   `spec.blockProducer.podDisruptionBudget.enabled: false` to let a drain evict
   it; the operator then deletes the budget.
+  A producer that signs through `spec.blockProducer.signingAgent` may run
+  several pods with `spec.replicas`; `status.replicas` reports each one. Every
+  pod forges, so the agent must refuse a second header for a signed slot: a
+  Bursa KES agent of v0.23.0 or later does, and every pod must reach the same
+  agent guard. A producer moving from a local KES key to an agent scales up
+  only after its pods have rolled onto the agent.
 - **Secure by default** — non-root, read-only root filesystem with writable
   `/tmp` and `/ipc` volumes, dropped capabilities, no privilege escalation,
   RuntimeDefault seccomp, no node service-account token, least-privilege RBAC,

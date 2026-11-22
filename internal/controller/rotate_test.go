@@ -234,6 +234,15 @@ func TestAutoRotateSkips(t *testing.T) {
 				)
 			},
 		},
+		{
+			// A pod of several that cannot be scraped mid-roll.
+			name: "rotation unknown",
+			mutate: func(f *rotateFixture) {
+				setRotationDueUnknown(
+					f.dn, "MetricsUnavailable", "one replica unscrapable",
+				)
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

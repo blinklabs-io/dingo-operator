@@ -203,7 +203,11 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
 			if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
-				sts.Spec.Replicas = desired.Spec.Replicas
+				if scaleUpBehindLocalSigner(sts, desired) {
+					sts.Spec.Replicas = new(liveReplicas(sts))
+				} else {
+					sts.Spec.Replicas = desired.Spec.Replicas
+				}
 			}
 			if keepTemplate {
 				withheld = &desired.Spec.Template
@@ -329,6 +333,34 @@ func holdsStoppedLocalSigner(
 	return keepTemplate && resources.UsesSigningAgent(dn) &&
 		sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 &&
 		forgesWithLocalKES(sts.Spec.Template.Spec)
+}
+
+// scaleUpBehindLocalSigner reports whether a StatefulSet must stay at its
+// live replica count rather than scale up to desired. Only the agent's
+// one-header-per-slot guard makes several producer pods safe, and it never
+// sees a pod that signs with a local KES key. A StatefulSet scaled up while it
+// runs a local-KES template, or while a roll is unfinished, starts the new
+// ordinal beside such a pod: on the agent beside the old revision, or on the
+// same kes.skey when the template is held. live is the StatefulSet as read,
+// before desired is applied.
+func scaleUpBehindLocalSigner(live, desired *appsv1.StatefulSet) bool {
+	if desired.Spec.Replicas == nil ||
+		*desired.Spec.Replicas <= liveReplicas(live) {
+		return false
+	}
+	st := live.Status
+	return forgesWithLocalKES(live.Spec.Template.Spec) ||
+		st.ObservedGeneration < live.Generation ||
+		st.CurrentRevision != st.UpdateRevision
+}
+
+// liveReplicas is the replica count a StatefulSet runs, at least one: a nil
+// count defaults to one, and a stopped one restarts with one pod.
+func liveReplicas(sts *appsv1.StatefulSet) int32 {
+	if sts.Spec.Replicas == nil {
+		return 1
+	}
+	return max(*sts.Spec.Replicas, 1)
 }
 
 // setsVoteKey reports whether a pod template sets the vote key variable.
