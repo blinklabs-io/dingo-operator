@@ -40,7 +40,8 @@ testbin/
 .worktrees/
 
 # Local-only planning/design docs (kept locally, never committed)
-/docs/
+/docs/*
+!/docs/dashboards/
 
 # Editor/IDE
 # .idea/

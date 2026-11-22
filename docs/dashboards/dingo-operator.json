@@ -1,0 +1,2355 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "For whoever runs the cluster, when a DingoNode change is not rolling out or the operator itself is in doubt. Answers: is dingo-operator up, reconciling without errors, and keeping up with the DingoNodes it manages - and are the pods and StatefulSets it created healthy? Bad looks like: Operator DOWN, any reconcile errors or panics, Worker busy pinned near 100% with queue wait growing, a longest-running reconcile that keeps climbing, non-2xx API calls, or pods not ready. The operator (v0.2.0) exports only controller-runtime default metrics: there is one controller and one workqueue, both named dingonode, with a single worker. DingoNode status fields such as phase, KES expiry and opcert counters are not metrics; for those see Dingo - Forging Health.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 2,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Operator",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/dingo-operator"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Dingonodes",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/dingonodes"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Forging Health",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/dingo-forging"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "id": 40,
+      "options": {
+        "afterRender": "// Operator: header afterRender JS (shared suite prelude + this dashboard's KPIs)\n(function () {\n  var ROOT_ID = 'hx-operator';\n  try {\n\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: f[j].labels || {}, v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  /* pills(list): one status pill per node, [{n: name, w: word, st: ok|warn|bad|na, t: tooltip, x: detail}] */\n  function pills(list) {\n    var c = el(ROOT_ID + '-pills'); if (!c) return;\n    var order = { bad: 0, warn: 1, na: 2, ok: 3 };\n    list.sort(function (a, b) { return (order[a.st] - order[b.st]) || String(a.n).localeCompare(String(b.n)) });\n    c.innerHTML = list.map(function (p) {\n      return '<span class=\"hx-pill\" data-s=\"' + p.st + '\" title=\"' + esc(p.t || '') + '\"><i></i>' + esc(p.n) +\n        ' <b>' + esc(p.w) + '</b>' + (p.x ? ' <small>' + esc(p.x) + '</small>' : '') + '</span>';\n    }).join('');\n  }\n  function nodeName(l) { return l.pod || '?' }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var issues = [], sev = 'ok';\n  function issue(st, text) { issues.push({ st: st, text: text }); sev = worst(sev, st) }\n  var up = one('UP');\n  kpi('op', has(up) ? (up >= 1 ? 'Up' : 'Down') : undefined, '', has(up) ? (up >= 1 ? 'ok' : 'bad') : 'na', has(up) ? (up >= 1 ? 'metrics scraped' : 'not scraped') : 'no dingo-operator target');\n  if (has(up) && up < 1) issue('bad', 'the operator is <b>down</b>, so no DingoNode is reconciled and no KES key is rotated');\n  var err = one('ERR'), pan = one('PAN'), nErr = has(err) ? Math.round(err) : undefined, nPan = has(pan) ? Math.round(pan) : 0;\n  kpi('err', has(nErr) ? String(nErr) : undefined, '', has(nErr) ? (nPan ? 'bad' : low(nErr, 1, 10)) : 'na', nPan ? plural(nPan, 'panic', 'panics') + ' in range' : 'in this range');\n  if (nPan) issue('bad', plural(nPan, 'reconcile', 'reconciles') + ' <b>panicked</b>');\n  if (nErr) issue(low(nErr, 1, 10), plural(nErr, 'reconcile', 'reconciles') + ' returned an error');\n  var busy = one('BUSY'), p95 = one('P95');\n  kpi('busy', has(busy) ? n0(busy * 100) : undefined, '%', low(busy, 0.85, 0.95), has(p95) ? 'reconcile p95 ' + p95.toFixed(1) + ' s' : 'one worker, last 15 min');\n  if (has(busy) && busy >= 0.85) issue(low(busy, 0.85, 0.95), 'the single worker is <b>' + n0(busy * 100) + '% busy</b>' + (has(p95) ? ' (a reconcile takes ' + p95.toFixed(1) + ' s at p95)' : ''));\n  var qw = one('QW');\n  kpi('qw', has(qw) ? n0(Math.max(0, qw) * 100) : undefined, '%', low(qw, 0.3, 0.6), 'of items waited over 10 s');\n  if (has(qw) && qw >= 0.3) issue(low(qw, 0.3, 0.6), '<b>' + n0(qw * 100) + '%</b> of queue items waited more than 10 s for the worker');\n  var tot = one('TOT'), rdy = one('RDY'), nr = rows('NR').map(function (r) { return r.l.pod });\n  if (!has(tot)) kpi('rdy'); else kpi('rdy', n0(rdy) + '/' + n0(tot), '', rdy >= tot ? 'ok' : 'warn', nr.length ? 'not ready: ' + names(nr, 2) : 'every DingoNode pod ready');\n  if (has(tot) && rdy < tot) issue('warn', plural(Math.round(tot - rdy), 'DingoNode pod is', 'DingoNode pods are') + ' not ready' + (nr.length ? ' (<b>' + esc(names(nr, 2)) + '</b>)' : ''));\n  var kes = minRow(rows('KES'));\n  if (!kes) kpi('rot', undefined, '', 'na', 'no producer reports KES periods');\n  else if (kes.v > 8) kpi('rot', n0((kes.v - 8) * 1.5), 'days', 'ok', (kes.l.pod || '') + ' · ' + n0(kes.v) + ' periods left');\n  else kpi('rot', 'Due', '', high(kes.v, 8.5, 4), (kes.l.pod || '') + ' · ' + n0(kes.v) + ' periods left');\n  if (kes && kes.v <= 8) issue(high(kes.v, 8.5, 4), 'KES rotation is due on <b>' + esc(kes.l.pod) + '</b> (' + plural(Math.round(kes.v), 'period', 'periods') + ' left) and has not been applied');\n  pills(rows('KES').map(function (r) {\n    var v = r.v, st = v > 8 ? 'ok' : (v > 4 ? 'warn' : 'bad');\n    return { n: nodeName(r.l), w: v > 8 ? 'KES OK' : (v > 4 ? 'Rotate' : 'Expiring'), st: st,\n      x: n0(v) + ' periods', t: n0(v) + ' KES periods left; the operator renews at 8 (rotation.renewBeforePeriods)' };\n  }));\n  var rst = one('RST'); if (has(rst) && Math.round(rst) > 0) issue('warn', 'the operator restarted ' + plural(Math.round(rst), 'time', 'times') + ' in 24 h');\n  var api = one('API'); if (has(api) && Math.round(api) > 0) issue('warn', plural(Math.round(api), 'Kubernetes API request', 'Kubernetes API requests') + ' failed');\n  if (!has(up) && !has(tot)) { verdict('No operator or DingoNode metrics in this time range.', 'na') }\n  else if (!issues.length) {\n    verdict('The operator is up and keeping pace' + (has(busy) ? ': worker ' + n0(busy * 100) + '% busy' : '') + (has(nErr) ? ', no reconcile errors' : '') +\n      (has(tot) ? '; all ' + n0(tot) + ' DingoNode pods are ready' : '') +\n      (kes ? '; next KES rotation in about ' + n0((kes.v - 8) * 1.5) + ' days (' + esc(kes.l.pod) + ')' : '') + '.', 'ok');\n  } else {\n    issues.sort(function (x, y) { return RANK[y.st] - RANK[x.st] });\n    var txt = issues.slice(0, 3).map(function (x) { return x.text }).join('; ');\n    if (issues.length > 3) txt += '; and ' + (issues.length - 3) + ' more';\n    if (txt.charAt(0) !== '<') txt = txt.charAt(0).toUpperCase() + txt.slice(1);\n    verdict(txt + '.' + (kes && kes.v > 8 ? ' Next KES rotation in about ' + n0((kes.v - 8) * 1.5) + ' days (' + esc(kes.l.pod) + ').' : ''), sev);\n  }\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-verdict');\n    if (v) v.textContent = 'Header script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
+        "content": "<div class=\"hx\" id=\"hx-operator\" data-s=\"na\"><div class=\"hx-top\"><div class=\"hx-id\"><div class=\"hx-eye\">Dingo · producer suite</div><div class=\"hx-title\">Operator</div><div class=\"hx-sub\">Is dingo-operator up, reconciling every DingoNode without errors, keeping pace with one worker, and renewing each producer's KES key before it expires?</div></div><div class=\"hx-badge\" id=\"hx-operator-badge\"><i></i><span>No data</span></div></div><div class=\"hx-verdict\" id=\"hx-operator-verdict\">Reading the data…</div><div class=\"hx-pills\" id=\"hx-operator-pills\"></div><div class=\"hx-kpis\"><div class=\"hx-k\" id=\"hx-operator-k-op\" data-s=\"na\"><div class=\"hx-kl\">Operator</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-err\" data-s=\"na\"><div class=\"hx-kl\">Reconcile errors</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-busy\" data-s=\"na\"><div class=\"hx-kl\">Worker busy</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-qw\" data-s=\"na\"><div class=\"hx-kl\">Queued > 10 s</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-rdy\" data-s=\"na\"><div class=\"hx-kl\">Nodes ready</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-rot\" data-s=\"na\"><div class=\"hx-kl\">Next rotation</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div></div></div>",
+        "contentPartials": [],
+        "defaultContent": "<div class=\"hx\" id=\"hx-operator\" data-s=\"na\"><div class=\"hx-top\"><div class=\"hx-id\"><div class=\"hx-eye\">Dingo · producer suite</div><div class=\"hx-title\">Operator</div><div class=\"hx-sub\">Is dingo-operator up, reconciling every DingoNode without errors, keeping pace with one worker, and renewing each producer's KES key before it expires?</div></div><div class=\"hx-badge\" id=\"hx-operator-badge\"><i></i><span>No data</span></div></div><div class=\"hx-verdict\" id=\"hx-operator-verdict\">No data came back for this time range, so there is nothing to judge.</div><div class=\"hx-kpis\"><div class=\"hx-k\" id=\"hx-operator-k-op\" data-s=\"na\"><div class=\"hx-kl\">Operator</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-err\" data-s=\"na\"><div class=\"hx-kl\">Reconcile errors</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-busy\" data-s=\"na\"><div class=\"hx-kl\">Worker busy</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-qw\" data-s=\"na\"><div class=\"hx-kl\">Queued > 10 s</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-rdy\" data-s=\"na\"><div class=\"hx-kl\">Nodes ready</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-operator-k-rot\" data-s=\"na\"><div class=\"hx-kl\">Next rotation</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div></div></div>",
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "editors": [],
+        "externalStyles": [],
+        "helpers": "",
+        "renderMode": "data",
+        "styles": ".hx{--ok:#3ecf73;--warn:#f5b12e;--bad:#f2605a;--na:rgba(140,148,160,.9);--info:#5b9cf5;--line:rgba(128,136,150,.22);--tint:rgba(128,136,150,.07);box-sizing:border-box;width:100%;min-height:100%;display:flex;flex-direction:column;gap:8px;padding:10px 16px 10px 18px;border:1px solid var(--line);border-left:4px solid var(--na);border-radius:8px;background:linear-gradient(135deg,var(--tint),rgba(128,136,150,0) 70%);font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:inherit;line-height:1.25}.hx *{box-sizing:border-box}body.theme-light .hx,.hx.hx-light{--ok:#15803d;--warn:#b45309;--bad:#c2261d;--na:rgba(90,98,110,.9);--info:#1d5fd0;--line:rgba(60,70,90,.2);--tint:rgba(60,70,90,.05)}.hx[data-s=ok]{border-left-color:var(--ok)}.hx[data-s=warn]{border-left-color:var(--warn)}.hx[data-s=bad]{border-left-color:var(--bad)}.hx-top{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:6px 18px}.hx-id{min-width:0;flex:1 1 320px}.hx-eye{font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;opacity:.55}.hx-title{font-size:22px;font-weight:650;letter-spacing:-.01em;margin-top:1px}.hx-sub{font-size:12px;opacity:.68;margin-top:2px;max-width:92ch}.hx-badge{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;border:1px solid var(--line);font-size:11px;font-weight:650;letter-spacing:.09em;text-transform:uppercase;color:var(--na);white-space:nowrap}.hx-badge i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}.hx[data-s=ok] .hx-badge{color:var(--ok)}.hx[data-s=warn] .hx-badge{color:var(--warn)}.hx[data-s=bad] .hx-badge{color:var(--bad)}.hx-verdict{font-size:14px;font-weight:500;padding:6px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow-wrap:anywhere}.hx-verdict b{font-weight:650}.hx-kpis{flex:1 1 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px}.hx-k{min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:7px 10px 8px;border-radius:6px;background:var(--tint);border-top:2px solid var(--na)}.hx-kl{font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;opacity:.62;overflow-wrap:anywhere}.hx-kv{font-size:24px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--na)}.hx-kv small{font-size:12px;font-weight:500;letter-spacing:0;margin-left:3px;opacity:.8}.hx-kn{font-size:11px;line-height:1.3;opacity:.66;overflow-wrap:anywhere;min-height:14px}.hx-k[data-s=ok]{border-top-color:var(--ok)}.hx-k[data-s=ok] .hx-kv{color:var(--ok)}.hx-k[data-s=warn]{border-top-color:var(--warn)}.hx-k[data-s=warn] .hx-kv{color:var(--warn)}.hx-k[data-s=bad]{border-top-color:var(--bad)}.hx-k[data-s=bad] .hx-kv{color:var(--bad)}.hx-fit1>.hx-top .hx-sub{display:none}.hx-fit2>.hx-top .hx-eye{display:none}.hx-fit2 .hx-kv{font-size:19px}.hx-fit2 .hx-k{padding:4px 9px 5px}.hx-fit2>.hx-verdict{font-size:13px;padding:4px 0}.hx-fit2 .hx-title{font-size:19px}.hx.hx-plain{border:0;border-left:0;background:none;padding:2px 4px;gap:6px;min-height:0}.hx-lg{display:flex;flex-wrap:wrap;gap:3px 14px;font-size:11px;opacity:.8;align-items:center}.hx-lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.hx-rows{display:flex;flex-direction:column}.hx-r{display:grid;grid-template-columns:minmax(120px,200px) minmax(120px,1fr) minmax(150px,230px);gap:2px 12px;align-items:center;padding:5px 0;border-top:1px solid var(--line)}.hx-rn{min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:0 7px}.hx-rn b{font-size:13px;font-weight:650}.hx-rn span{font-size:11px;opacity:.62}.hx-bar{position:relative;height:20px;border-radius:4px;background:var(--tint);overflow:hidden;display:flex}.hx-bar u{display:block;height:100%;min-width:2px;text-decoration:none}.hx-bar s{position:absolute;top:0;bottom:0;width:1px;background:var(--line);text-decoration:none}.hx-bar em{position:absolute;top:-2px;bottom:-2px;width:2px;background:currentColor;border-radius:1px}.hx-ax{position:relative;height:13px;font-size:10px;opacity:.55}.hx-ax span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}.hx-ax span:first-child{transform:none}.hx-ax span:last-child{transform:translateX(-100%)}.hx-rv{min-width:0;font-size:12px;font-variant-numeric:tabular-nums}.hx-rv b{font-size:15px;font-weight:650;color:var(--na)}.hx-rv[data-s=ok] b{color:var(--ok)}.hx-rv[data-s=warn] b{color:var(--warn)}.hx-rv[data-s=bad] b{color:var(--bad)}.hx-seg{grid-column:2 / 4;font-size:11px;opacity:.75;display:flex;flex-wrap:wrap;gap:1px 12px}.hx-seg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}.hx-fit1 .hx-seg{display:none}.hx-fit2 .hx-r{padding:2px 0}.hx-fit2 .hx-bar{height:13px}.hx-fit2 .hx-rv b{font-size:13px}.hx-fit2 .hx-lg{display:none}.hx-rings{display:flex;flex-wrap:wrap;justify-content:space-around;align-content:space-around;gap:6px 10px;flex:1 1 auto}.hx-ring{flex:1 1 118px;max-width:230px;min-width:0;display:flex;flex-direction:column;align-items:center;text-align:center}.hx-ring svg{width:100%;max-width:132px;height:auto;display:block}.hx-ring .trk{fill:none;stroke:var(--line);stroke-width:9}.hx-ring .arc{fill:none;stroke:var(--na);stroke-width:9;stroke-linecap:round}.hx-ring .tk{stroke:currentColor;stroke-width:1.5;opacity:.55}.hx-ring[data-s=ok] .arc{stroke:var(--ok)}.hx-ring[data-s=warn] .arc{stroke:var(--warn)}.hx-ring[data-s=bad] .arc{stroke:var(--bad)}.hx-ring .v{font-size:19px;font-weight:650;fill:currentColor;font-variant-numeric:tabular-nums}.hx-ring .u{font-size:9.5px;fill:currentColor;opacity:.62}.hx-ring b{font-size:13px;font-weight:650;overflow-wrap:anywhere}.hx-ring span{font-size:11px;opacity:.66;overflow-wrap:anywhere}.hx-fit1 .hx-ring{flex-basis:100px}.hx-fit1 .hx-ring svg{max-width:100px}.hx-fit1 .hx-ring span.x{display:none}.hx-fit2 .hx-ring{flex-basis:84px}.hx-fit2 .hx-ring svg{max-width:84px}.hx-fit2 .hx-ring span{display:none}.hx-fit2 .hx-ring b{font-size:11px}.hx-none{padding:18px 4px;font-size:13px;opacity:.7}@media (max-width:620px){.hx-r{grid-template-columns:1fr}.hx-seg{grid-column:1}.hx-title{font-size:19px}.hx-kv{font-size:20px}}\n.hx-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px; min-height: 0 }\n.hx-pills:empty { display: none }\n.hx-pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border-radius: 6px; font-size: 11px; line-height: 16px; white-space: nowrap; border: 1px solid rgba(204, 204, 220, .15); background: rgba(204, 204, 220, .04); color: inherit; transition: transform .2s ease, box-shadow .3s ease; cursor: default }\n.hx-pill:hover { transform: translateY(-1px); box-shadow: 0 3px 12px rgba(0, 0, 0, .35) }\n.hx-pill i { width: 7px; height: 7px; border-radius: 50%; background: #8e8e8e; flex-shrink: 0 }\n.hx-pill b { font-size: 9.5px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; opacity: .95 }\n.hx-pill[data-s=\"ok\"] { border-color: rgba(115, 191, 105, .28); background: rgba(115, 191, 105, .07) }\n.hx-pill[data-s=\"ok\"] i { background: #73BF69; box-shadow: 0 0 6px rgba(115, 191, 105, .6) }\n.hx-pill[data-s=\"ok\"] b { color: #73BF69 }\n.hx-pill[data-s=\"warn\"] { border-color: rgba(255, 152, 48, .32); background: rgba(255, 152, 48, .08) }\n.hx-pill[data-s=\"warn\"] i { background: #FF9830; box-shadow: 0 0 6px rgba(255, 152, 48, .6) }\n.hx-pill[data-s=\"warn\"] b { color: #FF9830 }\n.hx-pill[data-s=\"bad\"] { border-color: rgba(242, 73, 92, .38); background: rgba(242, 73, 92, .09) }\n.hx-pill[data-s=\"bad\"] i { background: #F2495C; box-shadow: 0 0 6px rgba(242, 73, 92, .7) }\n.hx-pill[data-s=\"bad\"] b { color: #F2495C }\n.hx-pill[data-s=\"na\"] b { color: #8e8e8e }\n.hx-pill small { opacity: .6; font-size: 10px }\n",
+        "wrap": false
+      },
+      "pluginVersion": "6.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "min(up{namespace=\"$operator_namespace\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "UP"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(increase(controller_runtime_reconcile_errors_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "ERR"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(increase(controller_runtime_reconcile_panics_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "PAN"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_sum{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "BUSY"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "P95"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "1 - sum(rate(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[15m])) / sum(rate(workqueue_queue_duration_seconds_count{namespace=\"$operator_namespace\",name=~\"$controller\"}[15m]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "QW"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "count(kube_pod_status_ready{pod=~\"${netpod:regex}\",condition=\"true\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "TOT"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(kube_pod_status_ready{pod=~\"${netpod:regex}\",condition=\"true\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "RDY"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (kube_pod_status_ready{pod=~\"${netpod:regex}\",condition=\"true\"}) == 0",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "NR"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "min by (pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "KES"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"$operator_namespace\"}[24h]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "RST"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(increase(rest_client_requests_total{namespace=\"$operator_namespace\",code!~\"2..\"}[$__range])) or vector(0)",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "API"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "marcusolsson-dynamictext-panel",
+      "description": "Good: operator Up, 0 reconcile errors, worker busy under 85%, nothing queued over 10 s, every DingoNode pod ready, and the next KES rotation more than 8 periods away."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Share of time the single worker spends inside a reconcile (reconcile seconds per second, divided by the configured maximum concurrent reconciles), over the last 15 minutes and the last hour. **Healthy: green, under 85%.** Amber from 85%, red from 95%: at that point DingoNodes become due faster than the worker clears them and the queue wait grows without bound. The trend is in Worker saturation beside it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              },
+              {
+                "color": "#f59e0b",
+                "value": 0.85
+              },
+              {
+                "color": "#ef4444",
+                "value": 0.95
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 6,
+        "h": 9
+      },
+      "id": 43,
+      "options": {
+        "barShape": "rounded",
+        "barWidthFactor": 0.5,
+        "effects": {
+          "barGlow": false,
+          "centerGlow": false,
+          "gradient": true
+        },
+        "endpointMarker": "none",
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "segmentCount": 1,
+        "segmentSpacing": 0.3,
+        "shape": "circle",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto",
+        "sparkline": false,
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_sum{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
+          "instant": true,
+          "legendFormat": "last 15 min",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_sum{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1h])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
+          "instant": true,
+          "legendFormat": "last hour",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Worker Busy",
+      "transparent": true,
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Every reconcile over the dashboard range by how it ended. `requeue_after` is the normal outcome: the operator finished and scheduled its next periodic check. `success` means done with nothing scheduled, `requeue` an immediate retry, `error` a reconcile that failed. **Healthy: one solid green ring of requeue_after.** Any red slice is a DingoNode the operator could not bring to its desired state: read the operator log for that controller.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#73BF69",
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "requeue_after"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#22c55e",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#86efac",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "requeue"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ef4444",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 8,
+        "w": 6,
+        "h": 9
+      },
+      "id": 42,
+      "options": {
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "orientation": "auto",
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sort": "desc",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (result) (increase(controller_runtime_reconcile_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "{{result}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Reconcile Outcomes",
+      "transparent": true,
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Every item the worker picked up over the dashboard range, by how long it had waited in the queue (`workqueue_queue_duration_seconds`; its buckets are decades, so these four bands are exact, where a quantile would be an interpolation). A wait of a few seconds is normal with one worker and a reconcile of about 5 s. **Healthy: mostly under 10 s and nothing over 100 s.** A growing 10 to 100 s slice means the worker is falling behind: see Worker Busy. The share over 10 s is also the Queued > 10 s figure in the header.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#73BF69",
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "under 1 s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#22c55e",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "1 to 10 s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#86efac",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "10 to 100 s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "over 100 s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ef4444",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 9
+      },
+      "id": 44,
+      "options": {
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "orientation": "auto",
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sort": "none",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"1(\\\\.0)?\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "under 1 s",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"1(\\\\.0)?\"}[$__range])), 0)",
+          "instant": true,
+          "legendFormat": "1 to 10 s",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"100(\\\\.0)?\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[$__range])), 0)",
+          "instant": true,
+          "legendFormat": "10 to 100 s",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=\"+Inf\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"100(\\\\.0)?\"}[$__range])), 0)",
+          "instant": true,
+          "legendFormat": "over 100 s",
+          "range": false,
+          "refId": "D"
+        }
+      ],
+      "title": "Queue Wait: How Long Items Waited for the Worker",
+      "transparent": true,
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Every DingoNode pod: readiness now, restarts in total and over the dashboard range, and uptime. **Healthy: all ready, 0 restarts in range.** Restarts in range turn amber at 1 and red at 3; for a restarted pod read `kubectl logs --previous` and check whether it was OOM-killed. This is the closest thing to per-DingoNode status available as metrics. Only pods that exist now are listed, so a removed DingoNode drops out at once.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "noValue": "-",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ready"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "#ef4444",
+                        "text": "NOT READY"
+                      },
+                      "1": {
+                        "color": "#22c55e",
+                        "text": "ready"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 158
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Restarts (range)"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 1
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 3
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Uptime"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Pod"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 260
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open ${__value.text} in Forging Health",
+                    "url": "/d/dingo-forging?var-pod=${__value.raw}&${network:queryparam}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 24,
+        "h": 11
+      },
+      "id": 26,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Pod"
+          }
+        ],
+        "zebraStriping": false
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (kube_pod_status_ready{pod=~\"${netpod:regex}\",condition=\"true\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (pod) (kube_pod_container_status_restarts_total{pod=~\"${netpod:regex}\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "(sum by (pod) (increase(kube_pod_container_status_restarts_total{pod=~\"${netpod:regex}\"}[$__range]))) and on (pod) max by (pod) (kube_pod_status_ready{pod=~\"${netpod:regex}\",condition=\"true\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "time() - max by (pod) (kube_pod_start_time{pod=~\"${netpod:regex}\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "D"
+        }
+      ],
+      "title": "DingoNode Pods",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "pod": 0
+            },
+            "renameByName": {
+              "Value #A": "Ready",
+              "Value #B": "Restarts (total)",
+              "Value #C": "Restarts (range)",
+              "Value #D": "Uptime",
+              "pod": "Pod"
+            }
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "The life of every KES key in one picture. One bar per producer runs from the KES period its operational certificate starts in to the period it expires in; grey is used up, the coloured part is what is left, the marker is now, and the hatched amber zone at the right is the rotation window: with rotation.mode Auto the operator renews when `renewBeforePeriods` (8 here, 12 days) are left. Shortest life first. Under each bar: when the rotation is due, the opcert issue number the node has loaded against the highest it has seen on chain, the KES period range, and credential reloads over the dashboard range. The lower rows are the keys the KES agent holds for the producers that sign through it (per profile; their start period is not exported, so those bars use the longest producer certificate as their scale). **Healthy: every marker left of the hatched zone, opcert loaded equal to or one ahead of the chain, replicas agreeing.** A marker inside the zone means a rotation is due and has not been applied: check the DingoNode's RotationDue and OpCertIssued conditions. A loaded opcert behind the chain means the node's blocks are rejected. With more keys than fit, the panel drops the detail line (hover a row for it) rather than scroll.",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 14,
+        "h": 11
+      },
+      "id": 41,
+      "options": {
+        "afterRender": "// KES Rotation Timeline: Key Life, Rotation Window, Opcert: afterRender JS\n(function () {\n  var ROOT_ID = 'hx-rotation';\n  try {\n\n  function fhref(x) { var u = new URLSearchParams(window.location.search); return '/d/dingo-forging?var-pod=' + encodeURIComponent(x.pod) + '&var-network=' + encodeURIComponent(x.net) + '&from=' + encodeURIComponent(u.get('from') || 'now-6h') + '&to=' + encodeURIComponent(u.get('to') || 'now') }\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: f[j].labels || {}, v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var RENEW = 8;\n  var out = el(ROOT_ID + '-rows'); if (!out) return;\n  var st = rows('ST'), EX = byLabel('EX', 'pod'), CUR = byLabel('CUR', 'pod'), SPK = byLabel('SPK', 'pod');\n  var OL = byLabel('OL', 'pod'), OC = byLabel('OC', 'pod'), RL = byLabel('RL', 'pod'), RF = byLabel('RF', 'pod');\n  var list = [], life = 0;\n  for (var i = 0; i < st.length; i++) {\n    var a = st[i].l.pod; if (!a || !has(EX[a]) || !has(CUR[a])) continue;\n    var o = { name: a, pod: st[i].l.pod || '', net: st[i].l.cardano_network || '', sub: st[i].l.cardano_network || '', start: st[i].v, end: EX[a], cur: CUR[a], days: (has(SPK[a]) ? SPK[a] : 129600) / 86400, ol: OL[a], oc: OC[a], rl: RL[a], rf: RF[a] };\n    o.life = Math.max(1, o.end - o.start); o.left = o.end - o.cur; life = Math.max(life, o.life); list.push(o);\n  }\n  list.sort(function (x, y) { return x.left - y.left });\n  if (!life) life = 62;\n  var AL = byLabel('AL', 'profile'), AC = byLabel('AC', 'profile'), AI = byLabel('AI', 'profile'), AD = byLabel('AD', 'profile'), agent = [];\n  for (var p in AL) { if (!has(AC[p])) continue; agent.push({ name: p, sub: 'KES agent key', agent: true, end: AL[p], cur: AC[p], left: AL[p] - AC[p], life: Math.max(life, AL[p] - AC[p]), days: 1.5, ol: AI[p], split: has(AD[p]) }) }\n  agent.sort(function (x, y) { return x.left - y.left });\n  var all = list.concat(agent);\n  if (!all.length) { out.innerHTML = '<div class=\"hx-none\">No producer reports an operational certificate in this time range.</div>'; return }\n  var h = '';\n  for (var r = 0; r < all.length; r++) {\n    var x = all[r], used = Math.min(1, Math.max(0, (x.life - x.left) / x.life)), win = Math.min(1, RENEW / x.life);\n    var status = x.left > RENEW ? 'ok' : (x.left >= 4 ? 'warn' : 'bad'), col = status === 'ok' ? 'var(--ok)' : (status === 'warn' ? 'var(--warn)' : 'var(--bad)');\n    var bar = '<u style=\"width:' + (used * 100).toFixed(2) + '%;background:rgba(128,136,150,.38)\" title=\"KES periods already used\"></u>' +\n      '<u style=\"width:' + (Math.max(0, 1 - used) * 100).toFixed(2) + '%;background:' + col + ';opacity:.8\" title=\"KES periods left\"></u>' +\n      '<u style=\"position:absolute;right:0;top:0;width:' + (win * 100).toFixed(2) + '%;background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\" title=\"rotation window: the operator renews when ' + RENEW + ' periods are left\"></u>' +\n      '<em style=\"left:calc(' + (used * 100).toFixed(2) + '% - 1px)\" title=\"now\"></em>';\n    var dLeft = x.left * x.days, dRot = (x.left - RENEW) * x.days, parts = [];\n    parts.push(x.left > RENEW ? 'rotation due in about <b>' + n0(dRot) + ' days</b>' : (x.left > 0 ? '<b style=\"color:var(--warn)\">in the rotation window: renewal is due now</b>' : '<b style=\"color:var(--bad)\">EXPIRED</b>'));\n    if (x.agent) {\n      parts.push('opcert #' + n0(x.ol));\n      parts.push('signable through KES period ' + n0(x.end) + ', now ' + n0(x.cur));\n      parts.push(x.split ? '<b style=\"color:var(--bad)\">replicas disagree on this key</b>' : 'replicas hold the same key');\n    } else {\n      if (has(x.ol) && has(x.oc)) parts.push(x.ol === x.oc ? 'opcert #' + n0(x.ol) + ' loaded, same on chain' : (x.ol > x.oc ? 'opcert #' + n0(x.ol) + ' loaded, chain has seen #' + n0(x.oc) + ' (new certificate, not yet used in a block)' : '<b style=\"color:var(--bad)\">opcert #' + n0(x.ol) + ' loaded is behind #' + n0(x.oc) + ' on chain: its blocks are rejected</b>'));\n      parts.push('KES periods ' + n0(x.start) + ' to ' + n0(x.end) + ', now ' + n0(x.cur));\n      var nrl = has(x.rl) ? Math.round(x.rl) : 0, nrf = has(x.rf) ? Math.round(x.rf) : 0;\n      parts.push(nrl ? plural(nrl, 'credential reload', 'credential reloads') + ' applied in this range' : 'no reload in this range');\n      if (nrf) parts.push('<b style=\"color:var(--bad)\">' + plural(nrf, 'reload', 'reloads') + ' failed</b>');\n    }\n    var tip = parts.join(' · ').replace(/<[^>]+>/g, '');\n    h += '<div class=\"hx-r\" title=\"' + esc(x.name + ': ' + tip) + '\"' + (r === 0 ? ' style=\"border-top:0\"' : '') + '><div class=\"hx-rn\"><b>' + (x.pod ? '<a href=\"' + esc(fhref(x)) + '\" style=\"color:inherit;text-decoration:none\" title=\"Open in Forging Health\">' + esc(x.name) + '</a>' : esc(x.name)) + '</b><span>' + esc(x.sub) + '</span></div>' +\n      '<div><div class=\"hx-bar\">' + bar + '</div></div>' +\n      '<div class=\"hx-rv\" data-s=\"' + status + '\"><b>' + plural(Math.round(x.left), 'period', 'periods') + '</b> ' + n0(dLeft) + ' days left</div>' +\n      '<div class=\"hx-seg\"><span>' + parts.join('</span><span>') + '</span></div></div>';\n  }\n  out.innerHTML = h;\n  fit();\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-rows');\n    if (v) v.textContent = 'Panel script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
+        "content": "<div class=\"hx hx-plain\" id=\"hx-rotation\"><div class=\"hx-lg\"><span><i style=\"background:rgba(128,136,150,.5)\"></i>KES periods used</span><span><i style=\"background:#3ecf73\"></i>periods left</span><span><i style=\"background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\"></i>rotation window (last 8 periods: the operator renews here)</span><span><i style=\"background:currentColor;width:2px\"></i>now</span></div><div class=\"hx-rows\" id=\"hx-rotation-rows\"></div></div>",
+        "contentPartials": [],
+        "defaultContent": "<div class=\"hx hx-plain\" id=\"hx-rotation\"><div class=\"hx-lg\"><span><i style=\"background:rgba(128,136,150,.5)\"></i>KES periods used</span><span><i style=\"background:#3ecf73\"></i>periods left</span><span><i style=\"background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\"></i>rotation window (last 8 periods: the operator renews here)</span><span><i style=\"background:currentColor;width:2px\"></i>now</span></div><div class=\"hx-rows\" id=\"hx-rotation-rows\"><div class=\"hx-none\">No producer reports an operational certificate in this time range.</div></div></div>",
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "editors": [],
+        "externalStyles": [],
+        "helpers": "",
+        "renderMode": "data",
+        "styles": ".hx{--ok:#3ecf73;--warn:#f5b12e;--bad:#f2605a;--na:rgba(140,148,160,.9);--info:#5b9cf5;--line:rgba(128,136,150,.22);--tint:rgba(128,136,150,.07);box-sizing:border-box;width:100%;min-height:100%;display:flex;flex-direction:column;gap:8px;padding:10px 16px 10px 18px;border:1px solid var(--line);border-left:4px solid var(--na);border-radius:8px;background:linear-gradient(135deg,var(--tint),rgba(128,136,150,0) 70%);font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:inherit;line-height:1.25}.hx *{box-sizing:border-box}body.theme-light .hx,.hx.hx-light{--ok:#15803d;--warn:#b45309;--bad:#c2261d;--na:rgba(90,98,110,.9);--info:#1d5fd0;--line:rgba(60,70,90,.2);--tint:rgba(60,70,90,.05)}.hx[data-s=ok]{border-left-color:var(--ok)}.hx[data-s=warn]{border-left-color:var(--warn)}.hx[data-s=bad]{border-left-color:var(--bad)}.hx-top{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:6px 18px}.hx-id{min-width:0;flex:1 1 320px}.hx-eye{font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;opacity:.55}.hx-title{font-size:22px;font-weight:650;letter-spacing:-.01em;margin-top:1px}.hx-sub{font-size:12px;opacity:.68;margin-top:2px;max-width:92ch}.hx-badge{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;border:1px solid var(--line);font-size:11px;font-weight:650;letter-spacing:.09em;text-transform:uppercase;color:var(--na);white-space:nowrap}.hx-badge i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}.hx[data-s=ok] .hx-badge{color:var(--ok)}.hx[data-s=warn] .hx-badge{color:var(--warn)}.hx[data-s=bad] .hx-badge{color:var(--bad)}.hx-verdict{font-size:14px;font-weight:500;padding:6px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow-wrap:anywhere}.hx-verdict b{font-weight:650}.hx-kpis{flex:1 1 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px}.hx-k{min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:7px 10px 8px;border-radius:6px;background:var(--tint);border-top:2px solid var(--na)}.hx-kl{font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;opacity:.62;overflow-wrap:anywhere}.hx-kv{font-size:24px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--na)}.hx-kv small{font-size:12px;font-weight:500;letter-spacing:0;margin-left:3px;opacity:.8}.hx-kn{font-size:11px;line-height:1.3;opacity:.66;overflow-wrap:anywhere;min-height:14px}.hx-k[data-s=ok]{border-top-color:var(--ok)}.hx-k[data-s=ok] .hx-kv{color:var(--ok)}.hx-k[data-s=warn]{border-top-color:var(--warn)}.hx-k[data-s=warn] .hx-kv{color:var(--warn)}.hx-k[data-s=bad]{border-top-color:var(--bad)}.hx-k[data-s=bad] .hx-kv{color:var(--bad)}.hx-fit1>.hx-top .hx-sub{display:none}.hx-fit2>.hx-top .hx-eye{display:none}.hx-fit2 .hx-kv{font-size:19px}.hx-fit2 .hx-k{padding:4px 9px 5px}.hx-fit2>.hx-verdict{font-size:13px;padding:4px 0}.hx-fit2 .hx-title{font-size:19px}.hx.hx-plain{border:0;border-left:0;background:none;padding:2px 4px;gap:6px;min-height:0}.hx-lg{display:flex;flex-wrap:wrap;gap:3px 14px;font-size:11px;opacity:.8;align-items:center}.hx-lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.hx-rows{display:flex;flex-direction:column}.hx-r{display:grid;grid-template-columns:minmax(120px,200px) minmax(120px,1fr) minmax(150px,230px);gap:2px 12px;align-items:center;padding:5px 0;border-top:1px solid var(--line)}.hx-rn{min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:0 7px}.hx-rn b{font-size:13px;font-weight:650}.hx-rn span{font-size:11px;opacity:.62}.hx-bar{position:relative;height:20px;border-radius:4px;background:var(--tint);overflow:hidden;display:flex}.hx-bar u{display:block;height:100%;min-width:2px;text-decoration:none}.hx-bar s{position:absolute;top:0;bottom:0;width:1px;background:var(--line);text-decoration:none}.hx-bar em{position:absolute;top:-2px;bottom:-2px;width:2px;background:currentColor;border-radius:1px}.hx-ax{position:relative;height:13px;font-size:10px;opacity:.55}.hx-ax span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}.hx-ax span:first-child{transform:none}.hx-ax span:last-child{transform:translateX(-100%)}.hx-rv{min-width:0;font-size:12px;font-variant-numeric:tabular-nums}.hx-rv b{font-size:15px;font-weight:650;color:var(--na)}.hx-rv[data-s=ok] b{color:var(--ok)}.hx-rv[data-s=warn] b{color:var(--warn)}.hx-rv[data-s=bad] b{color:var(--bad)}.hx-seg{grid-column:2 / 4;font-size:11px;opacity:.75;display:flex;flex-wrap:wrap;gap:1px 12px}.hx-seg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}.hx-fit1 .hx-seg{display:none}.hx-fit2 .hx-r{padding:2px 0}.hx-fit2 .hx-bar{height:13px}.hx-fit2 .hx-rv b{font-size:13px}.hx-fit2 .hx-lg{display:none}.hx-rings{display:flex;flex-wrap:wrap;justify-content:space-around;align-content:space-around;gap:6px 10px;flex:1 1 auto}.hx-ring{flex:1 1 118px;max-width:230px;min-width:0;display:flex;flex-direction:column;align-items:center;text-align:center}.hx-ring svg{width:100%;max-width:132px;height:auto;display:block}.hx-ring .trk{fill:none;stroke:var(--line);stroke-width:9}.hx-ring .arc{fill:none;stroke:var(--na);stroke-width:9;stroke-linecap:round}.hx-ring .tk{stroke:currentColor;stroke-width:1.5;opacity:.55}.hx-ring[data-s=ok] .arc{stroke:var(--ok)}.hx-ring[data-s=warn] .arc{stroke:var(--warn)}.hx-ring[data-s=bad] .arc{stroke:var(--bad)}.hx-ring .v{font-size:19px;font-weight:650;fill:currentColor;font-variant-numeric:tabular-nums}.hx-ring .u{font-size:9.5px;fill:currentColor;opacity:.62}.hx-ring b{font-size:13px;font-weight:650;overflow-wrap:anywhere}.hx-ring span{font-size:11px;opacity:.66;overflow-wrap:anywhere}.hx-fit1 .hx-ring{flex-basis:100px}.hx-fit1 .hx-ring svg{max-width:100px}.hx-fit1 .hx-ring span.x{display:none}.hx-fit2 .hx-ring{flex-basis:84px}.hx-fit2 .hx-ring svg{max-width:84px}.hx-fit2 .hx-ring span{display:none}.hx-fit2 .hx-ring b{font-size:11px}.hx-none{padding:18px 4px;font-size:13px;opacity:.7}@media (max-width:620px){.hx-r{grid-template-columns:1fr}.hx-seg{grid-column:1}.hx-title{font-size:19px}.hx-kv{font-size:20px}}",
+        "wrap": false
+      },
+      "pluginVersion": "6.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod, cardano_network) (cardano_node_metrics_operationalCertificateStartKESPeriod_int{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "ST"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (cardano_node_metrics_operationalCertificateExpiryKESPeriod_int{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "EX"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (cardano_node_metrics_currentKESPeriod_int{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "CUR"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "SPK"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "OL"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "OC"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (pod) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\",result=\"success\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "RL"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (pod) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\",result=\"failure\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "RF"
+        }
+      ],
+      "title": "KES Rotation Timeline: Key Life, Rotation Window, Opcert",
+      "transparent": true,
+      "type": "marcusolsson-dynamictext-panel"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Readiness of each DingoNode pod over time. **Healthy: solid green.** A red stretch is a restart, a rollout or a failed readiness probe; several pods turning red at the same moment points at the host or the operator rolling a change, a single pod at the node itself.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#ef4444",
+                  "text": "Not ready"
+                },
+                "1": {
+                  "color": "#22c55e",
+                  "text": "Ready"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#6b7280",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 28,
+        "w": 10,
+        "h": 11
+      },
+      "id": 27,
+      "options": {
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "showValue": "never",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (kube_pod_status_ready{pod=~\"${netpod:regex}\",condition=\"true\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Pod Readiness",
+      "transparent": true,
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "KES periods left per producer over time. It falls by one every 1.5 days and jumps back up when a rotation is applied, so the sawtooth is the rotation history. With rotation.mode Auto the operator renews at renewBeforePeriods (8 here, the top of the amber band; the red band starts at 4), so a line that crosses 8 and keeps falling means a rotation did not go through: check the DingoNode's RotationDue and OpCertIssued conditions. **Healthy: every line above the amber band, or dipping into it only briefly before it jumps back up.**",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed+area"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 6
+              },
+              {
+                "color": "transparent",
+                "value": 9
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 14,
+        "h": 8
+      },
+      "id": 37,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": false
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "KES Periods Left over Time",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Block producer credential reloads per hour, by trigger (signal, file change, agent push) and result (success, unchanged, failure). Series at zero are hidden, so **a flat baseline is normal** between rotations. A success after a KES rotation is what you want to see; a failure means the new key or certificate was rejected and the producer is still on the old one - read the node log before the old key expires. **Healthy: a success after each rotation and never a failure.**",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMax": 1,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "No rotations in this range"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 39,
+        "w": 10,
+        "h": 8
+      },
+      "id": 38,
+      "interval": "1h",
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (pod, trigger, result) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\"}[1h])) > 0",
+          "legendFormat": "{{pod}} {{trigger}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Rotations Applied (Credential Reloads)",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Reconciles per minute by result. `requeue_after` is the normal outcome and should be the only non-zero line: the operator finished and scheduled its next periodic check. `success` (done, nothing scheduled) and `requeue` (immediate retry) stay at 0 in this operator; `error` should be 0. If the `requeue_after` line drops to 0 while the operator is UP, the worker is hung - see In-Flight and Longest-Running Reconcile. **Healthy: one steady green band.**",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* requeue_after$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#22c55e",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* success$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#86efac",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* requeue$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* error$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ef4444",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 14,
+        "h": 9
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (controller, result) (rate(controller_runtime_reconcile_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[5m])) * 60",
+          "legendFormat": "{{controller}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Reconciles per Minute by Result",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "How long each reconcile took, as a heatmap of `controller_runtime_reconcile_time_seconds`: time runs left to right, the duration bucket bottom to top, and a darker cell means more reconciles landed in that bucket in that 5-minute step. Most of a reconcile is reading the node's metrics endpoint and writing status, so a slow or unreachable node lifts the band toward the timeout. **Healthy: one tight band around 5 s** (today: nearly everything between 1 and 10 s). A second band higher up, or a band that drifts upward, is a node that answers slowly; with a single worker every extra second adds directly to Worker saturation.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 47,
+        "w": 10,
+        "h": 9
+      },
+      "id": 14,
+      "interval": "5m",
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "cellValues": {
+          "decimals": 0,
+          "unit": "short"
+        },
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "Blues",
+          "steps": 64
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-09
+        },
+        "legend": {
+          "placement": "bottom",
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "showValue": "never",
+        "tooltip": {
+          "mode": "single",
+          "showColorScale": true,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "s"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__interval]))",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Reconcile Duration",
+      "transparent": true,
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Share of time the worker is inside a reconcile: reconcile seconds per second divided by the configured maximum concurrent reconciles (1). The 5-minute line shows bursts, the 1-hour line the trend. The amber and red bands start at 85% and 95%: sustained above them, DingoNodes become due faster than the worker clears them and queue wait grows without bound. Remedies are a cheaper or less frequent reconcile, or more workers. **Healthy: both lines below the amber band.**",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed+area"
+            }
+          },
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": 0
+              },
+              {
+                "color": "#f59e0b",
+                "value": 0.85
+              },
+              {
+                "color": "#ef4444",
+                "value": 0.95
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 8,
+        "h": 8
+      },
+      "id": 34,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_sum{namespace=\"$operator_namespace\",controller=~\"$controller\"}[5m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
+          "legendFormat": "busy (5m)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(rate(controller_runtime_reconcile_time_seconds_sum{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1h])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
+          "legendFormat": "busy (1h)",
+          "refId": "B"
+        }
+      ],
+      "title": "Worker Saturation",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "DingoNodes waiting for the worker, per priority lane of controller-runtime's priority queue. **Priority 0** is the normal lane: watch events and the periodic requeues. **Priority -100** is the low-priority lane controller-runtime uses for bulk re-list work - items queued when the operator starts or its cache resyncs without the object having changed - so that a restart cannot delay a real change; higher priority is served first. Depth is a count only: there is no per-DingoNode label, and each DingoNode is queued at most once, so the ceiling is the number of DingoNodes. **Healthy: brief spikes that drain to 0** (7-day maximum: 7 in lane 0, 1 in lane -100). A lane that stays above 0 for minutes means the worker is saturated or hung.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 56,
+        "w": 8,
+        "h": 8
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(workqueue_depth{namespace=\"$operator_namespace\",name=~\"$controller\",priority=\"0\"})",
+          "legendFormat": "normal lane (priority 0)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(workqueue_depth{namespace=\"$operator_namespace\",name=~\"$controller\",priority=\"-100\"})",
+          "legendFormat": "low-priority lane (-100)",
+          "refId": "B"
+        }
+      ],
+      "title": "Queue Depth by Priority Lane",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "`workqueue_unfinished_work_seconds`: seconds of work currently in progress and not yet finished. `workqueue_longest_running_processor_seconds`: age of the oldest reconcile still running. With one worker the two are the same reconcile. **Healthy: a sawtooth that resets every few seconds**. A line that keeps climbing past a minute is a hung reconcile: nothing else is processed until it returns. Restarting the operator pod clears it; capture the log first.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed+area"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 60
+              },
+              {
+                "color": "#ef4444",
+                "value": 300
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 56,
+        "w": 8,
+        "h": 8
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum(workqueue_unfinished_work_seconds{namespace=\"$operator_namespace\",name=~\"$controller\"})",
+          "legendFormat": "unfinished work",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max(workqueue_longest_running_processor_seconds{namespace=\"$operator_namespace\",name=~\"$controller\"})",
+          "legendFormat": "longest running",
+          "refId": "B"
+        }
+      ],
+      "title": "In-Flight and Longest-Running Reconcile",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Operator resident memory as the process reports it, the container working set the kubelet uses for OOM decisions, and the container memory limit. **Healthy: flat, well under the limit** (about 80 MiB RSS against a 256 MiB limit today). A steady climb is a leak and ends in an OOM kill, visible as a restart.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ef4444",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    8,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (pod) (process_resident_memory_bytes{namespace=\"$operator_namespace\"})",
+          "legendFormat": "{{pod}} rss",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"$operator_namespace\",container=\"manager\"})",
+          "legendFormat": "{{pod}} working set",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max(kube_pod_container_resource_limits{namespace=\"$operator_namespace\",resource=\"memory\"})",
+          "legendFormat": "limit",
+          "refId": "C"
+        }
+      ],
+      "title": "Memory",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Requests per second from the operator to the Kubernetes API, by HTTP method and status code. **Healthy: only 2xx** - today roughly 1.6 GET, 1.0 PUT and a trickle of POST per second, about 7 PUTs per reconcile. 409 is an update conflict, 403 missing RBAC, 429 client- or server-side throttling, 5xx an API server problem. The PUT volume follows the reconcile rate, so it halves if the doubled reconcile rate is fixed. Any series that is not 2xx is drawn red.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* [345]\\d\\d$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ef4444",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (method, code) (rate(rest_client_requests_total{namespace=\"$operator_namespace\"}[5m]))",
+          "legendFormat": "{{method}} {{code}}",
+          "refId": "A"
+        }
+      ],
+      "title": "API Requests by Method and Code",
+      "transparent": true,
+      "type": "timeseries"
+    }
+  ],
+  "preload": false,
+  "refresh": "30s",
+  "schemaVersion": 42,
+  "tags": [
+    "dingo",
+    "cardano",
+    "operator"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".+",
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "label_values(dingo_build_info, cardano_network)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Network",
+        "multi": true,
+        "name": "network",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(dingo_build_info, cardano_network)",
+          "refId": "network"
+        },
+        "refresh": 2,
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "label_values(dingo_build_info{cardano_network=~\"$network\"}, pod)",
+        "hide": 2,
+        "includeAll": true,
+        "label": "Pods in network",
+        "multi": true,
+        "name": "netpod",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(dingo_build_info{cardano_network=~\"$network\"}, pod)",
+          "refId": "netpod"
+        },
+        "refresh": 2,
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "label_values(controller_runtime_reconcile_total{controller=\"dingonode\"}, namespace)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Operator namespace",
+        "multi": false,
+        "name": "operator_namespace",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(controller_runtime_reconcile_total{controller=\"dingonode\"}, namespace)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "allowCustomValue": true,
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "label_values(controller_runtime_reconcile_total{namespace=\"$operator_namespace\"}, controller)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Controller",
+        "multi": true,
+        "name": "controller",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(controller_runtime_reconcile_total{namespace=\"$operator_namespace\"}, controller)",
+          "refId": "controller"
+        },
+        "refresh": 2,
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Dingo — Operator",
+  "uid": "dingo-operator"
+}

@@ -1,0 +1,193 @@
+# Prometheus alert rules for dingo-operator and the DingoNodes it manages.
+#
+# Scope: the operator, rotation and producer readiness, rollouts and storage.
+# Node-level sync and peer alerts (DingoBlockStall, DingoSlotDrift,
+# DingoPeerLoss, ...) live in Dingo's own docs/dashboards/alerts.yaml; load
+# both files.
+#
+# Requirements:
+# - the operator's metrics scraped (dingo-operator chart podMonitor.enabled);
+#   its series are found by controller="dingonode", so no job name is assumed
+# - the DingoNodes scraped (spec.metrics.podMonitor.enabled)
+# - kube-state-metrics and kubelet volume stats (kube-prometheus-stack defaults)
+#
+# Thresholds assume the operator default rotation.renewBeforePeriods: 8. If a
+# DingoNode sets another value, adjust DingoKESRotationDue to match.
+groups:
+  - name: dingo-operator
+    rules:
+      - alert: DingoOperatorAbsent
+        expr: absent(controller_runtime_active_workers{controller="dingonode"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: dingo-operator is not being scraped
+          description: >-
+            No dingo-operator controller metrics for 10 minutes: the operator is
+            down, or its PodMonitor is not scraped. While it is down nothing
+            reconciles DingoNodes and no KES rotation happens.
+
+      - alert: DingoOperatorReconcileErrors
+        expr: sum by (namespace) (rate(controller_runtime_reconcile_errors_total{controller="dingonode"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: dingo-operator reconciles are failing in {{ $labels.namespace }}
+          description: >-
+            DingoNode reconciles have returned errors for 15 minutes. Short
+            bursts from update conflicts are normal; a sustained rate means a
+            DingoNode is stuck. Check the operator log and the DingoNode
+            Degraded condition.
+
+      - alert: DingoOperatorReconcilePanic
+        expr: sum by (namespace) (increase(controller_runtime_reconcile_panics_total{controller="dingonode"}[10m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: dingo-operator panicked during a reconcile in {{ $labels.namespace }}
+          description: A DingoNode reconcile panicked in the last 10 minutes. This is an operator bug; collect the log.
+
+      - alert: DingoOperatorWorkqueueBacklog
+        expr: max by (namespace) (workqueue_depth{name="dingonode"}) > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: dingo-operator work queue is backing up in {{ $labels.namespace }}
+          description: >-
+            More than 10 DingoNodes have been waiting for the operator for 15
+            minutes ({{ $value }} queued). The operator runs one worker, so a
+            slow reconcile delays every other node, including rotations.
+
+      - alert: DingoOperatorReconcileHung
+        expr: max by (namespace) (workqueue_longest_running_processor_seconds{name="dingonode"}) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: a dingo-operator reconcile has run for over 5 minutes in {{ $labels.namespace }}
+          description: >-
+            One reconcile has been running for {{ $value | humanizeDuration }}.
+            With a single worker this blocks every other DingoNode.
+
+  - name: dingonodes
+    rules:
+      - alert: DingoNodePodNotReady
+        expr: |
+          kube_pod_status_ready{condition="true"} == 0
+          and on (namespace, pod) kube_pod_container_info{container="dingo"}
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Dingo pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready
+          description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
+
+      - alert: DingoNodeRolloutStuck
+        expr: |
+          (kube_statefulset_status_replicas_updated < kube_statefulset_replicas)
+          and on (namespace) group by (namespace) (kube_pod_container_info{container="dingo"})
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has not finished rolling out
+          description: >-
+            Pods are still on the old revision 30 minutes after a change. The
+            operator rolls a producer after an accepted key bundle or a config
+            change; a stuck rollout keeps the old keys or config live.
+
+      - alert: DingoVolumeFillingUp
+        expr: |
+          predict_linear(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~"dingo-data-.*"}[24h], 7 * 86400) < 0
+          and kubelet_volume_stats_available_bytes{persistentvolumeclaim=~"dingo-data-.*"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~"dingo-data-.*"} < 0.25
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Dingo volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} fills within 7 days
+          description: >-
+            At the last 24 hours' rate the volume is full within a week and is
+            already over 75% used. A Mithril bootstrap or a sync fills fast and
+            then stops, so check whether the node is syncing first.
+
+      - alert: DingoVolumeAlmostFull
+        expr: |
+          kubelet_volume_stats_available_bytes{persistentvolumeclaim=~"dingo-data-.*"}
+            / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~"dingo-data-.*"} < 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Dingo volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is over 95% full
+          description: Under 5% free. Grow the volume (spec.persistence.size) before the database stops writing.
+
+  - name: dingo-producers
+    rules:
+      - alert: DingoKESRotationDue
+        expr: min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int) <= 8
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: KES rotation due on {{ $labels.namespace }}/{{ $labels.pod }}
+          description: >-
+            {{ $value }} KES periods left, at or under the operator's renewal
+            threshold. In rotation mode Auto the operator should rotate within
+            a reconcile or two; in Assisted, deliver a new KES key and opcert.
+
+      - alert: DingoKESRotationNotProgressing
+        expr: min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int) <= 5
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: KES key on {{ $labels.namespace }}/{{ $labels.pod }} has {{ $value }} periods left and was not rotated
+          description: >-
+            Rotation was due 3 or more KES periods ago and has not happened.
+            When the key expires the producer stops forging. Check the
+            DingoNode KeysValid and RotationDue conditions and the operator's
+            rotation Events.
+
+      - alert: DingoOpcertCounterBehindChain
+        expr: dingo_forge_opcert_counter_loaded < dingo_forge_opcert_counter_onchain
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: opcert counter on {{ $labels.namespace }}/{{ $labels.pod }} is behind the chain
+          description: >-
+            The loaded operational certificate counter is below the one the
+            chain has seen for this pool, so every block it forges is
+            rejected. Issue an opcert at the on-chain counter plus one.
+
+      - alert: DingoForgeCredentialsInvalid
+        expr: dingo_forge_credentials_valid == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} cannot sign blocks"
+          description: The producer's KES key, VRF key or opcert cannot sign at the current slot. It will miss every leader slot until fixed.
+
+      - alert: DingoKESAgentDisconnected
+        expr: dingo_kes_agent_connected == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} has lost its KES signing agent"
+          description: The producer signs through a remote KES agent and has had no connection for 5 minutes. It cannot sign a block until it reconnects.
+
+      - alert: DingoMissedLeaderSlots
+        expr: sum by (namespace, pod) (increase(dingo_forge_missed_leader_slots_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} missed a leader slot"
+          description: >-
+            {{ $value }} leader slot(s) in the last hour without an adopted
+            block of this pool's own. See the Forging Health dashboard's
+            Forge Problems panel for the reason.

@@ -217,6 +217,8 @@ operators.
   block-apply batch latency, and the KES/opcert metrics used for status and
   rotation monitoring. Series carry the pod's `cardano_network`,
   `cardano_service` and `spec.podLabels` labels, and `instance` is the pod name.
+  Grafana dashboards and Prometheus alert rules for the operator and its nodes
+  are in [docs/dashboards](docs/dashboards/README.md).
 - **Tracing and logging** — `spec.tracing` exports OpenTelemetry spans over
   OTLP/HTTP (endpoint, service name defaulting to the node name, sample ratio)
   and needs a Dingo image of v0.82.0 or later, which the operator checks before

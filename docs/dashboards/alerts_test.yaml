@@ -1,0 +1,390 @@
+# promtool unit tests for alerts.yaml.
+# Run: promtool test rules alerts_test.yaml
+rule_files:
+  - alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # The operator's controller metrics are gone.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="other"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DingoOperatorAbsent
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DingoOperatorAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              controller: dingonode
+            exp_annotations:
+              summary: dingo-operator is not being scraped
+              description: >-
+                No dingo-operator controller metrics for 10 minutes: the operator is
+                down, or its PodMonitor is not scraped. While it is down nothing
+                reconciles DingoNodes and no KES rotation happens.
+
+  # A scraped operator does not trip the absence alert.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_active_workers{controller="dingonode",namespace="ops"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DingoOperatorAbsent
+        exp_alerts: []
+
+  # Sustained reconcile errors fire after 15 minutes; a flat counter does not.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_errors_total{controller="dingonode",namespace="ops"}'
+        values: '0+1x40'
+      - series: 'controller_runtime_reconcile_errors_total{controller="dingonode",namespace="quiet"}'
+        values: '5+0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DingoOperatorReconcileErrors
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: DingoOperatorReconcileErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: ops
+            exp_annotations:
+              summary: dingo-operator reconciles are failing in ops
+              description: >-
+                DingoNode reconciles have returned errors for 15 minutes. Short
+                bursts from update conflicts are normal; a sustained rate means a
+                DingoNode is stuck. Check the operator log and the DingoNode
+                Degraded condition.
+
+  # A panic fires at once and ignores other controllers.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_panics_total{controller="dingonode",namespace="ops"}'
+        values: '0 0 0 1 1 1 1'
+      - series: 'controller_runtime_reconcile_panics_total{controller="other",namespace="ops"}'
+        values: '0 0 0 5 5 5 5'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DingoOperatorReconcilePanic
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: ops
+            exp_annotations:
+              summary: dingo-operator panicked during a reconcile in ops
+              description: A DingoNode reconcile panicked in the last 10 minutes. This is an operator bug; collect the log.
+
+  # Queue depth over 10 for 15 minutes; 10 itself is not enough.
+  - interval: 1m
+    input_series:
+      - series: 'workqueue_depth{name="dingonode",namespace="ops"}'
+        values: '11+0x40'
+      - series: 'workqueue_depth{name="dingonode",namespace="edge"}'
+        values: '10+0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DingoOperatorWorkqueueBacklog
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DingoOperatorWorkqueueBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: ops
+            exp_annotations:
+              summary: dingo-operator work queue is backing up in ops
+              description: >-
+                More than 10 DingoNodes have been waiting for the operator for 15
+                minutes (11 queued). The operator runs one worker, so a
+                slow reconcile delays every other node, including rotations.
+
+  # A reconcile running over 300 s for 5 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'workqueue_longest_running_processor_seconds{name="dingonode",namespace="ops"}'
+        values: '400+0x20'
+      - series: 'workqueue_longest_running_processor_seconds{name="dingonode",namespace="edge"}'
+        values: '20+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DingoOperatorReconcileHung
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: DingoOperatorReconcileHung
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: ops
+            exp_annotations:
+              summary: a dingo-operator reconcile has run for over 5 minutes in ops
+              description: >-
+                One reconcile has been running for 6m 40s.
+                With a single worker this blocks every other DingoNode.
+
+  # A Dingo pod that is not ready; a ready one and a non-Dingo pod are ignored.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="n1",pod="a-0",condition="true"}'
+        values: '0+0x30'
+      - series: 'kube_pod_container_info{namespace="n1",pod="a-0",container="dingo"}'
+        values: '1+0x30'
+      - series: 'kube_pod_status_ready{namespace="n1",pod="b-0",condition="true"}'
+        values: '1+0x30'
+      - series: 'kube_pod_container_info{namespace="n1",pod="b-0",container="dingo"}'
+        values: '1+0x30'
+      - series: 'kube_pod_status_ready{namespace="n1",pod="other-0",condition="true"}'
+        values: '0+0x30'
+      - series: 'kube_pod_container_info{namespace="n1",pod="other-0",container="app"}'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DingoNodePodNotReady
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DingoNodePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: a-0
+              condition: "true"
+            exp_annotations:
+              summary: Dingo pod n1/a-0 is not ready
+              description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
+
+  # A StatefulSet with an outdated replica in a namespace that runs Dingo.
+  - interval: 1m
+    input_series:
+      - series: 'kube_statefulset_replicas{namespace="n1",statefulset="a"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_status_replicas_updated{namespace="n1",statefulset="a"}'
+        values: '0+0x60'
+      - series: 'kube_statefulset_replicas{namespace="n1",statefulset="b"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_status_replicas_updated{namespace="n1",statefulset="b"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_replicas{namespace="n2",statefulset="c"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_status_replicas_updated{namespace="n2",statefulset="c"}'
+        values: '0+0x60'
+      - series: 'kube_pod_container_info{namespace="n1",pod="a-0",container="dingo"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DingoNodeRolloutStuck
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: DingoNodeRolloutStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              statefulset: a
+            exp_annotations:
+              summary: StatefulSet n1/a has not finished rolling out
+              description: >-
+                Pods are still on the old revision 30 minutes after a change. The
+                operator rolls a producer after an accepted key bundle or a config
+                change; a stuck rollout keeps the old keys or config live.
+
+  # A volume that fills within a week while over 75% used; a volume with
+  # plenty of space left does not fire even though it shrinks.
+  - interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_available_bytes{namespace="n1",persistentvolumeclaim="dingo-data-a-0"}'
+        values: '240000000000-133333333x400'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="n1",persistentvolumeclaim="dingo-data-a-0"}'
+        values: '1000000000000+0x400'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="n1",persistentvolumeclaim="dingo-data-b-0"}'
+        values: '900000000000-16666667x400'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="n1",persistentvolumeclaim="dingo-data-b-0"}'
+        values: '1000000000000+0x400'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: DingoVolumeFillingUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              persistentvolumeclaim: dingo-data-a-0
+            exp_annotations:
+              summary: Dingo volume n1/dingo-data-a-0 fills within 7 days
+              description: >-
+                At the last 24 hours' rate the volume is full within a week and is
+                already over 75% used. A Mithril bootstrap or a sync fills fast and
+                then stops, so check whether the node is syncing first.
+
+  # Under 5% free for 10 minutes; 6% free does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_available_bytes{namespace="n1",persistentvolumeclaim="dingo-data-a-0"}'
+        values: '4+0x30'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="n1",persistentvolumeclaim="dingo-data-a-0"}'
+        values: '100+0x30'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="n1",persistentvolumeclaim="dingo-data-b-0"}'
+        values: '6+0x30'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="n1",persistentvolumeclaim="dingo-data-b-0"}'
+        values: '100+0x30'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="n1",persistentvolumeclaim="logs"}'
+        values: '1+0x30'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="n1",persistentvolumeclaim="logs"}'
+        values: '100+0x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DingoVolumeAlmostFull
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: DingoVolumeAlmostFull
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: n1
+              persistentvolumeclaim: dingo-data-a-0
+            exp_annotations:
+              summary: Dingo volume n1/dingo-data-a-0 is over 95% full
+              description: Under 5% free. Grow the volume (spec.persistence.size) before the database stops writing.
+
+  # Rotation due at 8 periods for an hour, not progressing at 5.
+  - interval: 1m
+    input_series:
+      - series: 'cardano_node_metrics_remainingKESPeriods_int{namespace="n1",pod="a-0"}'
+        values: '8+0x120'
+      - series: 'cardano_node_metrics_remainingKESPeriods_int{namespace="n1",pod="b-0"}'
+        values: '9+0x120'
+      - series: 'cardano_node_metrics_remainingKESPeriods_int{namespace="n1",pod="c-0"}'
+        values: '5+0x120'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DingoKESRotationDue
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: DingoKESRotationDue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: a-0
+            exp_annotations:
+              summary: KES rotation due on n1/a-0
+              description: >-
+                8 KES periods left, at or under the operator's renewal
+                threshold. In rotation mode Auto the operator should rotate within
+                a reconcile or two; in Assisted, deliver a new KES key and opcert.
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: c-0
+            exp_annotations:
+              summary: KES rotation due on n1/c-0
+              description: >-
+                5 KES periods left, at or under the operator's renewal
+                threshold. In rotation mode Auto the operator should rotate within
+                a reconcile or two; in Assisted, deliver a new KES key and opcert.
+      - eval_time: 90m
+        alertname: DingoKESRotationNotProgressing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: n1
+              pod: c-0
+            exp_annotations:
+              summary: KES key on n1/c-0 has 5 periods left and was not rotated
+              description: >-
+                Rotation was due 3 or more KES periods ago and has not happened.
+                When the key expires the producer stops forging. Check the
+                DingoNode KeysValid and RotationDue conditions and the operator's
+                rotation Events.
+
+  # Opcert counter below the chain's, and unusable forge credentials.
+  - interval: 1m
+    input_series:
+      - series: 'dingo_forge_opcert_counter_loaded{namespace="n1",pod="a-0"}'
+        values: '3+0x20'
+      - series: 'dingo_forge_opcert_counter_onchain{namespace="n1",pod="a-0"}'
+        values: '4+0x20'
+      - series: 'dingo_forge_opcert_counter_loaded{namespace="n1",pod="b-0"}'
+        values: '4+0x20'
+      - series: 'dingo_forge_opcert_counter_onchain{namespace="n1",pod="b-0"}'
+        values: '4+0x20'
+      - series: 'dingo_forge_credentials_valid{namespace="n1",pod="a-0"}'
+        values: '0+0x20'
+      - series: 'dingo_forge_credentials_valid{namespace="n1",pod="b-0"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DingoOpcertCounterBehindChain
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DingoOpcertCounterBehindChain
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: n1
+              pod: a-0
+            exp_annotations:
+              summary: opcert counter on n1/a-0 is behind the chain
+              description: >-
+                The loaded operational certificate counter is below the one the
+                chain has seen for this pool, so every block it forges is
+                rejected. Issue an opcert at the on-chain counter plus one.
+      - eval_time: 10m
+        alertname: DingoForgeCredentialsInvalid
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: n1
+              pod: a-0
+            exp_annotations:
+              summary: "n1/a-0 cannot sign blocks"
+              description: The producer's KES key, VRF key or opcert cannot sign at the current slot. It will miss every leader slot until fixed.
+
+  # A KES agent link that is down for 5 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'dingo_kes_agent_connected{namespace="n1",pod="a-0"}'
+        values: '0+0x20'
+      - series: 'dingo_kes_agent_connected{namespace="n1",pod="b-0"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DingoKESAgentDisconnected
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DingoKESAgentDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: n1
+              pod: a-0
+            exp_annotations:
+              summary: "n1/a-0 has lost its KES signing agent"
+              description: The producer signs through a remote KES agent and has had no connection for 5 minutes. It cannot sign a block until it reconnects.
+
+  # A missed leader slot in the last hour.
+  - interval: 1m
+    input_series:
+      - series: 'dingo_forge_missed_leader_slots_total{namespace="n1",pod="a-0",pool_id="p1"}'
+        values: '0 0 0 1 1 1 1 1'
+      - series: 'dingo_forge_missed_leader_slots_total{namespace="n1",pod="b-0",pool_id="p2"}'
+        values: '2+0x7'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: DingoMissedLeaderSlots
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: n1
+              pod: a-0
+            exp_annotations:
+              summary: "n1/a-0 missed a leader slot"
+              description: >-
+                1 leader slot(s) in the last hour without an adopted
+                block of this pool's own. See the Forging Health dashboard's
+                Forge Problems panel for the reason.
