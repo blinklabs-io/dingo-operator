@@ -956,18 +956,9 @@ func (h *harness) metricsBody(
 	return body, err
 }
 
-// withPortForward opens an ephemeral local port forwarded to remotePort on the
-// node's pod, invokes fn with it, then tears the tunnel down. kubectl exec is
-// not an option: the Dingo image carries no shell.
-func (h *harness) withPortForward(
-	ctx context.Context,
-	remotePort int,
-	fn func(local int) error,
-) error {
-	return h.withPortForwardTo(ctx, h.podKey().Name, remotePort, fn)
-}
-
-// withPortForwardTo is withPortForward for the pod called pod.
+// withPortForwardTo opens an ephemeral local port forwarded to remotePort on
+// the pod called pod, invokes fn with it, then tears the tunnel down. kubectl
+// exec is not an option: the Dingo image carries no shell.
 func (h *harness) withPortForwardTo(
 	ctx context.Context,
 	pod string,

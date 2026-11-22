@@ -63,7 +63,7 @@ const (
 	agentSidecarImage = "docker.io/library/alpine:3.20"
 
 	agentName        = "kes-agent"
-	agentTLSSecret   = "kes-agent-tls"
+	agentTLSSecret   = "kes-agent-tls" //nolint:gosec // a Secret name
 	agentTLSPath     = "/etc/bursa-tls"
 	agentClientCert  = "kes-agent-client"
 	agentContainer   = "bursa"
@@ -502,10 +502,12 @@ metrics:
 				Name:            "tls",
 				Image:           agentSidecarImage,
 				ImagePullPolicy: corev1.PullIfNotPresent,
-				Command: []string{"sh", "-c",
+				Command: []string{
+					"sh", "-c",
 					"cp /src/tls.crt /src/tls.key /src/ca.crt " + agentTLSPath +
 						" && chown 65532:65532 " + agentTLSPath + "/* && chmod 600 " +
-						agentTLSPath + "/*"},
+						agentTLSPath + "/*",
+				},
 				VolumeMounts: []corev1.VolumeMount{
 					mount("tls-src", "/src"), mount("tls", agentTLSPath),
 				},
@@ -645,7 +647,7 @@ func (h *harness) execIn(
 func metricSum(body, name string, labels ...string) (float64, bool) {
 	var sum float64
 	found := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		rest, ok := strings.CutPrefix(line, name)
 		if !ok || rest == "" || (rest[0] != '{' && rest[0] != ' ') {
 			continue
@@ -735,7 +737,7 @@ func (h *harness) agentSummary(ctx context.Context) string {
 		return "agent metrics: " + err.Error()
 	}
 	var b strings.Builder
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "bursa_kesagent_") &&
 			!strings.HasPrefix(line, "#") {
 			b.WriteString("\n  " + line)
@@ -835,7 +837,7 @@ func (h *harness) waitRelayFollows(ctx context.Context, pods ...string) {
 			for _, pod := range pods {
 				ip := h.namedPod(ctx, pod).Status.PodIP
 				followed := false
-				for _, line := range strings.Split(logs, "\n") {
+				for line := range strings.SplitSeq(logs, "\n") {
 					if strings.Contains(line, "<->"+ip+":") &&
 						(strings.Contains(line, "selected new best peer") ||
 							strings.Contains(line, "chain switch")) {
