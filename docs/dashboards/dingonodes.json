@@ -804,7 +804,7 @@
             "type": "prometheus",
             "uid": "default"
           },
-          "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h]))) >= 0) or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600) * 0 - 1",
+          "expr": "(max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600) * 0 - 1 or (histogram_quantile(0.5, sum by (le, namespace, pod) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h]))) >= 0)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
