@@ -89,6 +89,25 @@ func PodSignsThroughAgent(spec corev1.PodSpec) bool {
 	return agent
 }
 
+// SigningAgentLink returns the agent address and server key pin the dingo
+// container of a pod spec is wired to, and whether it has an address. A pod
+// signing through another agent can reach another slot guard.
+func SigningAgentLink(spec corev1.PodSpec) (address, pin string, ok bool) {
+	c, found := DingoContainer(spec)
+	if !found {
+		return "", "", false
+	}
+	for _, e := range c.Env {
+		switch e.Name {
+		case signingAgentAddressEnv:
+			address = e.Value
+		case signingAgentPinEnv:
+			pin = e.Value
+		}
+	}
+	return address, pin, address != ""
+}
+
 // mountsPoolList reports whether c, the dingo container of spec, reads the
 // pool list ConfigMap as its configuration file.
 func mountsPoolList(spec corev1.PodSpec, c *corev1.Container) bool {

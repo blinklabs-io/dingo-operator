@@ -202,16 +202,29 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		} else {
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
-			if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
-				if scaleUpBehindLocalSigner(dn, sts, desired) {
+			moves := movesToAnotherAgent(sts, desired)
+			// Pods on two agents could each sign a different header for
+			// one slot, so while several pods run the old agent they shrink
+			// to one with the old template, and only then does the template
+			// move; see movesToAnotherAgent.
+			fenced := moves && !keepTemplate &&
+				(liveReplicas(sts) > 1 || sts.Status.Replicas > 1)
+			if fenced {
+				sts.Spec.Replicas = new(int32(1))
+			} else if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
+				if scaleUpBehindLocalSigner(dn, sts, desired) ||
+					moves && desired.Spec.Replicas != nil &&
+						*desired.Spec.Replicas > liveReplicas(sts) {
 					sts.Spec.Replicas = new(liveReplicas(sts))
 				} else {
 					sts.Spec.Replicas = desired.Spec.Replicas
 				}
 			}
-			if keepTemplate {
+			switch {
+			case fenced:
+			case keepTemplate:
 				withheld = &desired.Spec.Template
-			} else {
+			default:
 				sts.Spec.Template = desired.Spec.Template
 			}
 			sts.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
@@ -355,6 +368,23 @@ func scaleUpBehindLocalSigner(
 	return forgesWithLocalKES(live.Spec.Template.Spec) ||
 		st.ObservedGeneration < live.Generation ||
 		st.CurrentRevision != st.UpdateRevision
+}
+
+// movesToAnotherAgent reports whether the desired pod template signs through
+// a different agent than the live one: another address or another server key
+// pin, either of which can reach another slot guard. Pods of one StatefulSet
+// must never sign through two agents at once, since each could sign a
+// different header for a slot. Moving takes one pod, so the template is held
+// while several pods run, and scaling up waits for the roll like any other.
+func movesToAnotherAgent(live, desired *appsv1.StatefulSet) bool {
+	liveAddress, livePin, ok := resources.SigningAgentLink(
+		live.Spec.Template.Spec,
+	)
+	if !ok {
+		return false
+	}
+	address, pin, ok := resources.SigningAgentLink(desired.Spec.Template.Spec)
+	return ok && (address != liveAddress || pin != livePin)
 }
 
 // liveReplicas is the replica count a StatefulSet runs, at least one: a nil
