@@ -45,7 +45,7 @@ import (
 const SignatureSize = ed25519.SignatureSize
 
 // ErrNotImplemented is returned by backends whose upstream support is not yet
-// available. See CLAUDE.md (Design & roadmap -> Upstream dependencies).
+// available.
 var ErrNotImplemented = errors.New("cold signer backend not yet implemented")
 
 // Signer produces an Ed25519 signature over an operational-certificate signable.

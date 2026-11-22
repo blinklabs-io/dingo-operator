@@ -39,8 +39,10 @@ testbin/
 # Git worktrees
 .worktrees/
 
-# Local-only planning/design docs (kept locally, never committed)
-/docs/
+# Local-only planning docs (kept locally, never committed); docs/design.md is
+# the published design and is tracked.
+/docs/*
+!/docs/design.md
 
 # Editor/IDE
 # .idea/
