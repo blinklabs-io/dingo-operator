@@ -14,6 +14,13 @@ manages, on Kubernetes with the Prometheus Operator.
 The three dashboards link to each other from the top bar. The links keep the
 time range and the template variables.
 
+The screenshots below were rendered from synthetic metrics for one network
+with two relays, an API node and a block producer.
+
+| Operator | DingoNodes | Forging Health |
+|----------|------------|----------------|
+| [![Operator dashboard](screenshots/dingo-operator.png)](screenshots/dingo-operator.png) | [![DingoNodes dashboard](screenshots/dingonodes.png)](screenshots/dingonodes.png) | [![Forging Health dashboard](screenshots/dingo-forging-health.png)](screenshots/dingo-forging-health.png) |
+
 `alerts.yaml` holds the Prometheus rules and `alerts_test.yaml` their
 [promtool](https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/)
 unit tests.
@@ -47,16 +54,13 @@ unit tests.
   by default in kube-prometheus-stack) for the storage runway panels, and
   cAdvisor container metrics for memory and CPU.
 - **[Business Text plugin](https://grafana.com/grafana/plugins/marcusolsson-dynamictext-panel/)**
-  (`marcusolsson-dynamictext-panel`). Every dashboard header and several panels
-  run JavaScript in their `afterRender` hook, so Grafana must allow it:
-
-  ```ini
-  [panels]
-  disable_sanitize_html = true
-  ```
-
-  or the environment variable `GF_PANELS_DISABLE_SANITIZE_HTML=true`. Without
-  it the panels render their static fallback text and no data.
+  (`marcusolsson-dynamictext-panel`) for every dashboard header and several
+  panels. They render with Grafana's default HTML sanitizing;
+  `disable_sanitize_html` is not needed.
+- **A Prometheus datasource with uid `default`.** Every panel references
+  `{"type": "prometheus", "uid": "default"}`, as the Dingo dashboards do.
+  Provision the datasource with that uid, or replace `default` in the JSON
+  with your datasource's uid before importing.
 
 Install the plugin on Kubernetes with the environment variable
 `GF_INSTALL_PLUGINS=marcusolsson-dynamictext-panel`, or through the Grafana
@@ -215,6 +219,7 @@ docs/dashboards/
   provisioning.yaml            Grafana file provisioning provider
   alerts.yaml                  Prometheus alert rules
   alerts_test.yaml             promtool unit tests for alerts.yaml
+  screenshots/                 Dashboards rendered from synthetic metrics
   README.md                    This file
 ```
 
@@ -224,9 +229,9 @@ docs/dashboards/
 Install the Business Text plugin and restart Grafana.
 
 **Headers show static text and no pills or numbers**
-The panel script did not run. Set `disable_sanitize_html = true` under
-`[panels]` in `grafana.ini` (or `GF_PANELS_DISABLE_SANITIZE_HTML=true`) and
-restart Grafana.
+The panel's queries failed or its script did not run. Check that a datasource
+with uid `default` exists (see Prerequisites), then look for errors in the
+browser console.
 
 **Every panel shows "No data"**
 In Prometheus open **Status, Targets** and confirm the DingoNode PodMonitor
