@@ -674,7 +674,9 @@ Bursa needs an https `endpoint`, `mtlsSecretRef` (a Secret with `tls.crt`, `tls.
 signer profile holding the cold key, sent as `profile` on the request; needed
 when the signer holds the key in several profiles); `secret` needs `secretRef` holding
 `cold.skey` and is refused on mainnet (by name or network magic), since it
-keeps the cold key in the cluster. Auto writes the keys Secret, so the deployment must grant the
+keeps the cold key in the cluster, unless `coldSigner.allowMainnet` is true
+(for networks that reuse the mainnet magic; `validateSpec` refuses it with any
+other signer type). Auto writes the keys Secret, so the deployment must grant the
 operator `update` on Secrets in the keys namespaces, on top of `get`.
 In every rotation mode, `validateSpec` refuses `coldSigner.profile` with a
 signer type other than bursa.
