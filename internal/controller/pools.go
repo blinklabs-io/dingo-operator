@@ -669,6 +669,7 @@ func (r *DingoNodeReconciler) observePools(
 
 	var due, unobserved []string
 	var lowest *dingov1alpha1.PoolStatus
+	observed := map[string]bool{}
 	for i := range dn.Status.Pools {
 		ps := &dn.Status.Pools[i]
 		pm := byID[ps.PoolID]
@@ -698,6 +699,7 @@ func (r *DingoNodeReconciler) observePools(
 			ExpiryPeriod:     pm.OpCertExpiryKESPeriod,
 			RemainingPeriods: pm.RemainingKESPeriods,
 		}
+		observed[ps.PoolID] = true
 		if renewBefore > 0 && pm.RemainingKESPeriods <= renewBefore {
 			due = append(due, fmt.Sprintf(
 				"pool %s: %d KES periods remaining (threshold %d)",
@@ -709,6 +711,7 @@ func (r *DingoNodeReconciler) observePools(
 			lowest = ps
 		}
 	}
+	r.setKESObserved(client.ObjectKeyFromObject(dn), observed)
 	if lowest != nil {
 		dn.Status.KES = lowest.KES
 	}

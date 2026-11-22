@@ -187,6 +187,7 @@ func (r *DingoNodeReconciler) autoRotatePools(
 	dn *dingov1alpha1.DingoNode,
 ) {
 	bp := dn.Spec.BlockProducer
+	node := client.ObjectKeyFromObject(dn)
 	renewBefore := int64(bp.Rotation.RenewBeforePeriods)
 
 	pools := slices.Clone(bp.Pools)
@@ -234,7 +235,8 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		// so it is not followed by a rotation attempt.
 		o := r.adoptPendingInstall(ctx, dn, t, ps.LoadedCounter)
 		if o == nil {
-			if ps.KES.CurrentPeriod <= 0 || renewBefore <= 0 ||
+			if !r.kesObservedFor(node, id) ||
+				ps.KES.CurrentPeriod <= 0 || renewBefore <= 0 ||
 				ps.KES.RemainingPeriods > renewBefore {
 				continue
 			}
@@ -258,6 +260,35 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		parts = append(parts, fmt.Sprintf("pool %s: %s", o.id, o.message))
 	}
 	setIssueCondition(dn, status, reason, strings.Join(parts, "; "))
+}
+
+// setKESObserved records the pools whose KES state the node reported in this
+// reconcile; nil forgets the node.
+func (r *DingoNodeReconciler) setKESObserved(
+	node types.NamespacedName,
+	pools map[string]bool,
+) {
+	r.kesMu.Lock()
+	defer r.kesMu.Unlock()
+	if pools == nil {
+		delete(r.kesObserved, node)
+		return
+	}
+	if r.kesObserved == nil {
+		r.kesObserved = make(map[types.NamespacedName]map[string]bool)
+	}
+	r.kesObserved[node] = pools
+}
+
+// kesObservedFor reports whether the node reported pool's KES state in this
+// reconcile.
+func (r *DingoNodeReconciler) kesObservedFor(
+	node types.NamespacedName,
+	pool string,
+) bool {
+	r.kesMu.Lock()
+	defer r.kesMu.Unlock()
+	return r.kesObserved[node][pool]
 }
 
 // observedPoolStatus returns the status entry of a listed pool, or nil when

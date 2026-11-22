@@ -23,6 +23,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/coldsigner"
+	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/test/fakeagent"
 	"github.com/stretchr/testify/assert"
@@ -143,6 +144,12 @@ func newPoolRotateFixture(t *testing.T) *poolRotateFixture {
 			return nil, assert.AnError
 		},
 	}
+	// The KES status above stands for what the node reported this reconcile.
+	observed := map[string]bool{}
+	for _, p := range pools {
+		observed[p.id] = true
+	}
+	r.setKESObserved(client.ObjectKeyFromObject(dn), observed)
 	return &poolRotateFixture{
 		pools: pools, dn: dn, c: c, r: r, agent: agent, issuers: issuers,
 	}
@@ -627,4 +634,70 @@ func TestAutoRotatePoolsJudgesCounterAgePerPool(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "OnChainCounterUnknown", cond.Reason)
 	assert.Contains(t, cond.Message, f.pools[second].id)
+}
+
+// failingForgeStatus fails every scrape.
+type failingForgeStatus struct{}
+
+func (failingForgeStatus) Fetch(
+	context.Context,
+	string,
+) (*forgestatus.Status, error) {
+	return nil, assert.AnError
+}
+
+// A pool is issued for only from KES state the node reported in this
+// reconcile. status.pools keeps an earlier scrape's state for a pool the node
+// reports nothing for, and its current period lags the node's.
+func TestAutoRotatePoolsIssuesOnlyFromObservedKES(t *testing.T) {
+	t.Parallel()
+	due := &forgestatus.PoolMetrics{
+		CurrentKESPeriod:      160,
+		RemainingKESPeriods:   2,
+		OpCertStartKESPeriod:  100,
+		OpCertExpiryKESPeriod: 162,
+		HasKESData:            true,
+	}
+	t.Run("scrape failed", func(t *testing.T) {
+		t.Parallel()
+		f := newPoolRotateFixture(t)
+		f.r.ForgeStatus = failingForgeStatus{}
+		ctx := context.Background()
+
+		f.r.refreshForgeStatus(ctx, f.dn)
+		f.r.autoRotate(ctx, f.dn)
+
+		assert.Zero(t, f.agent.Connections())
+		assert.Zero(t, f.issuers[0].calls)
+		assert.Zero(t, f.issuers[1].calls)
+	})
+	t.Run("one pool unreported", func(t *testing.T) {
+		t.Parallel()
+		f := newPoolRotateFixture(t)
+		a, b := f.pools[0], f.pools[1]
+		f.makeDue(t, b)
+		for _, p := range f.pools {
+			poolStatus(f.dn, p.id).KeysValid = true
+		}
+		// Pool b is reported due; pool a, due by its earlier status, is not
+		// reported at all.
+		f.r.ForgeStatus = poolMetricsFetcher{st: &forgestatus.Status{
+			HasPipelineStuckMetric:  true,
+			HasPipelineHaltedMetric: true,
+			Pools: map[string]*forgestatus.PoolMetrics{
+				poolLabelOf(b.id): due,
+			},
+		}}
+		ctx := context.Background()
+
+		f.r.refreshForgeStatus(ctx, f.dn)
+		require.True(t, meta.IsStatusConditionTrue(
+			f.dn.Status.Conditions, condRotationDue,
+		))
+		f.r.autoRotate(ctx, f.dn)
+
+		assert.Zero(t, f.issuers[0].calls)
+		assert.Empty(t, f.commandsFor(a.profile))
+		assert.Equal(t, 1, f.issuers[1].calls)
+	})
 }

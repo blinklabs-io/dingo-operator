@@ -135,6 +135,14 @@ type DingoNodeReconciler struct {
 	// time. In-memory for the same reasons as onChainAttempts.
 	issueFailures map[types.NamespacedName]issueFailure
 
+	// kesMu guards kesObserved.
+	kesMu sync.Mutex
+	// kesObserved holds, per pool-list node, the pools whose KES state the
+	// last refreshForgeStatus read from the node. status.pools keeps an
+	// earlier scrape's state for any other pool, which Auto rotation must not
+	// issue from.
+	kesObserved map[types.NamespacedName]map[string]bool
+
 	// onChainMu guards onChainAttempts.
 	onChainMu sync.Mutex
 	// onChainAttempts remembers, per node, when the operator last *attempted* an
@@ -226,6 +234,7 @@ func (r *DingoNodeReconciler) Reconcile(
 		if apierrors.IsNotFound(err) {
 			r.forgetOnChainAttempt(req.NamespacedName)
 			r.forgetNodeIssueFailures(req.NamespacedName)
+			r.setKESObserved(req.NamespacedName, nil)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -233,6 +242,7 @@ func (r *DingoNodeReconciler) Reconcile(
 		// Owner references handle garbage collection; nothing else to do.
 		r.forgetOnChainAttempt(req.NamespacedName)
 		r.forgetNodeIssueFailures(req.NamespacedName)
+		r.setKESObserved(req.NamespacedName, nil)
 		return ctrl.Result{}, nil
 	}
 
@@ -1197,6 +1207,8 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) {
+	// Cleared first, so every return below leaves no pool observed.
+	r.setKESObserved(client.ObjectKeyFromObject(dn), nil)
 	bp := dn.Spec.BlockProducer
 	isBP := bp != nil
 	if desiredReplicas(dn) == 0 {
