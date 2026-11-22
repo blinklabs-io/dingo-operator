@@ -244,7 +244,10 @@ operators.
   `dingo.blinklabs.io/node-to-client=allowed` on the client pod — see the
   NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
-  pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
+  pluggable cold signer: Bursa keeps cold keys out of the cluster, while the
+  in-cluster `secret` signer holds the cold key in a Secret and is for
+  testnets only. See
+  [Cold signer and Auto rotation](#cold-signer-and-auto-rotation).
 - **Safe HA** — `SingleActive` is the only supported strategy: exactly one
   forger, with reschedule on failure. `ActiveStandby` is rejected by
   validation until fenced failover is implemented. A block producer gets
@@ -396,6 +399,45 @@ listed the operator fences the pair as it does within one namespace, for every
 producer pair, agent-signed or not. Anyone who may create or edit a DingoNode
 in a listed namespace can then stop a producer in another listed namespace, so
 list only namespaces one party controls.
+
+## Cold signer and Auto rotation
+
+`spec.blockProducer.rotation.coldSigner` selects who signs the opcert when
+`rotation.mode` is `Auto`.
+
+| `coldSigner.type` | Use | Fields |
+|---|---|---|
+| `bursa` (default) | Bursa signer service; the cold key stays outside the cluster. | `endpoint` (https URL), `mtlsSecretRef` (Secret with `tls.crt`, `tls.key`, optionally `ca.crt`), `coldKeyHash`, optional `profile` |
+| `secret` | The cold key is a cardano-cli text envelope in the `cold.skey` entry of a Secret in the cluster. Testnets only. | `secretRef` |
+| `none` | Assisted and MonitorOnly, which never issue. | none |
+
+`coldKeyHash` is the hex blake2b-224 hash of the cold verification key and
+must equal the pool ID in hex under Auto, even when `poolId` is bech32.
+`profile` names the Bursa signer profile that holds the cold key and is needed
+only when the signer holds the same key in several profiles. The `secret`
+signer is refused under Auto when `spec.network` is `mainnet` or
+`spec.networkMagic` is 764824073, because it keeps the cold key in the cluster.
+`none` cannot issue under Auto.
+
+Validation refuses Auto unless the spec has both of these:
+
+- `spec.blockProducer.nodeToClient.enabled: true`, so the operator can read the
+  on-chain opcert counter.
+- A cold signer that can issue: `bursa` with an https `endpoint`,
+  `mtlsSecretRef` and a `coldKeyHash` equal to the pool ID, or `secret` with a
+  `secretRef` on a non-mainnet network.
+
+Auto also needs `spec.networkMagic` on any network the operator does not know
+by name. Validation requires it only for `network: custom`; on another unknown
+name the spec is accepted, but the operator cannot derive the magic, so the
+counter query never runs. `OnChainCounterAvailable` is then False with reason
+`UnknownNetworkMagic`, and `OpCertIssued` is False with reason
+`OnChainCounterUnknown`.
+
+Under Auto the operator writes each new opcert, and the new KES key unless a
+signing agent holds it, to the keys Secret. Do not re-apply that Secret from
+Helm or GitOps after creation: an upgrade would restore the old KES key.
+Create it once and exclude it from reconciliation.
 
 ## Installation
 
