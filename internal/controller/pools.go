@@ -340,6 +340,20 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		}
 	}
 
+	// A refused pool whose node forges a later opcert than its Secret holds
+	// waits on autoRotate to write that opcert back. Dropping it would roll
+	// the pod without the pool, and the node would stop reporting the
+	// counter the repair is made from.
+	if liveHasKeys && slices.ContainsFunc(bundles, func(b *poolBundle) bool {
+		return !b.accepted() && b.secret != nil &&
+			installPending(dn, b.secret, poolStatus(dn, b.id).LoadedCounter)
+	}) {
+		opts.KeysChecksum = live.checksum
+		opts.KeysPool = live.pool
+		keepTemplate = true
+		holdMessage = installPendingHeldMessage
+	}
+
 	// The agent client certificate is mounted from its own Secret, as for a
 	// single pool: one that cannot be mounted holds the template.
 	problem, certSum, err := r.checkSigningAgentCert(ctx, dn)

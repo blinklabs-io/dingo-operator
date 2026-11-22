@@ -758,6 +758,30 @@ func servedOpCertSecret(
 	return oc, candidate, nil
 }
 
+// installPending reports whether an Auto-rotation node signing through an
+// agent forges with a later opcert (loaded) than the keys Secret holds: what a
+// rotation leaves when install-key succeeded and the Secret write did not.
+func installPending(
+	dn *dingov1alpha1.DingoNode,
+	secret *corev1.Secret,
+	loaded *int64,
+) bool {
+	bp := dn.Spec.BlockProducer
+	if bp == nil || bp.Rotation.Mode != dingov1alpha1.RotationModeAuto ||
+		bp.SigningAgent == nil || loaded == nil || *loaded < 0 {
+		return false
+	}
+	certData, _, err := opCertFile(secret.Data)
+	if err != nil || certData == nil {
+		return false
+	}
+	staged, _, err := opcert.Parse(certData)
+	if err != nil || staged == nil {
+		return false
+	}
+	return uint64(*loaded) > staged.IssueNumber //nolint:gosec
+}
+
 // adoptPendingInstall writes the opcert the agent serves into t's keys Secret
 // when the node reports forging with a later counter (loaded) than the Secret
 // holds, which is what a rotation leaves when install-key succeeded and the
@@ -772,8 +796,7 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 	t rotationTarget,
 	loaded *int64,
 ) *issueOutcome {
-	bp := dn.Spec.BlockProducer
-	if bp.SigningAgent == nil || loaded == nil || *loaded < 0 ||
+	if dn.Spec.BlockProducer.SigningAgent == nil || loaded == nil ||
 		r.APIReader == nil || !t.chainKnown {
 		return nil
 	}
@@ -783,14 +806,10 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
 		return nil
 	}
-	certData, certFile, err := opCertFile(secret.Data)
-	if err != nil || certData == nil {
+	if !installPending(dn, secret, loaded) {
 		return nil
 	}
-	staged, _, err := opcert.Parse(certData)
-	if err != nil || uint64(*loaded) <= staged.IssueNumber { //nolint:gosec
-		return nil
-	}
+	_, certFile, _ := opCertFile(secret.Data)
 
 	// The node runs a later opcert than the Secret holds: from here on the
 	// repair is pending, and a failure is reported and retried after

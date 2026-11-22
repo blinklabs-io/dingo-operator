@@ -25,6 +25,7 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/coldsigner"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
+	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/blinklabs-io/dingo-operator/internal/test/fakeagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -700,4 +701,66 @@ func TestAutoRotatePoolsIssuesOnlyFromObservedKES(t *testing.T) {
 		assert.Empty(t, f.commandsFor(a.profile))
 		assert.Equal(t, 1, f.issuers[1].calls)
 	})
+}
+
+// A pool whose node forges a later opcert than its Secret holds is a lost
+// Secret write that autoRotate repairs from the counter the node reports.
+// Until then the pod template is held: once the chain has seen the new counter
+// the Secret's opcert is below it and refused, and dropping the pool would
+// roll the pod without it, so the node would stop reporting that counter.
+func TestReconcilePoolKeysHoldsTemplateWhileInstallPending(t *testing.T) {
+	t.Parallel()
+	pools := newTestPools(t, "a", "b")
+	for _, tc := range []struct {
+		name   string
+		loaded *int64
+		held   bool
+	}{
+		{"install pending", new(int64(4)), true},
+		{"nothing pending", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			a, b := pools[0], pools[1]
+			dn := poolListNode("bp", "ns", 0, pools...)
+			dn.Spec.BlockProducer.Rotation.Mode = dingov1alpha1.RotationModeAuto
+			c := conflictClient(t, dn,
+				poolSecret(t, "ns", a, 3), poolSecret(t, "ns", b, 3),
+			)
+			r := poolReconciler(c)
+			initial := resources.RenderOptions{MountKeys: true, Replicas: 1}
+			keep, _, err := r.reconcilePoolKeys(ctx, dn, &initial)
+			require.NoError(t, err)
+			require.False(t, keep)
+			require.NoError(t, c.Create(
+				ctx, resources.BuildStatefulSet(dn, initial),
+			))
+
+			read := metav1.Now()
+			ps := poolStatus(dn, b.id)
+			ps.OnChainCounter, ps.OnChainCounterAt = 4, &read
+			ps.LoadedCounter = tc.loaded
+
+			observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
+			keep, msg, err := r.reconcilePoolKeys(ctx, dn, &observed)
+			require.NoError(t, err)
+			assert.False(t, poolStatus(dn, b.id).KeysValid)
+			var pc corev1.ConfigMap
+			require.NoError(t, c.Get(ctx, types.NamespacedName{
+				Name: "bp-pools", Namespace: "ns",
+			}, &pc))
+			if !tc.held {
+				assert.False(t, keep)
+				assert.NotContains(t, observed.KeysPool, b.id)
+				assert.NotContains(t, pc.Data["dingo.yaml"], b.id)
+				return
+			}
+			assert.True(t, keep)
+			assert.Equal(t, installPendingHeldMessage, msg)
+			assert.Equal(t, initial.KeysChecksum, observed.KeysChecksum)
+			assert.Equal(t, initial.KeysPool, observed.KeysPool)
+			assert.Contains(t, pc.Data["dingo.yaml"], b.id)
+		})
+	}
 }
