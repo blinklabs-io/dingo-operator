@@ -17,11 +17,13 @@ package controller
 import (
 	"testing"
 
+	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -58,4 +60,19 @@ func TestMergePoolPodsPodWithoutPoolMetricsIsUnobserved(t *testing.T) {
 		"one pod reports nothing for the pool, so its KES state is unknown")
 	assert.False(t, pm.HasOpCertCounter,
 		"a counter is confirmed only once every pod reports it")
+
+	// What the node's status makes of it: the healthy pod's scrape alone must
+	// not read as RotationDue=False or as a loaded counter.
+	dn.Spec.BlockProducer.Pools = []dingov1alpha1.BlockProducerPool{
+		{PoolID: conflictPoolID},
+	}
+	r := reconcilerFor(c)
+	r.observePools(dn, &merged, running, known)
+	require.Len(t, dn.Status.Pools, 1)
+	cond := meta.FindStatusCondition(dn.Status.Conditions, condRotationDue)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status, cond.Message)
+	for _, ps := range dn.Status.Pools {
+		assert.Nil(t, ps.LoadedCounter)
+	}
 }
