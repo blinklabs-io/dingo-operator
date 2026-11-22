@@ -538,9 +538,8 @@ spec:
     ha: { strategy: SingleActive }
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the design summary, rotation/HA models, delivery
-roadmap, and the upstream issues that unlock full automation, and
-[AGENTS.md](AGENTS.md) for coding and review standards.
+See [docs/design.md](docs/design.md) for the design summary, key rotation,
+cold signers, and the HA model.
 
 Named networks are `mainnet`, `preprod`, `preview`, `devnet`, `musashi` and
 `dijkstra`. Mithril bootstrap defaults on only where Dingo has a built-in
@@ -567,7 +566,8 @@ make run                  # run the operator against the current kubecontext
 
 Requires Go 1.26.10+. A local Cardano devnet for end-to-end testing lives in the
 [Dingo repo](https://github.com/blinklabs-io/dingo) under
-`internal/test/devnet/`.
+`internal/test/devnet/`. Coding and review standards are in
+[AGENTS.md](AGENTS.md).
 
 ## License
 
