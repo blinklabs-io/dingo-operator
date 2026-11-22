@@ -176,10 +176,12 @@ func (r *DingoNodeReconciler) autoRotate(
 
 // autoRotatePools rotates each pool of spec.blockProducer.pools that is due on
 // its own KES state, through the signing agent with the pool's agentProfile,
-// writing only that pool's keys Secret. A pool that is not due is neither read
-// nor asked about, and the agent is not contacted while none is. One pool's
-// refusal does not hold back another. The outcome of every attempted pool is
-// reported in the OpCertIssued condition and as an Event naming the pool.
+// writing only that pool's keys Secret. A pool that is not due is not rotated;
+// its Secret is only read to find a lost write, and the agent is asked only
+// about a pool that is due or whose node loaded a later opcert than its Secret
+// holds. One pool's refusal does not hold back another. The outcome of every
+// attempted pool is reported in the OpCertIssued condition and as an Event
+// naming the pool.
 func (r *DingoNodeReconciler) autoRotatePools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
