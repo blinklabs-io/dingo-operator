@@ -176,6 +176,14 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 				cs.Type,
 			)
 		}
+		if cs := bp.Rotation.ColdSigner; cs.AllowMainnet &&
+			cs.Type != dingov1alpha1.ColdSignerSecret {
+			return fmt.Errorf(
+				"coldSigner.allowMainnet is only valid with the secret "+
+					"signer, not type %q",
+				cs.Type,
+			)
+		}
 		// Before the Auto checks, so Auto with a signing agent but without
 		// its control settings is refused for that reason rather than for an
 		// incomplete cold signer.
@@ -487,7 +495,7 @@ const mainnetMagic = 764824073
 // an opcert: the pool ID and the node-to-client listener that together give
 // the on-chain counter it issues from, and a cold signer that can sign for
 // that pool. The secret signer holds the cold key in the cluster, so it is
-// refused on mainnet.
+// refused on mainnet unless coldSigner.allowMainnet opts in.
 func validateAutoRotation(
 	spec *dingov1alpha1.DingoNodeSpec,
 	bp *dingov1alpha1.BlockProducerSpec,
@@ -531,8 +539,9 @@ func validateAutoRotation(
 			)
 		}
 	case dingov1alpha1.ColdSignerSecret:
-		if spec.Network == "mainnet" ||
-			(spec.NetworkMagic != nil && *spec.NetworkMagic == mainnetMagic) {
+		mainnet := spec.Network == "mainnet" ||
+			(spec.NetworkMagic != nil && *spec.NetworkMagic == mainnetMagic)
+		if mainnet && !cs.AllowMainnet {
 			return errors.New(
 				"rotation mode Auto cannot use the secret cold signer on " +
 					"mainnet; it keeps the cold key in the cluster",
