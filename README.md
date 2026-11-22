@@ -404,7 +404,7 @@ Install the operator via its Helm chart (published to GHCR as an OCI artifact):
 ```sh
 helm install dingo-operator \
   oci://ghcr.io/blinklabs-io/helm-charts/charts/dingo-operator \
-  --namespace dingo-operator-system --create-namespace
+  --namespace dingo-operator --create-namespace
 ```
 
 The chart installs the `DingoNode` CRD, the operator Deployment, RBAC, and
@@ -415,7 +415,7 @@ The operator reads block-producer Secrets (the keys Secret, a signing agent's
 client certificate and control client certificate, a Bursa signer's mTLS
 credentials) with an uncached `get`
 and keeps no cluster-wide Secret cache or informer. The chart grants that `get`
-cluster-wide by default, or only in the namespaces listed in
+only in the release namespace by default, or in the namespaces listed in
 `rbac.keySecretsNamespaces` when that is set. By default a newly delivered key
 bundle is therefore picked up on the next periodic reconcile, up to two
 minutes later. Pass `--key-namespaces` (comma-separated) to apply it at once:
@@ -426,6 +426,18 @@ whole Secret in an annotation, so no key material enters its cache. The watch
 still needs `list` and `watch` on Secrets in each namespace, and
 Kubernetes RBAC cannot restrict `list` to metadata or to named Secrets. Leave
 the flag unset where the operator's Secret access is limited to named Secrets.
+
+### Secret RBAC
+
+The chart's Secret access is a namespaced Role per listed namespace. Each value
+below is a chart value under `rbac`:
+
+| Value | Grants | Needed for |
+| --- | --- | --- |
+| `keySecretsNamespaces` | `get` on Secrets in each listed namespace. Empty means the release namespace only. List every namespace that holds a block-producer `DingoNode`. | Any block producer |
+| `readSecretNames` | Limits `get` to the named Secrets plus `keySecretNames`, instead of every Secret in those namespaces. List each Secret the operator reads: the `keys.secretRef` and every `pools[].keys.secretRef` of each block-producer `DingoNode` in the namespace; with a signing agent, its `clientCertSecretRef` and `controlClientCertSecretRef`; and with a cold signer, the Bursa `mtlsSecretRef` or the `secretRef` of a `secret` signer. A Secret not listed is refused at its first read. | Optional hardening, any mode |
+| `keySecretsUpdate` with `keySecretNames` | `update` on the Secrets named in `keySecretNames`, in each listed namespace. List the `keys.secretRef` of each `rotation.mode: Auto` node. Rendering fails if `keySecretNames` is empty. | `rotation.mode: Auto`, where the operator writes the new opcert to the keys Secret, and for a local KES key also `kes.skey` and, with a Bursa signer, `kes.pending.skey`. A signing agent keeps the KES key, so only the opcert is written. Leave off for `MonitorOnly` and `Assisted`, which only read it. |
+| `watchKeySecrets` | Adds `list` and `watch` on every Secret in each listed namespace and passes `--key-namespaces`, so a delivered key bundle applies at once. Cannot be combined with `readSecretNames`. Needs an operator image that supports `--key-namespaces`. | Optional, any mode |
 
 ## Quick start
 
