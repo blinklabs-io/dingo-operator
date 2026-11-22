@@ -202,18 +202,23 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		} else {
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
-			moves := movesToAnotherAgent(sts, desired)
+			link, linked := desiredAgentLink(dn, renderOpts, desired)
+			moves, unsure, err := r.movesToAnotherAgent(
+				ctx, dn, sts, link, linked,
+			)
+			if err != nil {
+				return err
+			}
 			// Pods on two agents could each sign a different header for
 			// one slot, so while several pods run the old agent they shrink
 			// to one with the old template, and only then does the template
 			// move; see movesToAnotherAgent.
-			fenced := moves && !keepTemplate &&
-				(liveReplicas(sts) > 1 || sts.Status.Replicas > 1)
+			fenced := moves && !keepTemplate && runsSeveralPods(sts)
 			if fenced {
 				sts.Spec.Replicas = new(int32(1))
 			} else if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
 				if scaleUpBehindLocalSigner(dn, sts, desired) ||
-					moves && desired.Spec.Replicas != nil &&
+					(moves || unsure) && desired.Spec.Replicas != nil &&
 						*desired.Spec.Replicas > liveReplicas(sts) {
 					sts.Spec.Replicas = new(liveReplicas(sts))
 				} else {
@@ -370,21 +375,88 @@ func scaleUpBehindLocalSigner(
 		st.CurrentRevision != st.UpdateRevision
 }
 
-// movesToAnotherAgent reports whether the desired pod template signs through
-// a different agent than the live one: another address or another server key
-// pin, either of which can reach another slot guard. Pods of one StatefulSet
-// must never sign through two agents at once, since each could sign a
-// different header for a slot. Moving takes one pod, so the template is held
-// while several pods run, and scaling up waits for the roll like any other.
-func movesToAnotherAgent(live, desired *appsv1.StatefulSet) bool {
-	liveAddress, livePin, ok := resources.SigningAgentLink(
-		live.Spec.Template.Spec,
-	)
-	if !ok {
-		return false
+// agentLink is the agent a pod signs through: its address and server key pin,
+// either of which can reach another slot guard.
+type agentLink struct {
+	address, pin string
+}
+
+// desiredAgentLink returns the agent a rendered pod template signs through,
+// from its environment or, for a pool list, from the pool list it is rendered
+// with.
+func desiredAgentLink(
+	dn *dingov1alpha1.DingoNode,
+	opts resources.RenderOptions,
+	desired *appsv1.StatefulSet,
+) (agentLink, bool) {
+	spec := desired.Spec.Template.Spec
+	if address, pin, ok := resources.SigningAgentLink(spec); ok {
+		return agentLink{address, pin}, true
 	}
-	address, pin, ok := resources.SigningAgentLink(desired.Spec.Template.Spec)
-	return ok && (address != liveAddress || pin != livePin)
+	if !resources.PodMountsPoolList(spec) {
+		return agentLink{}, false
+	}
+	return poolsAgentLink(resources.PoolsConfig(dn, opts.Pools))
+}
+
+func poolsAgentLink(config string) (agentLink, bool) {
+	address, pin, ok := resources.PoolsConfigAgentLink(config)
+	return agentLink{address, pin}, ok
+}
+
+// movesToAnotherAgent reports whether the desired agent differs from the one
+// the live pods sign through. Pods of one StatefulSet must never sign through
+// two agents at once, since each could sign a different header for a slot.
+// Moving takes one pod, so the template is held while several pods run, and
+// scaling up waits for the roll like any other.
+//
+// A pool-list pod reads its agent from the pool list ConfigMap at startup, so
+// that ConfigMap shows what the pods run only while its checksum is the live
+// template's; reconcilePoolKeys holds it with the template. When it is ahead,
+// unsure is set: nothing is fenced, but no pod is added beside the roll.
+func (r *DingoNodeReconciler) movesToAnotherAgent(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	live *appsv1.StatefulSet,
+	desired agentLink,
+	linked bool,
+) (moves, unsure bool, err error) {
+	if !linked {
+		return false, false, nil
+	}
+	spec := live.Spec.Template.Spec
+	if address, pin, ok := resources.SigningAgentLink(spec); ok {
+		return agentLink{address, pin} != desired, false, nil
+	}
+	if !resources.PodMountsPoolList(spec) {
+		return false, false, nil
+	}
+	cm := &corev1.ConfigMap{}
+	key := client.ObjectKey{
+		Name: resources.PoolsConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	if err := r.Get(ctx, key, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, true, nil
+		}
+		return false, false, fmt.Errorf("read pools configmap: %w", err)
+	}
+	config := cm.Data[resources.PoolsConfigKey]
+	if checksum(config) != live.Spec.Template.
+		Annotations[resources.PoolsConfigChecksumAnnotation] {
+		return false, true, nil
+	}
+	link, ok := poolsAgentLink(config)
+	if !ok {
+		return false, true, nil
+	}
+	return link != desired, false, nil
+}
+
+// runsSeveralPods reports whether a StatefulSet asks for or still has more
+// than one pod.
+func runsSeveralPods(sts *appsv1.StatefulSet) bool {
+	return liveReplicas(sts) > 1 || sts.Status.Replicas > 1
 }
 
 // liveReplicas is the replica count a StatefulSet runs, at least one: a nil

@@ -868,7 +868,9 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   of agent address or server key pin never leaves pods on two agents, which
   could hold independent guards: the StatefulSet shrinks to one pod on the old
   template, the template moves once the others are gone, and it scales up when
-  the roll finishes (`movesToAnotherAgent`, `upsertStatefulSet`). The guard is Bursa's (v0.23.0 and
+  the roll finishes (`movesToAnotherAgent`, `upsertStatefulSet`). A pool-list
+  pod reads its agent from the pool list ConfigMap at startup, so that
+  ConfigMap is held with the template (`fencesPoolsAgentMove`). The guard is Bursa's (v0.23.0 and
   later), and it holds only when every pod reaches one guard. Anti-affinity is
   preferred, not required, so two pods can share a node. A producer that holds
   its KES key in a Secret runs one pod, and `validateSpec` refuses a larger

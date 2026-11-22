@@ -369,8 +369,18 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		}
 	}
 	// The pool list is read at startup only, so a held template keeps the
-	// list its pod started with.
-	if !keepTemplate {
+	// list its pod started with. So does a template fenced from moving to
+	// another agent: a pod restarted while several run would otherwise read
+	// the new agent beside pods on the old one.
+	writePools := !keepTemplate
+	if writePools {
+		fenced, err := r.fencesPoolsAgentMove(ctx, dn, rendered)
+		if err != nil {
+			return false, "", err
+		}
+		writePools = !fenced
+	}
+	if writePools {
 		if err := r.upsertPoolsConfigMap(ctx, dn, rendered); err != nil {
 			return false, "", fmt.Errorf("apply pools configmap: %w", err)
 		}
@@ -379,6 +389,25 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		r.setPoolKeysCondition(dn, bundles)
 	}
 	return keepTemplate, holdMessage, nil
+}
+
+// fencesPoolsAgentMove reports whether the rendered pool list moves the live
+// pods to another agent while several run, the case upsertStatefulSet fences.
+func (r *DingoNodeReconciler) fencesPoolsAgentMove(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	rendered []resources.RenderPool,
+) (bool, error) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(dn), sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read statefulset for agent move: %w", err)
+	}
+	link, linked := poolsAgentLink(resources.PoolsConfig(dn, rendered))
+	moves, _, err := r.movesToAnotherAgent(ctx, dn, sts, link, linked)
+	return moves && runsSeveralPods(sts), err
 }
 
 func poolIDsOf(pools []resources.RenderPool) []string {
