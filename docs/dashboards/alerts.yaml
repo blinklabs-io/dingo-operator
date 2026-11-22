@@ -12,7 +12,8 @@
 # - kube-state-metrics and kubelet volume stats (kube-prometheus-stack defaults)
 #
 # Thresholds assume the operator default rotation.renewBeforePeriods: 8. If a
-# DingoNode sets another value, adjust DingoKESRotationDue to match.
+# DingoNode sets another value, adjust DingoKESRotationDue and
+# DingoKESRotationNotProgressing to match.
 groups:
   - name: dingo-operator
     rules:
@@ -88,7 +89,13 @@ groups:
       - alert: DingoNodeRolloutStuck
         expr: |
           (kube_statefulset_status_replicas_updated < kube_statefulset_replicas)
-          and on (namespace) group by (namespace) (kube_pod_container_info{container="dingo"})
+          and on (namespace, statefulset) group by (namespace, statefulset) (
+            label_replace(
+              kube_pod_owner{owner_kind="StatefulSet"}
+                and on (namespace, pod) kube_pod_container_info{container="dingo"},
+              "statefulset", "$1", "owner_name", "(.+)"
+            )
+          )
         for: 30m
         labels:
           severity: warning
@@ -137,6 +144,8 @@ groups:
             {{ $value }} KES periods left, at or under the operator's renewal
             threshold. In rotation mode Auto the operator should rotate within
             a reconcile or two; in Assisted, deliver a new KES key and opcert.
+            In MonitorOnly, the default, the operator only reports, so the new
+            KES key and opcert must be installed outside the operator.
 
       - alert: DingoKESRotationNotProgressing
         expr: min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int) <= 5
@@ -149,7 +158,7 @@ groups:
             Rotation was due 3 or more KES periods ago and has not happened.
             When the key expires the producer stops forging. Check the
             DingoNode KeysValid and RotationDue conditions and the operator's
-            rotation Events.
+            rotation Events. In MonitorOnly the operator never rotates the key.
 
       - alert: DingoOpcertCounterBehindChain
         expr: dingo_forge_opcert_counter_loaded < dingo_forge_opcert_counter_onchain

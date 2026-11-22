@@ -159,7 +159,8 @@ tests:
               summary: Dingo pod n1/a-0 is not ready
               description: The pod has not been ready for 15 minutes. A node that is bootstrapping from Mithril can take longer; check its phase first.
 
-  # A StatefulSet with an outdated replica in a namespace that runs Dingo.
+  # A Dingo StatefulSet with an outdated replica. Another StatefulSet in the
+  # same namespace that runs no dingo container does not fire.
   - interval: 1m
     input_series:
       - series: 'kube_statefulset_replicas{namespace="n1",statefulset="a"}'
@@ -174,7 +175,17 @@ tests:
         values: '1+0x60'
       - series: 'kube_statefulset_status_replicas_updated{namespace="n2",statefulset="c"}'
         values: '0+0x60'
+      - series: 'kube_statefulset_replicas{namespace="n1",statefulset="pg"}'
+        values: '1+0x60'
+      - series: 'kube_statefulset_status_replicas_updated{namespace="n1",statefulset="pg"}'
+        values: '0+0x60'
       - series: 'kube_pod_container_info{namespace="n1",pod="a-0",container="dingo"}'
+        values: '1+0x60'
+      - series: 'kube_pod_owner{namespace="n1",pod="a-0",owner_kind="StatefulSet",owner_name="a"}'
+        values: '1+0x60'
+      - series: 'kube_pod_container_info{namespace="n1",pod="pg-0",container="postgres"}'
+        values: '1+0x60'
+      - series: 'kube_pod_owner{namespace="n1",pod="pg-0",owner_kind="StatefulSet",owner_name="pg"}'
         values: '1+0x60'
     alert_rule_test:
       - eval_time: 20m
@@ -277,6 +288,8 @@ tests:
                 8 KES periods left, at or under the operator's renewal
                 threshold. In rotation mode Auto the operator should rotate within
                 a reconcile or two; in Assisted, deliver a new KES key and opcert.
+                In MonitorOnly, the default, the operator only reports, so the new
+                KES key and opcert must be installed outside the operator.
           - exp_labels:
               severity: warning
               namespace: n1
@@ -287,6 +300,8 @@ tests:
                 5 KES periods left, at or under the operator's renewal
                 threshold. In rotation mode Auto the operator should rotate within
                 a reconcile or two; in Assisted, deliver a new KES key and opcert.
+                In MonitorOnly, the default, the operator only reports, so the new
+                KES key and opcert must be installed outside the operator.
       - eval_time: 90m
         alertname: DingoKESRotationNotProgressing
         exp_alerts:
@@ -300,7 +315,7 @@ tests:
                 Rotation was due 3 or more KES periods ago and has not happened.
                 When the key expires the producer stops forging. Check the
                 DingoNode KeysValid and RotationDue conditions and the operator's
-                rotation Events.
+                rotation Events. In MonitorOnly the operator never rotates the key.
 
   # Opcert counter below the chain's, and unusable forge credentials.
   - interval: 1m

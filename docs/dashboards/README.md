@@ -26,12 +26,19 @@ unit tests.
 - **dingo-operator metrics scraped.** Install the
   [dingo-operator chart](https://github.com/blinklabs-io/helm-charts) with
   `podMonitor.enabled=true`. The chart's PodMonitor scrapes the operator's
-  controller-runtime metrics with the bearer token of the `metrics-reader`
-  credentials the chart creates.
+  controller-runtime metrics. With `metrics.secure` (the chart default) it
+  presents the token of a `metrics-scraper` ServiceAccount that the chart binds
+  to the `metrics-reader` ClusterRole. Set `podMonitor.labels` to match your
+  Prometheus `podMonitorSelector`; kube-prometheus-stack selects on its
+  `release` label by default.
 - **DingoNode metrics scraped.** Set `spec.metrics.podMonitor.enabled: true` on
   each DingoNode. The operator then creates a PodMonitor that adds the pod's
   `cardano_network` and `cardano_service` labels and every `spec.podLabels` key
-  to the series, and sets `instance` to the pod name. Prometheus must also be
+  to the series, and sets `instance` to the pod name. That PodMonitor carries
+  only the operator's own labels, so Prometheus must select PodMonitors without
+  a `release` label: in kube-prometheus-stack set
+  `prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues: false`.
+  Prometheus must also be
   allowed through the node's NetworkPolicy: label its pods (and namespace, when
   it differs from the node's) `dingo.blinklabs.io/metrics=allowed`.
 - **[kube-state-metrics](https://github.com/kubernetes/kube-state-metrics)**
@@ -230,13 +237,15 @@ node's NetworkPolicy is blocking Prometheus: label the Prometheus pods
 **Operator dashboard is empty but the node dashboards work**
 The operator's PodMonitor is not scraped. Check `podMonitor.enabled` in the
 chart, that the Prometheus `podMonitorSelector` selects it, and that the
-metrics-reader token is accepted. `operator_namespace` stays empty until
+`metrics-scraper` token is accepted. `operator_namespace` stays empty until
 `controller_runtime_reconcile_total{controller="dingonode"}` exists.
 
 **Storage runway panels are empty**
 They need kubelet volume stats for claims named `dingo-data-<pod>` and
 kube-state-metrics. Confirm `kubelet_volume_stats_available_bytes` exists
-in Prometheus. Some CSI drivers do not report it.
+in Prometheus. Some CSI drivers do not report it. A StatefulSet created by an
+earlier operator version keeps claims named `data-<pod>`, which the panels and
+the volume alerts do not match.
 
 **Panels collapse to one series**
 Panels group by `pod`. Check that the scraped series carry a `pod` label; a
