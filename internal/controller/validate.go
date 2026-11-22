@@ -488,8 +488,9 @@ const mainnetMagic = 764824073
 // an opcert: the pool ID and the node-to-client listener that together give
 // the on-chain counter it issues from, and a cold signer that can sign for
 // that pool, or for each pool of a pool list. The secret signer holds the cold
-// key in the cluster, so it is refused on mainnet unless coldSigner.allowMainnet
-// opts in.
+// key in the cluster, so it is refused on mainnet unless
+// coldSigner.allowMainnet opts in, and holds one cold key, so it is refused for
+// more than one pool.
 func validateAutoRotation(
 	spec *dingov1alpha1.DingoNodeSpec,
 	bp *dingov1alpha1.BlockProducerSpec,
@@ -564,6 +565,15 @@ func validateAutoRotation(
 			return errors.New(
 				"rotation mode Auto with the secret signer requires " +
 					"coldSigner.secretRef",
+			)
+		}
+		// A pool ID is the hash of its cold key, so one cold key issues a
+		// valid opcert for one pool only.
+		if len(bp.Pools) > 1 {
+			return errors.New(
+				"rotation mode Auto with the secret signer cannot rotate " +
+					"more than one pool of spec.blockProducer.pools: it " +
+					"holds one cold key; use the bursa signer",
 			)
 		}
 	case dingov1alpha1.ColdSignerNone:

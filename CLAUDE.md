@@ -809,12 +809,14 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   `agentProfile` (`agentControlConfig` takes the profile; `controlProfile` is
   refused with pools) into that pool's Secret only, validated with
   `validateBundle(poolChecks)`. The cold signer is built for a copy of the node
-  whose `coldKeyHash` is the pool's ID (it must be blank in the spec). The
-  backoff is keyed per pool. Outcomes are per-pool Events and one aggregate
-  `OpCertIssued` condition; no pool due means no agent call, and
-  `adoptPendingInstall` is single-pool only (a lost Secret write is repaired
-  by the next due attempt through `adoptServedOpCert`). A pool whose agent lost
-  its key is not re-keyed. In `Assisted` and `MonitorOnly` the operator makes
+  whose `coldKeyHash` is the pool's ID (it must be blank in the spec); the
+  `secret` signer is refused with more than one pool, since it holds one cold
+  key. The backoff is keyed per pool. Outcomes are per-pool Events and one
+  aggregate `OpCertIssued` condition. `adoptPendingInstall` runs per pool
+  ahead of the due check, from the pool's `loadedCounter`, so a lost Secret
+  write is repaired after the node reloads in place; with nothing pending and
+  no pool due the agent is not called. A pool whose agent lost its key is not
+  re-keyed. In `Assisted` and `MonitorOnly` the operator makes
   no call to the agent (`agentBundleProblem` and the control role are
   Auto-only), so a per-pool
   opcert is checked against its Secret and chain counters, never against what

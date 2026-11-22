@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +36,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // poolRotateFixture is an Auto-rotation block producer with two pools whose
@@ -60,7 +63,9 @@ func newPoolRotateFixture(t *testing.T) *poolRotateFixture {
 		RenewBeforePeriods: 8,
 		ReloadInPlace:      true,
 		ColdSigner: dingov1alpha1.ColdSignerSpec{
-			Type: dingov1alpha1.ColdSignerSecret, SecretRef: "cold",
+			Type:          dingov1alpha1.ColdSignerBursa,
+			Endpoint:      "https://signer.example:8443",
+			MTLSSecretRef: "signer-tls",
 		},
 	}
 	bp.NodeToClient.Enabled = true
@@ -293,24 +298,113 @@ func TestAutoRotatePoolsBacksOffPerPool(t *testing.T) {
 	t.Parallel()
 	f := newPoolRotateFixture(t)
 	f.makeDue(t, f.pools[1])
-	f.issuers[0].err = assert.AnError
+	// Pools are attempted in pool ID order: the first one fails, so a backoff
+	// shared with the second would hold the second back too.
+	first, second := 0, 1
+	if f.pools[1].id < f.pools[0].id {
+		first, second = 1, 0
+	}
+	f.issuers[first].err = assert.AnError
 	ctx := context.Background()
 
 	f.r.autoRotate(ctx, f.dn)
-	assert.Equal(t, 1, f.issuers[0].calls)
-	assert.Equal(t, 1, f.issuers[1].calls)
+	assert.Equal(t, 1, f.issuers[first].calls)
+	assert.Equal(t, 1, f.issuers[second].calls)
 
 	f.r.autoRotate(ctx, f.dn)
-	assert.Equal(t, 1, f.issuers[0].calls, "a is inside its backoff")
+	assert.Equal(t, 1, f.issuers[first].calls, "inside its backoff")
 	cond := meta.FindStatusCondition(f.dn.Status.Conditions, condOpCertIssued)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "IssueFailed", cond.Reason)
 }
 
-func poolAutoNode(t *testing.T, network string) *dingov1alpha1.DingoNode {
+// A pool whose Secret write failed after install-key is repaired once the node
+// has reloaded the agent's opcert in place and the pool is no longer due: a
+// restart would otherwise load the Secret's older opcert, which the agent no
+// longer serves.
+func TestAutoRotatePoolsAdoptsWhenNoLongerDue(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	a, b := f.pools[0], f.pools[1]
+	deny := true
+	denied := interceptor.NewClient(
+		f.c.(client.WithWatch),
+		interceptor.Funcs{Update: func(
+			ctx context.Context, c client.WithWatch, o client.Object,
+			opts ...client.UpdateOption,
+		) error {
+			var uo client.UpdateOptions
+			uo.ApplyOptions(opts)
+			if deny && len(uo.DryRun) == 0 && o.GetName() == a.secret {
+				return apierrors.NewForbidden(
+					corev1.Resource("secrets"), o.GetName(),
+					errors.New("update not granted"),
+				)
+			}
+			return c.Update(ctx, o, opts...)
+		}},
+	)
+	f.r.Client, f.r.APIReader = denied, denied
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+	_, issue := f.agent.Active(a.profile)
+	require.Equal(t, uint64(4), issue)
+	stale, _, err := opcert.Parse(f.secret(t, a).Data[keyFileOpCert])
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), stale.IssueNumber)
+
+	// The node loads the agent's opcert in place: counter 4 in a fresh KES
+	// window, so pool a is no longer due.
+	deny = false
+	ps := poolStatus(f.dn, a.id)
+	ps.KES = dingov1alpha1.KESStatus{
+		CurrentPeriod:    160,
+		OpCertKESPeriod:  160,
+		ExpiryPeriod:     222,
+		RemainingPeriods: 62,
+	}
+	ps.LoadedCounter = new(int64(4))
+	poolStatus(f.dn, b.id).LoadedCounter = new(int64(3))
+	f.r.forgetNodeIssueFailures(client.ObjectKeyFromObject(f.dn))
+	beforeB := f.secret(t, b)
+	cmdsBefore := len(f.agent.Commands())
+
+	f.r.autoRotate(ctx, f.dn)
+
+	assert.Equal(t, 1, f.issuers[0].calls, "no second opcert is issued")
+	assert.Zero(t, f.issuers[1].calls)
+	cmds := f.agent.Commands()[cmdsBefore:]
+	require.NotEmpty(t, cmds)
+	for _, c := range cmds {
+		assert.Equal(t, a.profile, c.Profile)
+		assert.Equal(t, "info", c.Command)
+	}
+	inSecret, _, err := opcert.Parse(f.secret(t, a).Data[keyFileOpCert])
+	require.NoError(t, err)
+	served, _, err := opcert.ParseCBOR(f.agent.ActiveOpCert(a.profile))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), inSecret.IssueNumber)
+	assert.Equal(t, served.KesVkey, inSecret.KesVkey)
+	assert.Equal(t, served.ColdSignature, inSecret.ColdSignature)
+	assert.Equal(t, beforeB.Data, f.secret(t, b).Data)
+
+	cond := meta.FindStatusCondition(f.dn.Status.Conditions, condOpCertIssued)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Contains(t, cond.Message, a.id)
+}
+
+// poolAutoNode is an Auto-rotation pool-list node with the bursa cold signer,
+// one pool per name.
+func poolAutoNode(
+	t *testing.T,
+	network string,
+	names ...string,
+) *dingov1alpha1.DingoNode {
 	t.Helper()
-	pools := newTestPools(t, "a", "b")
+	pools := newTestPools(t, names...)
 	dn := poolListNode("bp", "ns", 0, pools...)
 	dn.Spec.Network = network
 	bp := dn.Spec.BlockProducer
@@ -319,7 +413,9 @@ func poolAutoNode(t *testing.T, network string) *dingov1alpha1.DingoNode {
 		RenewBeforePeriods: 8,
 		ReloadInPlace:      true,
 		ColdSigner: dingov1alpha1.ColdSignerSpec{
-			Type: dingov1alpha1.ColdSignerSecret, SecretRef: "cold",
+			Type:          dingov1alpha1.ColdSignerBursa,
+			Endpoint:      "https://signer.example:8443",
+			MTLSSecretRef: "signer-tls",
 		},
 	}
 	bp.NodeToClient.Enabled = true
@@ -329,7 +425,7 @@ func poolAutoNode(t *testing.T, network string) *dingov1alpha1.DingoNode {
 
 func TestValidatePoolsAllowsAuto(t *testing.T) {
 	t.Parallel()
-	dn := poolAutoNode(t, "preview")
+	dn := poolAutoNode(t, "preview", "a", "b")
 	bp := dn.Spec.BlockProducer
 
 	require.NoError(t, validatePools(dn, bp))
@@ -383,20 +479,23 @@ func TestValidateSpecPoolsAutoNeedsItsPrerequisites(t *testing.T) {
 			wantErr: "coldKeyHash",
 		},
 		{
-			name: "bursa signer",
+			name:   "bursa signer",
+			mutate: func(*dingov1alpha1.BlockProducerSpec) {},
+		},
+		{
+			name: "secret signer for several pools",
 			mutate: func(bp *dingov1alpha1.BlockProducerSpec) {
 				bp.Rotation.ColdSigner = dingov1alpha1.ColdSignerSpec{
-					Type:          dingov1alpha1.ColdSignerBursa,
-					Endpoint:      "https://signer.example:8443",
-					MTLSSecretRef: "signer-tls",
+					Type: dingov1alpha1.ColdSignerSecret, SecretRef: "cold",
 				}
 			},
+			wantErr: "holds one cold key",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			dn := poolAutoNode(t, "preview")
+			dn := poolAutoNode(t, "preview", "a", "b")
 			tt.mutate(dn.Spec.BlockProducer)
 			err := validateSpec(dn)
 			if tt.wantErr == "" {
@@ -410,23 +509,36 @@ func TestValidateSpecPoolsAutoNeedsItsPrerequisites(t *testing.T) {
 }
 
 // The secret signer keeps the cold key in the cluster, so it is refused on
-// mainnet for a pool list as for a single pool.
+// mainnet for a pool list as for a single pool, unless coldSigner.allowMainnet
+// opts in.
 func TestAutoRotatePoolsSecretColdSignerMainnetRefused(t *testing.T) {
 	t.Parallel()
-	require.NoError(t, validateSpec(poolAutoNode(t, "preview")))
+	secretSigner := func(network string) *dingov1alpha1.DingoNode {
+		dn := poolAutoNode(t, network, "a")
+		dn.Spec.BlockProducer.Rotation.ColdSigner =
+			dingov1alpha1.ColdSignerSpec{
+				Type: dingov1alpha1.ColdSignerSecret, SecretRef: "cold",
+			}
+		return dn
+	}
+	require.NoError(t, validateSpec(secretSigner("preview")))
 
-	byName := poolAutoNode(t, "mainnet")
+	byName := secretSigner("mainnet")
 	err := validateSpec(byName)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret cold signer on mainnet")
 
 	magic := int64(mainnetMagic)
-	byMagic := poolAutoNode(t, "custom")
+	byMagic := secretSigner("custom")
 	byMagic.Spec.NetworkMagic = &magic
 	byMagic.Spec.ConfigRef = "genesis"
 	err = validateSpec(byMagic)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret cold signer on mainnet")
+
+	// coldSigner.allowMainnet opts a pool list in as it does a single pool.
+	byMagic.Spec.BlockProducer.Rotation.ColdSigner.AllowMainnet = true
+	require.NoError(t, validateSpec(byMagic))
 }
 
 func TestForgetNodeIssueFailuresClearsItsPools(t *testing.T) {

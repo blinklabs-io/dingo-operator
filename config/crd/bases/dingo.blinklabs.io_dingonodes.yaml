@@ -1288,10 +1288,11 @@ spec:
                       new opcert in one pool's Secret is loaded into the running node
                       without a roll; adding, removing or dropping a pool rolls the pod.
                       Rotation mode Auto rotates each pool that is due on its own KES state,
-                      through the signing agent with the pool's agentProfile; it takes
-                      the signing agent's control settings except controlProfile, and an empty
+                      through the signing agent with the pool's agentProfile; it takes the
+                      signing agent's control settings except controlProfile, an empty
                       coldSigner.coldKeyHash (the signer is asked for each pool's own cold
-                      key). More than one pool is refused with Leios (a vote key, runMode leios or the Musashi
+                      key), and the secret cold signer only for a single pool. More than one
+                      pool is refused with Leios (a vote key, runMode leios or the Musashi
                       network).
                     items:
                       description: BlockProducerPool is one pool of a block producer

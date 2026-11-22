@@ -199,8 +199,10 @@ operators.
   except that `controlProfile` is refused, since each pool names its profile,
   and a Bursa signer's `coldKeyHash` must be left empty, since the signer is
   asked for each pool's own cold key. The `secret` signer holds one cold key,
-  so it suits one pool, and is refused on mainnet as for a single pool. An
-  agent that lost a pool's key is not re-keyed. In `Assisted`, a new opcert in
+  so it is refused for more than one pool, and on mainnet as for a single
+  pool. A pool whose Secret write failed after the agent installed its new key
+  is repaired from what the agent serves, as for a single pool. An agent that
+  lost a pool's key is not re-keyed. In `Assisted`, a new opcert in
   one pool's Secret reaches Dingo without rolling the pod: a container beside
   Dingo stages it once the operator has validated and approved it, and Dingo
   reloads it on its key file watch. Only a change to a pool's other Secret

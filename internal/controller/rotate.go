@@ -136,15 +136,6 @@ func (r *DingoNodeReconciler) autoRotate(
 		r.autoRotatePools(ctx, dn)
 		return
 	}
-	// A node that reloads in place takes the agent's new opcert and stops
-	// reporting the rotation as due, so a lost Secret write is repaired here
-	// rather than behind RotationDue.
-	if r.adoptPendingInstall(ctx, dn) {
-		return
-	}
-	if !meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
-		return
-	}
 	floor, known := observedOnChainCounter(dn, time.Now())
 	t := rotationTarget{
 		secretRef:  bp.Keys.SecretRef,
@@ -159,6 +150,21 @@ func (r *DingoNodeReconciler) autoRotate(
 	}
 	if bp.SigningAgent != nil {
 		t.profile = bp.SigningAgent.ControlProfile
+	}
+	// A node that reloads in place takes the agent's new opcert and stops
+	// reporting the rotation as due, so a lost Secret write is repaired here
+	// rather than behind RotationDue.
+	if o := r.adoptPendingInstall(
+		ctx, dn, t, dn.Status.OpCert.LoadedCounter,
+	); o != nil {
+		r.reportIssue(ctx, dn, "", o)
+		setIssueCondition(dn, outcomeStatus(o), o.reason, o.message)
+		if o.issued {
+			return
+		}
+	}
+	if !meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
+		return
 	}
 	o := r.rotateKey(ctx, dn, t)
 	if o == nil {
@@ -196,8 +202,7 @@ func (r *DingoNodeReconciler) autoRotatePools(
 	for _, p := range pools {
 		id := normalizedPoolID(p.PoolID)
 		ps := observedPoolStatus(dn, id)
-		if ps == nil || ps.KES.CurrentPeriod <= 0 || renewBefore <= 0 ||
-			ps.KES.RemainingPeriods > renewBefore {
+		if ps == nil {
 			continue
 		}
 		signer := *dn
@@ -221,7 +226,17 @@ func (r *DingoNodeReconciler) autoRotatePools(
 			now.Sub(ps.OnChainCounterAt.Time) <= onChainCounterMaxAge {
 			t.chain, t.chainKnown = ps.OnChainCounter, true
 		}
-		o := r.rotateKey(ctx, dn, t)
+		// As for one pool, a lost Secret write is repaired whether or not
+		// the pool is still due. A failed repair holds the pool's backoff,
+		// so it is not followed by a rotation attempt.
+		o := r.adoptPendingInstall(ctx, dn, t, ps.LoadedCounter)
+		if o == nil {
+			if ps.KES.CurrentPeriod <= 0 || renewBefore <= 0 ||
+				ps.KES.RemainingPeriods > renewBefore {
+				continue
+			}
+			o = r.rotateKey(ctx, dn, t)
+		}
 		if o == nil {
 			continue
 		}
@@ -709,82 +724,69 @@ func servedOpCertSecret(
 	return oc, candidate, nil
 }
 
-// adoptPendingInstall writes the opcert the agent serves into the keys Secret
-// when the node reports forging with a later counter than the Secret holds,
-// which is what a rotation leaves when install-key succeeded and the Secret
-// write did not. A restart would otherwise load the Secret's older opcert. The
-// served opcert must be the one the node reports, and the next for the pool or
-// already on chain. It reports whether it wrote the Secret.
-//
-// Nothing here is due, so a node with nothing pending, or whose state is not
-// yet known, is left without a condition and the agent is not asked.
+// adoptPendingInstall writes the opcert the agent serves into t's keys Secret
+// when the node reports forging with a later counter (loaded) than the Secret
+// holds, which is what a rotation leaves when install-key succeeded and the
+// Secret write did not. A restart would otherwise load the Secret's older
+// opcert. The served opcert must be the one the node reports, and the next for
+// the pool or already on chain. It returns nil when nothing is pending, so a
+// node or pool whose state is not yet known is left without a condition and
+// the agent is not asked.
 func (r *DingoNodeReconciler) adoptPendingInstall(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
-) bool {
+	t rotationTarget,
+	loaded *int64,
+) *issueOutcome {
 	bp := dn.Spec.BlockProducer
-	loaded := dn.Status.OpCert.LoadedCounter
 	if bp.SigningAgent == nil || loaded == nil || *loaded < 0 ||
-		r.APIReader == nil {
-		return false
+		r.APIReader == nil || !t.chainKnown {
+		return nil
 	}
-	chain, ok := observedOnChainCounter(dn, time.Now())
-	if !ok {
-		return false
-	}
+	chain := t.chain
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{
-		Name:      bp.Keys.SecretRef,
-		Namespace: dn.Namespace,
-	}
+	key := types.NamespacedName{Name: t.secretRef, Namespace: dn.Namespace}
 	if err := r.APIReader.Get(ctx, key, secret); err != nil {
-		return false
+		return nil
 	}
 	certData, certFile, err := opCertFile(secret.Data)
 	if err != nil || certData == nil {
-		return false
+		return nil
 	}
 	staged, _, err := opcert.Parse(certData)
 	if err != nil || uint64(*loaded) <= staged.IssueNumber { //nolint:gosec
-		return false
+		return nil
 	}
 
 	// The node runs a later opcert than the Secret holds: from here on the
 	// repair is pending, and a failure is reported and retried after
 	// issueRetryInterval, sharing the backoff of a rotation attempt.
-	nodeKey := client.ObjectKeyFromObject(dn)
-	if last, ok := r.lastIssueFailure(nodeKey); ok &&
+	if last, ok := r.lastIssueFailure(t.failKey); ok &&
 		time.Since(last.at) < issueRetryInterval {
-		setIssueCondition(
-			dn, metav1.ConditionFalse, last.reason, last.message,
-		)
-		return false
+		return &issueOutcome{
+			reason: last.reason, message: last.message, replayed: true,
+		}
 	}
-	fail := func(reason, message string) {
-		r.recordIssueFailure(nodeKey, reason, message)
-		r.refuseIssue(ctx, dn, reason, message)
+	fail := func(reason, message string) *issueOutcome {
+		r.recordIssueFailure(t.failKey, reason, message)
+		return refused(reason, message)
 	}
-	cfg, problem, err := r.agentControlConfig(
-		ctx, dn, bp.SigningAgent.ControlProfile,
-	)
+	cfg, problem, err := r.agentControlConfig(ctx, dn, t.profile)
 	if err != nil {
-		fail("ControlCertUnavailable", err.Error())
-		return false
+		return fail("ControlCertUnavailable", err.Error())
 	}
 	if problem != "" {
-		fail("ControlCertInvalid", problem)
-		return false
+		return fail("ControlCertInvalid", problem)
 	}
 	active, err := kesagent.ActiveKey(ctx, cfg)
 	if err != nil {
-		fail("AgentInfoFailed", err.Error())
-		return false
+		return fail("AgentInfoFailed", err.Error())
 	}
-	// Both are non-negative: checked above and by observedOnChainCounter.
+	// Both are non-negative: checked above and by the counter's source.
 	if active.IssueNumber != uint64(*loaded) || //nolint:gosec
 		active.IssueNumber < uint64(chain) || //nolint:gosec
 		active.IssueNumber > uint64(chain)+1 { //nolint:gosec
-		fail(
+		return fail(
 			"AgentServesUnexpectedOpCert",
 			fmt.Sprintf(
 				"the node reports counter %d, the agent serves %d and the "+
@@ -792,46 +794,37 @@ func (r *DingoNodeReconciler) adoptPendingInstall(
 				*loaded, active.IssueNumber, chain,
 			),
 		)
-		return false
 	}
 	_, candidate, err := servedOpCertSecret(active, secret, certFile)
 	if err != nil {
-		fail("AgentServesUnexpectedOpCert", err.Error())
-		return false
+		return fail("AgentServesUnexpectedOpCert", err.Error())
 	}
 	if candidate == nil {
-		fail(
+		return fail(
 			"AgentServesUnexpectedOpCert",
 			"the opcert the agent serves does not verify",
 		)
-		return false
 	}
-	state, err := validateKeysSecret(candidate, dn)
+	state, err := t.validate(candidate)
 	if err != nil {
-		fail("IssuedBundleRejected", err.Error())
-		return false
+		return fail("IssuedBundleRejected", err.Error())
 	}
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
 	if err := r.Update(ctx, candidate); err != nil {
-		fail("SecretUpdateFailed", err.Error())
-		return false
+		return fail("SecretUpdateFailed", err.Error())
 	}
 
-	r.forgetIssueFailure(nodeKey)
-	msg := fmt.Sprintf(
-		"adopted the opcert the agent serves, counter %d, kes start period %d",
-		state.Counter, state.KESPeriod,
-	)
-	log.FromContext(ctx).Info(msg, "secret", bp.Keys.SecretRef)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(
-			dn, nil, corev1.EventTypeNormal, "OpCertIssued", "RotateKeys",
-			"%s", msg,
-		)
+	r.forgetIssueFailure(t.failKey)
+	return &issueOutcome{
+		issued: true,
+		reason: "OpCertIssued",
+		message: fmt.Sprintf(
+			"adopted the opcert the agent serves, counter %d, kes start "+
+				"period %d",
+			state.Counter, state.KESPeriod,
+		),
 	}
-	setIssueCondition(dn, metav1.ConditionTrue, "OpCertIssued", msg)
-	return true
 }
 
 // issuerFor returns the node's configured cold signer, reading its client
@@ -891,23 +884,6 @@ func (r *DingoNodeReconciler) issuerFor(
 	case dingov1alpha1.ColdSignerNone:
 	}
 	return nil, fmt.Errorf("cold signer type %q cannot issue", cs.Type)
-}
-
-func (r *DingoNodeReconciler) refuseIssue(
-	ctx context.Context,
-	dn *dingov1alpha1.DingoNode,
-	reason, message string,
-) {
-	log.FromContext(ctx).Info(
-		"auto rotation did not issue", "reason", reason, "error", message,
-	)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(
-			dn, nil, corev1.EventTypeWarning, reason, "RotateKeys",
-			"%s", message,
-		)
-	}
-	setIssueCondition(dn, metav1.ConditionFalse, reason, message)
 }
 
 func setIssueCondition(
