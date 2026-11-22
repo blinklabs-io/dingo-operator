@@ -1209,6 +1209,17 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		dn.Status.Tip = dingov1alpha1.TipStatus{}
 		dn.Status.Replicas = nil
 		setPipelineUnknown(dn, "NoReplicas", "node has no desired replicas")
+		if isBP {
+			// No pod holds a key to judge, so a due rotation and the KES
+			// state of the pods that are gone say nothing about it.
+			setRotationDueUnknown(
+				dn, "NoReplicas", "node has no desired replicas",
+			)
+			dn.Status.KES = dingov1alpha1.KESStatus{}
+			for i := range dn.Status.Pools {
+				dn.Status.Pools[i].KES = dingov1alpha1.KESStatus{}
+			}
+		}
 		return
 	}
 	if r.ForgeStatus == nil {
