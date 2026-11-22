@@ -609,7 +609,9 @@ func (r *DingoNodeReconciler) runningPools(
 // the one status observePools reads, and returns the pools that run and
 // whether they are known. Each pod's pools are attributed by that pod's own
 // before/after read, then every pool keeps the metrics of the pod that is
-// furthest behind on it, and a pool counts as running when any pod runs it.
+// furthest behind on it, and a pool counts as running when any pod runs it. A
+// pod that runs a pool without reporting metrics for it leaves the pool
+// unobserved.
 // The pools are known only when they are known for every pod. statuses holds
 // one scrape per pod of podNames, in order.
 func (r *DingoNodeReconciler) mergePoolPods(
@@ -638,7 +640,15 @@ func (r *DingoNodeReconciler) mergePoolPods(
 		)
 		allKnown = allKnown && known
 		maps.Copy(running, podRunning)
-		for id, pm := range poolMetricsByID(podRunning, st) {
+		byID := poolMetricsByID(podRunning, st)
+		// A pod that stages a pool and reports nothing for it is the one
+		// furthest behind on it, not a pod to skip.
+		for id := range podRunning {
+			if _, ok := byID[id]; !ok {
+				byID[id] = &forgestatus.PoolMetrics{}
+			}
+		}
+		for id, pm := range byID {
 			if prev, ok := merged.Pools[id]; ok {
 				pm = furthestBehindPool(prev, pm)
 			}
