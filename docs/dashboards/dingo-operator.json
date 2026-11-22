@@ -185,7 +185,7 @@
             "type": "prometheus",
             "uid": "default"
           },
-          "expr": "count(kube_pod_status_ready{condition=\"true\"} == 1 and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or vector(0)",
+          "expr": "count(kube_pod_status_ready{condition=\"true\"} == 1 and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or (0 * count(kube_pod_status_ready{condition=\"true\"}))",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -817,7 +817,7 @@
             "type": "prometheus",
             "uid": "default"
           },
-          "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or (((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0)",
+          "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or ((((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0) and on () count(kube_pod_status_ready{condition=\"true\"}))",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -1152,7 +1152,7 @@
             "type": "prometheus",
             "uid": "default"
           },
-          "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or (((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0)",
+          "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or ((((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0) and on () count(kube_pod_status_ready{condition=\"true\"}))",
           "legendFormat": "{{namespace}}/{{pod}}",
           "refId": "A"
         }
@@ -1166,7 +1166,7 @@
         "type": "prometheus",
         "uid": "default"
       },
-      "description": "KES periods left per producer over time. It falls by one every 1.5 days and jumps back up when a rotation is applied, so the sawtooth is the rotation history. With rotation.mode Auto the operator renews at renewBeforePeriods (8 here, the top of the amber band; the red band starts at 4), so a line that crosses 8 and keeps falling means a rotation did not go through: check the DingoNode's RotationDue and OpCertIssued conditions. **Healthy: every line above the amber band, or dipping into it only briefly before it jumps back up.**",
+      "description": "KES periods left per producer over time. It falls by one every 1.5 days and jumps back up when a rotation is applied, so the sawtooth is the rotation history. The amber band starts at 8, the default renewBeforePeriods (the red band starts at 4). Only rotation mode Auto renews, at the DingoNode's own renewBeforePeriods; MonitorOnly, the default, never renews. A line that keeps falling past the DingoNode's threshold under Auto means a rotation did not go through: check the DingoNode's RotationDue and OpCertIssued conditions. **Healthy: every line above the amber band, or dipping into it only briefly before it jumps back up.**",
       "fieldConfig": {
         "defaults": {
           "color": {

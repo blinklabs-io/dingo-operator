@@ -2636,7 +2636,7 @@
         "type": "prometheus",
         "uid": "default"
       },
-      "description": "A fuel gauge per producer: days of KES validity left on its operational certificate (remaining KES periods times the period length, `cardano_node_metrics_remainingKESPeriods_int` x `dingo_forge_slots_per_kes_period`, 1 s slots, so 1.5 days a period). Emptiest first; a dial is full at 93 days (62 periods, a fresh key). Lowest now: ${kes_min} periods on ${kes_min_pod}. With rotation.mode Auto the operator renews at 8 periods (12 days). **Healthy: green, 12 days or more**; amber under 12 days means a rotation is due, red under 6 that it is overdue and the producer stops forging when the dial is empty.",
+      "description": "A fuel gauge per producer: days of KES validity left on its operational certificate (remaining KES periods times the period length, `cardano_node_metrics_remainingKESPeriods_int` x `dingo_forge_slots_per_kes_period`, 1 s slots, so 1.5 days a period). Emptiest first; a dial is full at 93 days (62 periods, a fresh key). Lowest now: ${kes_min} periods on ${kes_min_pod}. Amber starts at 8 periods (12 days), the default renewBeforePeriods; only rotation mode Auto renews, at the DingoNode's own renewBeforePeriods, and MonitorOnly, the default, never renews. **Healthy: green, 12 days or more**; amber under 12 days means the key is at the default renewal point, red under 6 that it is close to expiry, and the producer stops forging when the dial is empty.",
       "fieldConfig": {
         "defaults": {
           "color": {
