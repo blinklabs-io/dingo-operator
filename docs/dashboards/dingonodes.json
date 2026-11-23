@@ -1,0 +1,3556 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Every Dingo on one screen: is the pack up, at tip, on one version, hearing blocks fast, and not about to run out of KES, certificates, disk or memory?",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 2,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Operator",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/dingo-operator"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "DingoNodes",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/dingonodes"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Forging Health",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/dingo-forging"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Good: every Dingo up and within 300 slots of tip, blocks heard in well under 1 s, more than 8 KES periods left on every producer, and more than 30 days of disk runway. No data while any Dingo has no measured disk runway yet.",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "afterRender": "// DingoNodes: header afterRender JS (shared suite prelude + this dashboard's KPIs)\n(function () {\n  var ROOT_ID = 'hx-dingonodes';\n  try {\n\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  /* two namespaces can both run relay-0: a pod name seen in more than one namespace is keyed and shown as namespace/pod; podRaw keeps the bare name */\n  var podNs = {};\n  for (var sn = 0; sn < s.length; sn++) {\n    var fn = (s[sn] && s[sn].fields) || [];\n    for (var jn = 0; jn < fn.length; jn++) {\n      var lbn = fn[jn].labels;\n      if (lbn && lbn.pod && lbn.namespace) { var qn = podNs[lbn.pod] = podNs[lbn.pod] || {}; qn[lbn.namespace] = 1 }\n    }\n  }\n  function podId(lb) {\n    var o = {}; for (var k in lb) o[k] = lb[k];\n    if (lb.pod) { o.podRaw = lb.pod; var q = podNs[lb.pod]; if (q && lb.namespace && Object.keys(q).length > 1) o.pod = lb.namespace + '/' + lb.pod }\n    return o;\n  }\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: podId(f[j].labels || {}), v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  /* pills(list): one status pill per node, [{n: name, w: word, st: ok|warn|bad|na, t: tooltip, x: detail}] */\n  function pills(list) {\n    var c = el(ROOT_ID + '-pills'); if (!c) return;\n    var order = { bad: 0, warn: 1, na: 2, ok: 3 };\n    list.sort(function (a, b) { return (order[a.st] - order[b.st]) || String(a.n).localeCompare(String(b.n)) });\n    c.innerHTML = list.map(function (p) {\n      return '<span class=\"hx-pill\" data-s=\"' + p.st + '\" title=\"' + esc(p.t || '') + '\"><i></i>' + esc(p.n) +\n        ' <b>' + esc(p.w) + '</b>' + (p.x ? ' <small>' + esc(p.x) + '</small>' : '') + '</span>';\n    }).join('');\n  }\n  function nodeName(l) { return l.pod || '?' }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var up = rows('UP'), gap = byLabel('GAP', 'pod');\n  var total = up.length, down = [], syncing = [], lagging = [], unknownGap = [], atTip = 0;\n  for (var i = 0; i < up.length; i++) {\n    var a = up[i].l.pod || '?';\n    if (up[i].v < 1) { down.push(a); continue }\n    if (!has(gap[a])) unknownGap.push(a); else if (gap[a] > 600) syncing.push(a); else if (gap[a] > 300) lagging.push(a); else atTip++;\n  }\n  var pStk = byLabel('STK', 'pod');\n  pills(up.map(function (r) {\n    var a = nodeName(r.l), g = gap[a];\n    if (r.v < 1) return { n: a, w: 'Down', st: 'bad', t: 'Prometheus cannot scrape this Dingo' };\n    if (!has(g)) return { n: a, w: 'Unknown', st: 'na', t: 'no tip gap reported' };\n    if (has(pStk[a])) return { n: a, w: 'Stalled', st: 'bad', t: 'ledger pipeline stuck or halted' };\n    if (g > 600) return { n: a, w: 'Syncing', st: 'warn', x: n0(g) + ' slots', t: n0(g) + ' slots behind the wall clock' };\n    if (g > 300) return { n: a, w: 'Behind', st: 'warn', x: n0(g) + ' slots', t: n0(g) + ' slots behind the wall clock' };\n    return { n: a, w: 'Synced', st: 'ok', t: n0(g) + ' slots from the wall-clock tip' };\n  }));\n  var nUp = total - down.length;\n  var issues = [], sev = 'ok';\n  function issue(st, text) { issues.push({ st: st, text: text }); sev = worst(sev, st) }\n  if (!total) { kpi('up'); kpi('tip') } else {\n    kpi('up', nUp + '/' + total, '', down.length ? 'bad' : 'ok', down.length ? 'down: ' + names(down) : 'all scraped');\n    kpi('tip', atTip + '/' + nUp, '', syncing.length || lagging.length || unknownGap.length ? 'warn' : 'ok',\n      syncing.length ? 'syncing: ' + names(syncing) : (lagging.length ? 'lagging: ' + names(lagging) : (unknownGap.length ? 'no tip gap: ' + names(unknownGap) : 'within 300 slots')));\n  }\n  if (down.length) issue('bad', '<b>' + esc(names(down)) + '</b> ' + (down.length === 1 ? 'is' : 'are') + ' down');\n  var stuck = rows('STK').map(function (r) { return r.l.pod });\n  if (stuck.length) issue('bad', 'ledger pipeline stuck on <b>' + esc(names(stuck)) + '</b>');\n  if (unknownGap.length) issue('warn', 'no tip gap is reported for <b>' + esc(names(unknownGap)) + '</b>');\n  if (syncing.length) issue('warn', '<b>' + esc(names(syncing)) + '</b> ' + (syncing.length === 1 ? 'is' : 'are') + ' syncing');\n  if (lagging.length) issue('warn', '<b>' + esc(names(lagging)) + '</b> ' + (lagging.length === 1 ? 'is' : 'are') + ' over 300 slots behind');\n  var arr = one('ARR');\n  kpi('arr', has(arr) ? n0(arr) : undefined, 'ms', low(arr, 500, 1000), 'slot to header, p50 over 1 h');\n  if (has(arr) && arr >= 500) issue(low(arr, 500, 1000), 'blocks arrive late (p50 <b>' + n0(arr) + ' ms</b>)');\n  var kes = minRow(rows('KES'));\n  kpi('kes', kes ? n0(kes.v) : undefined, 'periods', kes ? high(kes.v, 8, 4) : 'na', kes ? (kes.l.pod || '') + ' · ' + n0(kes.v * 1.5) + ' days' : '');\n  if (kes && kes.v < 8) issue(high(kes.v, 8, 4), 'KES on <b>' + esc(kes.l.pod) + '</b> has ' + plural(Math.round(kes.v), 'period', 'periods') + ' left (the default renewal point is 8; only rotation mode Auto renews)');\n  var runRows = rows('RUN'), run = minRow(runRows), full = one('DSK'), runPod = {};\n  for (var ri = 0; ri < runRows.length; ri++) runPod[runRows[ri].l.pod] = 1;\n  /* a new volume has no usable deriv slope, so it has no RUN row: its runway is unmeasured, not long */\n  var noRun = up.filter(function (r) { return r.v >= 1 && !runPod[r.l.pod] }).map(function (r) { return nodeName(r.l) });\n  kpi('run', run ? (run.v >= 365 ? '> 1' : n0(run.v)) : undefined, run && run.v >= 365 ? 'year' : 'days', run && (run.v < 30 || !noRun.length) ? high(run.v, 30, 7) : 'na',\n    (run ? (run.l.pod || '') : '') + (noRun.length ? (run ? ' · ' : '') + 'no forecast: ' + names(noRun) : '') + (run && has(full) ? ' · fullest disk ' + n0(full * 100) + '%' : ''));\n  if (run && run.v < 30) issue(high(run.v, 30, 7), 'the data volume of <b>' + esc(run.l.pod) + '</b> fills in ' + plural(Math.round(run.v), 'day', 'days') + ' at the last 24 h rate');\n  if (has(full) && full >= 0.85) issue('bad', 'a node disk is <b>' + n0(full * 100) + '%</b> full (kubelet evicts near 85%)');\n  var thin = rows('THN').map(function (r) { return r.l.pod });\n  if (thin.length) issue('warn', '<b>' + esc(names(thin)) + '</b> ' + (thin.length === 1 ? 'has' : 'have') + ' under 5 hot peers');\n  var ver = rows('VER').map(function (r) { return String(r.l.version || '').replace(/^v/, '').split(' ')[0] });\n  if (ver.length > 1) issue('warn', 'the pack runs ' + ver.length + ' versions (' + esc(names(ver)) + ')');\n  var rst = rows('RST').filter(function (r) { return r.v >= 3 }).map(function (r) { return r.l.pod });\n  if (rst.length) issue('warn', '<b>' + esc(names(rst)) + '</b> restarted 3 or more times in 24 h');\n  if (!total) { verdict('No Dingo is being scraped on the selected networks.', 'na') }\n  else if (!issues.length) {\n    var allUp = 'All ' + total + ' Dingos are up and at tip' + (ver.length === 1 ? ' on ' + esc(ver[0]) : '') +\n      (has(arr) ? '; blocks arrive in ' + n0(arr) + ' ms' : '');\n    if (noRun.length) verdict(allUp + '; disk runway is not measured for <b>' + esc(names(noRun)) + '</b>, so no healthy verdict is given.', 'na');\n    else verdict(allUp + '; no data volume fills within 30 days' + (kes ? '; the nearest KES key expires in about ' + n0(kes.v * 1.5) + ' days' : '') + '.', 'ok');\n  } else {\n    issues.sort(function (x, y) { return RANK[y.st] - RANK[x.st] });\n    var txt = issues.slice(0, 3).map(function (x) { return x.text }).join('; ');\n    if (issues.length > 3) txt += '; and ' + (issues.length - 3) + ' more';\n    verdict(txt.charAt(0) === '<' ? txt + '. ' + atTip + ' of ' + total + ' Dingos are at tip.' : txt.charAt(0).toUpperCase() + txt.slice(1) + '. ' + atTip + ' of ' + total + ' Dingos are at tip.', sev);\n  }\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-verdict');\n    if (v) v.textContent = 'Header script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
+        "content": "<div class=\"hx\" id=\"hx-dingonodes\" data-s=\"na\"><div class=\"hx-top\"><div class=\"hx-id\"><div class=\"hx-eye\">Dingo · producer suite</div><div class=\"hx-title\">DingoNodes</div><div class=\"hx-sub\">Every DingoNode on one screen: is the pack up, at tip, hearing blocks fast, and how long until a KES key, a certificate or a disk runs out?</div></div><div class=\"hx-badge\" id=\"hx-dingonodes-badge\"><i></i><span>No data</span></div></div><div class=\"hx-verdict\" id=\"hx-dingonodes-verdict\">Reading the data…</div><div class=\"hx-pills\" id=\"hx-dingonodes-pills\"></div><div class=\"hx-kpis\"><div class=\"hx-k\" id=\"hx-dingonodes-k-up\" data-s=\"na\"><div class=\"hx-kl\">Dingos up</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-tip\" data-s=\"na\"><div class=\"hx-kl\">At tip</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-arr\" data-s=\"na\"><div class=\"hx-kl\">Block arrival</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-kes\" data-s=\"na\"><div class=\"hx-kl\">Least KES left</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-run\" data-s=\"na\"><div class=\"hx-kl\">Disk runway</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div></div></div>",
+        "contentPartials": [],
+        "defaultContent": "<div class=\"hx\" id=\"hx-dingonodes\" data-s=\"na\"><div class=\"hx-top\"><div class=\"hx-id\"><div class=\"hx-eye\">Dingo · producer suite</div><div class=\"hx-title\">DingoNodes</div><div class=\"hx-sub\">Every DingoNode on one screen: is the pack up, at tip, hearing blocks fast, and how long until a KES key, a certificate or a disk runs out?</div></div><div class=\"hx-badge\" id=\"hx-dingonodes-badge\"><i></i><span>No data</span></div></div><div class=\"hx-verdict\" id=\"hx-dingonodes-verdict\">No data came back for this time range, so there is nothing to judge.</div><div class=\"hx-kpis\"><div class=\"hx-k\" id=\"hx-dingonodes-k-up\" data-s=\"na\"><div class=\"hx-kl\">Dingos up</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-tip\" data-s=\"na\"><div class=\"hx-kl\">At tip</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-arr\" data-s=\"na\"><div class=\"hx-kl\">Block arrival</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-kes\" data-s=\"na\"><div class=\"hx-kl\">Least KES left</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div><div class=\"hx-k\" id=\"hx-dingonodes-k-run\" data-s=\"na\"><div class=\"hx-kl\">Disk runway</div><div class=\"hx-kv\">–</div><div class=\"hx-kn\">&nbsp;</div></div></div></div>",
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "editors": [],
+        "externalStyles": [],
+        "helpers": "",
+        "renderMode": "data",
+        "styles": ".hx{--ok:#3ecf73;--warn:#f5b12e;--bad:#f2605a;--na:rgba(140,148,160,.9);--info:#5b9cf5;--line:rgba(128,136,150,.22);--tint:rgba(128,136,150,.07);box-sizing:border-box;width:100%;min-height:100%;display:flex;flex-direction:column;gap:8px;padding:10px 16px 10px 18px;border:1px solid var(--line);border-left:4px solid var(--na);border-radius:8px;background:linear-gradient(135deg,var(--tint),rgba(128,136,150,0) 70%);font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:inherit;line-height:1.25}.hx *{box-sizing:border-box}body.theme-light .hx,.hx.hx-light{--ok:#15803d;--warn:#b45309;--bad:#c2261d;--na:rgba(90,98,110,.9);--info:#1d5fd0;--line:rgba(60,70,90,.2);--tint:rgba(60,70,90,.05)}.hx[data-s=ok]{border-left-color:var(--ok)}.hx[data-s=warn]{border-left-color:var(--warn)}.hx[data-s=bad]{border-left-color:var(--bad)}.hx-top{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:6px 18px}.hx-id{min-width:0;flex:1 1 320px}.hx-eye{font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;opacity:.55}.hx-title{font-size:22px;font-weight:650;letter-spacing:-.01em;margin-top:1px}.hx-sub{font-size:12px;opacity:.68;margin-top:2px;max-width:92ch}.hx-badge{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;border:1px solid var(--line);font-size:11px;font-weight:650;letter-spacing:.09em;text-transform:uppercase;color:var(--na);white-space:nowrap}.hx-badge i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}.hx[data-s=ok] .hx-badge{color:var(--ok)}.hx[data-s=warn] .hx-badge{color:var(--warn)}.hx[data-s=bad] .hx-badge{color:var(--bad)}.hx-verdict{font-size:14px;font-weight:500;padding:6px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow-wrap:anywhere}.hx-verdict b{font-weight:650}.hx-kpis{flex:1 1 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px}.hx-k{min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:7px 10px 8px;border-radius:6px;background:var(--tint);border-top:2px solid var(--na)}.hx-kl{font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;opacity:.62;overflow-wrap:anywhere}.hx-kv{font-size:24px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--na)}.hx-kv small{font-size:12px;font-weight:500;letter-spacing:0;margin-left:3px;opacity:.8}.hx-kn{font-size:11px;line-height:1.3;opacity:.66;overflow-wrap:anywhere;min-height:14px}.hx-k[data-s=ok]{border-top-color:var(--ok)}.hx-k[data-s=ok] .hx-kv{color:var(--ok)}.hx-k[data-s=warn]{border-top-color:var(--warn)}.hx-k[data-s=warn] .hx-kv{color:var(--warn)}.hx-k[data-s=bad]{border-top-color:var(--bad)}.hx-k[data-s=bad] .hx-kv{color:var(--bad)}.hx-fit1>.hx-top .hx-sub{display:none}.hx-fit2>.hx-top .hx-eye{display:none}.hx-fit2 .hx-kv{font-size:19px}.hx-fit2 .hx-k{padding:4px 9px 5px}.hx-fit2>.hx-verdict{font-size:13px;padding:4px 0}.hx-fit2 .hx-title{font-size:19px}.hx.hx-plain{border:0;border-left:0;background:none;padding:2px 4px;gap:6px;min-height:0}.hx-lg{display:flex;flex-wrap:wrap;gap:3px 14px;font-size:11px;opacity:.8;align-items:center}.hx-lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.hx-rows{display:flex;flex-direction:column}.hx-r{display:grid;grid-template-columns:minmax(120px,200px) minmax(120px,1fr) minmax(150px,230px);gap:2px 12px;align-items:center;padding:5px 0;border-top:1px solid var(--line)}.hx-rn{min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:0 7px}.hx-rn b{font-size:13px;font-weight:650}.hx-rn span{font-size:11px;opacity:.62}.hx-bar{position:relative;height:20px;border-radius:4px;background:var(--tint);overflow:hidden;display:flex}.hx-bar u{display:block;height:100%;min-width:2px;text-decoration:none}.hx-bar s{position:absolute;top:0;bottom:0;width:1px;background:var(--line);text-decoration:none}.hx-bar em{position:absolute;top:-2px;bottom:-2px;width:2px;background:currentColor;border-radius:1px}.hx-ax{position:relative;height:13px;font-size:10px;opacity:.55}.hx-ax span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}.hx-ax span:first-child{transform:none}.hx-ax span:last-child{transform:translateX(-100%)}.hx-rv{min-width:0;font-size:12px;font-variant-numeric:tabular-nums}.hx-rv b{font-size:15px;font-weight:650;color:var(--na)}.hx-rv[data-s=ok] b{color:var(--ok)}.hx-rv[data-s=warn] b{color:var(--warn)}.hx-rv[data-s=bad] b{color:var(--bad)}.hx-seg{grid-column:2 / 4;font-size:11px;opacity:.75;display:flex;flex-wrap:wrap;gap:1px 12px}.hx-seg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}.hx-fit1 .hx-seg{display:none}.hx-fit2 .hx-r{padding:2px 0}.hx-fit2 .hx-bar{height:13px}.hx-fit2 .hx-rv b{font-size:13px}.hx-fit2 .hx-lg{display:none}.hx-rings{display:flex;flex-wrap:wrap;justify-content:space-around;align-content:space-around;gap:6px 10px;flex:1 1 auto}.hx-ring{flex:1 1 118px;max-width:230px;min-width:0;display:flex;flex-direction:column;align-items:center;text-align:center}.hx-ring svg{width:100%;max-width:132px;height:auto;display:block}.hx-ring .trk{fill:none;stroke:var(--line);stroke-width:9}.hx-ring .arc{fill:none;stroke:var(--na);stroke-width:9;stroke-linecap:round}.hx-ring .tk{stroke:currentColor;stroke-width:1.5;opacity:.55}.hx-ring[data-s=ok] .arc{stroke:var(--ok)}.hx-ring[data-s=warn] .arc{stroke:var(--warn)}.hx-ring[data-s=bad] .arc{stroke:var(--bad)}.hx-ring .v{font-size:19px;font-weight:650;fill:currentColor;font-variant-numeric:tabular-nums}.hx-ring .u{font-size:9.5px;fill:currentColor;opacity:.62}.hx-ring b{font-size:13px;font-weight:650;overflow-wrap:anywhere}.hx-ring span{font-size:11px;opacity:.66;overflow-wrap:anywhere}.hx-fit1 .hx-ring{flex-basis:100px}.hx-fit1 .hx-ring svg{max-width:100px}.hx-fit1 .hx-ring span.x{display:none}.hx-fit2 .hx-ring{flex-basis:84px}.hx-fit2 .hx-ring svg{max-width:84px}.hx-fit2 .hx-ring span{display:none}.hx-fit2 .hx-ring b{font-size:11px}.hx-none{padding:18px 4px;font-size:13px;opacity:.7}@media (max-width:620px){.hx-r{grid-template-columns:1fr}.hx-seg{grid-column:1}.hx-title{font-size:19px}.hx-kv{font-size:20px}}\n.hx-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px; min-height: 0 }\n.hx-pills:empty { display: none }\n.hx-pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border-radius: 6px; font-size: 11px; line-height: 16px; white-space: nowrap; border: 1px solid rgba(204, 204, 220, .15); background: rgba(204, 204, 220, .04); color: inherit; transition: transform .2s ease, box-shadow .3s ease; cursor: default }\n.hx-pill:hover { transform: translateY(-1px); box-shadow: 0 3px 12px rgba(0, 0, 0, .35) }\n.hx-pill i { width: 7px; height: 7px; border-radius: 50%; background: #8e8e8e; flex-shrink: 0 }\n.hx-pill b { font-size: 9.5px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; opacity: .95 }\n.hx-pill[data-s=\"ok\"] { border-color: rgba(115, 191, 105, .28); background: rgba(115, 191, 105, .07) }\n.hx-pill[data-s=\"ok\"] i { background: #73BF69; box-shadow: 0 0 6px rgba(115, 191, 105, .6) }\n.hx-pill[data-s=\"ok\"] b { color: #73BF69 }\n.hx-pill[data-s=\"warn\"] { border-color: rgba(255, 152, 48, .32); background: rgba(255, 152, 48, .08) }\n.hx-pill[data-s=\"warn\"] i { background: #FF9830; box-shadow: 0 0 6px rgba(255, 152, 48, .6) }\n.hx-pill[data-s=\"warn\"] b { color: #FF9830 }\n.hx-pill[data-s=\"bad\"] { border-color: rgba(242, 73, 92, .38); background: rgba(242, 73, 92, .09) }\n.hx-pill[data-s=\"bad\"] i { background: #F2495C; box-shadow: 0 0 6px rgba(242, 73, 92, .7) }\n.hx-pill[data-s=\"bad\"] b { color: #F2495C }\n.hx-pill[data-s=\"na\"] b { color: #8e8e8e }\n.hx-pill small { opacity: .6; font-size: 10px }\n",
+        "wrap": false
+      },
+      "pluginVersion": "6.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (up{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "UP"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "GAP"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_ledger_pipeline_stuck{cardano_network=~\"$network\"} + dingo_ledger_pipeline_halted{cardano_network=~\"$network\"}) > 0",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "STK"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "1000 * histogram_quantile(0.5, sum by (le) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[1h])))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "ARR"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "KES"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "RUN"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max((kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "DSK"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (cardano_node_metrics_peerSelection_hot{cardano_network=~\"$network\"}) < 5",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "THN"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "count by (version) (dingo_build_info{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "VER"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{container=\"dingo\"}[24h]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "RST"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "marcusolsson-dynamictext-panel"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "One row per Dingo. **Healthy: every row up, Tip lag green, Arrival p50 under 1 s, 10 or more hot peers.** **Tip lag**: slots behind the wall clock (blue over 600 = syncing; now${syncing:csv}). **Arrival p50**: median time from a block's slot to the first copy of its header reaching this node over 6 h (`dingo_chainsync_header_arrival_delay_seconds`) - the pack's own block-propagation measure; pack-wide it is ${arrival_p50} ms. A syncing node hears no current blocks, so the column reads *syncing* for it. **Role** is producer for nodes that load forging credentials (now${producers:csv}). **Node disk** is the host filesystem, since local-path volumes report it. CPU is cores. **Next slot**: time until a producer's next scheduled leader slot (`dingo_leader_next_slot`, 1 s slots), *none scheduled* when the schedules it holds contain no further slot; the column appears once a producer runs a newer Dingo, and Forging Health has the schedule behind it.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false,
+            "minWidth": 50
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Up"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "#ef4444",
+                        "text": "DOWN"
+                      },
+                      "1": {
+                        "color": "#22c55e",
+                        "text": "up"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Role"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "#ef4444",
+                        "text": "producer (no creds)"
+                      },
+                      "1": {
+                        "color": "#3b82f6",
+                        "text": "producer"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": "relay"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open ${__data.fields.Pod} in Forging Health (producers)",
+                    "url": "/d/dingo-forging?var-pod=${__data.fields.Pod}&${network:queryparam}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Next slot"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dtdurations"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "-"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "-1": {
+                        "text": "none scheduled"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tip lag"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 60
+                    },
+                    {
+                      "color": "#3b82f6",
+                      "value": 600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Block"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Arrival p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 1
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 3
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "-1": {
+                        "color": "#3b82f6",
+                        "text": "syncing"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": "-"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hot peers"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#ef4444",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 5
+                    },
+                    {
+                      "color": "#22c55e",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Database"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Node disk"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "gauge",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": null
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 0.75
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 0.95
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Memory"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Restarts 24h"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 1
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 5
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Uptime"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Version"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "pattern": "^(v?[0-9][^ ]*).*$",
+                      "result": {
+                        "index": 0,
+                        "text": "$1"
+                      }
+                    },
+                    "type": "regex"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Pod"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 260
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Network"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "zebraStriping": false
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod, cardano_network) (up{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod, version) (dingo_build_info{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "(max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600) * 0 - 1 or (histogram_quantile(0.5, sum by (le, namespace, pod) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h]))) >= 0)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (cardano_node_metrics_peerSelection_hot{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{container=\"dingo\"}[24h]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (time() - process_start_time_seconds{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "N"
+        }
+      ],
+      "title": "Dingo Health",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #A": false,
+              "Value #B": false,
+              "Value #C": true,
+              "Value #D": false,
+              "Value #E": true,
+              "Value #F": false,
+              "Value #G": false,
+              "Value #H": true,
+              "Value #I": true,
+              "Value #J": true,
+              "Value #K": true,
+              "Value #L": true,
+              "Value #M": false,
+              "Value #N": false,
+              "Value #O": true,
+              "pod": false,
+              "cardano_network": false,
+              "version": false
+            },
+            "indexByName": {
+              "Value #A": 5,
+              "Value #B": 2,
+              "Value #D": 7,
+              "Value #E": 8,
+              "Value #F": 9,
+              "Value #G": 10,
+              "Value #H": 11,
+              "Value #I": 12,
+              "Value #J": 13,
+              "Value #K": 14,
+              "Value #L": 15,
+              "Value #M": 16,
+              "Value #N": 17,
+              "Value #O": 3,
+              "pod": 0,
+              "cardano_network": 1,
+              "version": 6
+            },
+            "renameByName": {
+              "Value #A": "Up",
+              "Value #B": "Role",
+              "Value #D": "Tip lag",
+              "Value #E": "Block",
+              "Value #F": "Arrival p50",
+              "Value #G": "Hot peers",
+              "Value #H": "Mempool txs",
+              "Value #I": "Database",
+              "Value #J": "Node disk",
+              "Value #K": "Memory",
+              "Value #L": "CPU",
+              "Value #M": "Restarts 24h",
+              "Value #N": "Uptime",
+              "Value #O": "Next slot",
+              "pod": "Pod",
+              "cardano_network": "Network",
+              "version": "Version",
+              "namespace": "Namespace"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Network"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "One lane per Dingo, grouped by network, for the last hour before the end of the time range. Each bar is one block at its slot time; height is the delay after the slot (linear to 1 s, log above; the dashed line is 1 s). Grey is the wait for the first copy of the header, colour is header to ledger adoption as the new tip. On a network with more than one Dingo, a yellow dot marks the Dingo that heard that block first, and the right-hand gutter gives each Dingo's share of firsts and its median lag when it was not first. Hover a bar for the numbers and the same block on its sibling Dingos. A syncing node (now:${syncing:csv}) gets a blue labelled lane instead of bars, so it does not read as slow. **Healthy: short green bars, no gaps, firsts shared between siblings.** Built from the `dingo_chainsync_recent_header_*` and `dingo_ledger_recent_adoption_*` rings (16 blocks per node, sampled every scrape).",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "id": 3,
+      "options": {
+        "afterRender": "\n// DingoNodes: Block Lanes afterRender JS\n// One lane per Dingo, grouped by network, the last hour before the end of the time range.\n// One bar per block at its slot time; height = delay after the slot (linear to 1 s, log above).\n// Grey = waiting for the header, colour = header to ledger adoption. A yellow dot marks the\n// Dingo that heard the header first among the Dingos of that network. A syncing or down node\n// gets a labelled lane instead of bars, so it never reads as a slow node.\n(function () {\n  var s = (context.panelData && context.panelData.series) ? context.panelData.series : [];\n  var tTo = Date.now(); try { tTo = context.grafana.timeRange.to.valueOf() } catch (e) { }\n  var WIN = 3600e3, t0 = tTo - WIN;\n  /* two namespaces can both run relay-0: a pod name seen in more than one namespace is keyed and shown as namespace/pod; podRaw keeps the bare name */\n  var podNs = {};\n  for (var sn = 0; sn < s.length; sn++) {\n    var fn = (s[sn] && s[sn].fields) || [];\n    for (var jn = 0; jn < fn.length; jn++) {\n      var lbn = fn[jn].labels;\n      if (lbn && lbn.pod && lbn.namespace) { var qn = podNs[lbn.pod] = podNs[lbn.pod] || {}; qn[lbn.namespace] = 1 }\n    }\n  }\n  function podId(lb) {\n    var o = {}; for (var k in lb) o[k] = lb[k];\n    if (lb.pod) { o.podRaw = lb.pod; var q = podNs[lb.pod]; if (q && lb.namespace && Object.keys(q).length > 1) o.pod = lb.namespace + '/' + lb.pod }\n    return o;\n  }\n  function each(ref, cb) {\n    for (var si = 0; si < s.length; si++) {\n      if (s[si].refId !== ref) continue;\n      var f = s[si].fields, tf = null;\n      for (var i = 0; i < f.length; i++) if (f[i].type === 'time') { tf = f[i]; break }\n      for (var j = 0; j < f.length; j++) if (f[j].type === 'number') cb(podId(f[j].labels || {}), tf ? tf.values : [], f[j].values);\n    }\n  }\n  function last(v) { for (var i = v.length - 1; i >= 0; i--) if (v[i] !== null && v[i] !== undefined) return v[i]; return undefined }\n  /* ring reader: one series per (pod, idx); values are paired with the key series by idx and\n     scrape timestamp. Returns {pod: {key: {ref: value}}} */\n  function ring(keyRef, refs) {\n    var by = {}, out = {};\n    function add(ref) { each(ref, function (lb, t, v) { if (lb.idx === undefined || !lb.pod) return; var a = by[lb.pod] = by[lb.pod] || {}; (a[lb.idx] = a[lb.idx] || {})[ref] = { t: t, v: v } }) }\n    add(keyRef); refs.forEach(add);\n    for (var al in by) {\n      var o = out[al] = {};\n      for (var k in by[al]) {\n        var kS = by[al][k][keyRef]; if (!kS) continue; var at = {};\n        for (var r = 0; r < refs.length; r++) {\n          var vs = by[al][k][refs[r]]; if (!vs) continue; var m = {};\n          for (var i = 0; i < vs.t.length; i++) m[Math.round(vs.t[i] / 1000)] = vs.v[i];\n          at[refs[r]] = m;\n        }\n        for (var i2 = 0; i2 < kS.t.length; i2++) {\n          var key = kS.v[i2]; if (!(key > 0)) continue;\n          var ts = Math.round(kS.t[i2] / 1000), e = o[key] || (o[key] = {});\n          for (var r2 in at) { var v = at[r2][ts]; if (v !== undefined && v !== null) e[r2] = v }\n        }\n      }\n    }\n    return out;\n  }\n  var nodes = {}, zero = {};\n  each('UP', function (lb, t, v) { if (lb.pod) nodes[lb.pod] = { pod: lb.pod, net: lb.cardano_network || '', up: last(v), prod: false, blocks: [], byBn: {} } });\n  each('GAP', function (lb, t, v) { if (nodes[lb.pod]) nodes[lb.pod].gap = last(v) });\n  each('PRD', function (lb, t, v) { if (nodes[lb.pod]) nodes[lb.pod].prod = true });\n  /* ZRO: unix time of slot 0 per network, from the at-tip nodes; slots are 1 s on every network here */\n  each('ZRO', function (lb, t, v) { var z = last(v); if (z !== undefined && lb.cardano_network) zero[lb.cardano_network] = z });\n  var hd = ring('HN', ['HD', 'HS']), ad = ring('AN', ['AD']);\n  for (var al in hd) {\n    var nd = nodes[al]; if (!nd) continue; var z = zero[nd.net]; if (z === undefined) continue;\n    for (var bn in hd[al]) {\n      var e = hd[al][bn]; if (e.HS === undefined || e.HD === undefined) continue;\n      var t = (z + e.HS) * 1000; if (t < t0 || t > tTo + 60000) continue;\n      var b = { bn: Number(bn), slot: e.HS, t: t, h: Math.max(0, e.HD), a: ad[al] && ad[al][bn] ? ad[al][bn].AD : undefined };\n      nd.blocks.push(b); nd.byBn[b.bn] = b;\n    }\n    nd.blocks.sort(function (x, y) { return x.t - y.t });\n  }\n  /* first to hear: among the Dingos of one network, who had the smallest header delay per block */\n  var NETORD = ['mainnet', 'preprod', 'preview', 'prime-mainnet', 'prime-testnet'];\n  function netRank(n) { var i = NETORD.indexOf(n); return i < 0 ? NETORD.length : i }\n  var lanes = []; for (var a2 in nodes) lanes.push(nodes[a2]);\n  lanes.sort(function (x, y) { return netRank(x.net) - netRank(y.net) || (x.net < y.net ? -1 : x.net > y.net ? 1 : 0) || (x.pod < y.pod ? -1 : 1) });\n  var byNet = {}; lanes.forEach(function (n) { (byNet[n.net] = byNet[n.net] || []).push(n); n.races = 0; n.wins = 0; n.lags = [] });\n  for (var net in byNet) {\n    var grp = byNet[net]; if (grp.length < 2) continue; var seen = {};\n    grp.forEach(function (n) { n.blocks.forEach(function (b) { (seen[b.bn] = seen[b.bn] || []).push({ n: n, b: b }) }) });\n    for (var bn2 in seen) {\n      var c = seen[bn2]; if (c.length < 2) continue;\n      var best = c[0]; c.forEach(function (q) { if (q.b.h < best.b.h) best = q });\n      c.forEach(function (q) { q.n.races++; q.b.raced = true; if (q === best) { q.n.wins++; q.b.first = true } else q.n.lags.push(q.b.h - best.b.h) });\n    }\n  }\n  function med(a) { if (!a.length) return undefined; var c = a.slice().sort(function (x, y) { return x - y }); return c[Math.floor(c.length / 2)] }\n  function ms(v) { return v === undefined || v === null ? '?' : v >= 10 ? v.toFixed(1) + ' s' : v >= 1 ? v.toFixed(2) + ' s' : Math.round(v * 1000) + ' ms' }\n  function hhmm(t, sec) { var d = new Date(t); function p(x) { return (x < 10 ? '0' : '') + x } return p(d.getHours()) + ':' + p(d.getMinutes()) + (sec ? ':' + p(d.getSeconds()) : '') }\n  var cv = document.getElementById('pack-lanes'), note = document.getElementById('pack-lanes-note'), tip = document.getElementById('pack-lanes-tip');\n  if (!cv) return;\n  /* theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  var light = false;\n  try {\n    var th = context.grafana && context.grafana.theme;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    else if (typeof getComputedStyle === 'function') { var cm = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(cv).color || ''); if (cm) light = (0.299 * cm[1] + 0.587 * cm[2] + 0.114 * cm[3]) < 128 }\n    var pk = cv.parentElement; if (pk && typeof pk.className === 'string') pk.className = light ? 'pk pk-light' : 'pk';\n  } catch (e) { }\n  var K = light\n    ? { txt: '#1f2933', txt2: 'rgba(31,41,51,.9)', sub: 'rgba(40,52,72,.7)', mute: 'rgba(40,52,72,.5)', grid: 'rgba(0,0,0,.07)', sep: 'rgba(0,0,0,.18)', band: 'rgba(0,0,0,.03)', base: 'rgba(0,0,0,.22)', slot: 'rgba(150,110,0,.5)', slotTxt: 'rgba(130,95,0,.9)', sync: 'rgba(29,95,208,.95)', open: 'rgba(0,0,0,.6)', first: '#b07d00', hl: '#111' }\n    : { txt: '#e6edf3', txt2: 'rgba(220,230,245,.85)', sub: 'rgba(180,200,230,.6)', mute: 'rgba(180,200,230,.5)', grid: 'rgba(255,255,255,.06)', sep: 'rgba(255,255,255,.14)', band: 'rgba(255,255,255,.025)', base: 'rgba(255,255,255,.16)', slot: 'rgba(250,222,42,.22)', slotTxt: 'rgba(250,222,42,.6)', sync: 'rgba(96,165,250,.95)', open: 'rgba(255,255,255,.7)', first: '#FADE2A', hl: '#fff' };\n  function placeTip(x, y) {\n    var W = cv.offsetWidth, H = cv.offsetHeight, tw = tip.offsetWidth, th = tip.offsetHeight, g = 12;\n    var l = x + g; if (l + tw > W) l = x - g - tw; l = Math.max(0, Math.min(l, W - tw));\n    var tt = y + g; if (tt + th > H) tt = y - g - th; tt = Math.max(0, Math.min(tt, H - th));\n    tip.style.left = l + 'px'; tip.style.top = tt + 'px';\n  }\n  /* the text panel does not size its content; stretch every wrapper up to the grid item so the canvas fills the panel */\n  try { var el = cv.parentElement; while (el && el !== document.body) { var cls = typeof el.className === 'string' ? el.className : ''; if (cls.indexOf('react-grid-item') >= 0) break; el.style.height = '100%'; el = el.parentElement } } catch (e) { }\n  var total = 0; lanes.forEach(function (n) { total += n.blocks.length });\n  if (note) note.textContent = !lanes.length ? 'no Dingo targets found' : !total ? 'no blocks in the last hour of this time range' : 'last hour to ' + hhmm(tTo);\n  function col(v) { return v >= 5 ? '#B7307A' : v >= 2 ? '#D4413A' : v >= 1 ? '#E88C30' : v >= 0.25 ? '#73BF69' : '#1a7a42' }\n  function emit(time) {\n    try {\n      var bus = context.grafana && context.grafana.eventBus; if (!bus) return;\n      if (time) bus.publish({ type: 'data-hover', payload: { point: { time: time } } });\n      else bus.publish({ type: 'data-hover-clear', payload: { point: {} } });\n    } catch (e) { }\n  }\n  function render(hl) {\n    var dpr = window.devicePixelRatio || 1;\n    cv.width = cv.offsetWidth * dpr; cv.height = cv.offsetHeight * dpr;\n    var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);\n    var w = cv.offsetWidth, h = cv.offsetHeight, LEFT = Math.min(190, Math.max(120, w * 0.16)), RIGHT = Math.min(230, Math.max(130, w * 0.2)), AXB = 16;\n    ctx.clearRect(0, 0, w, h);\n    var geo = { lanes: [], LEFT: LEFT, RIGHT: RIGHT }; cv._geo = geo;\n    if (!lanes.length) {\n      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = K.txt2; ctx.font = '14px sans-serif';\n      ctx.fillText('No Dingo targets in this time range', w / 2, h / 2); return;\n    }\n    var laneH = (h - AXB) / lanes.length, maxH = Math.max(8, laneH - 12), px0 = LEFT, px1 = w - RIGHT;\n    function xOf(t) { return px0 + (t - t0) / (tTo - t0) * (px1 - px0) }\n    var dmax = 0; lanes.forEach(function (n) { n.blocks.forEach(function (b) { dmax = Math.max(dmax, b.h || 0, b.a || 0) }) });\n    var LIN = 1, LINF = 0.6, top = Math.max(5, Math.min(60, dmax));\n    function yFrac(v) { if (!(v > 0)) return 0; if (v <= LIN) return v / LIN * LINF; return LINF + (1 - LINF) * Math.min(1, Math.log(v / LIN) / Math.log(top / LIN)) }\n    /* time grid: every 10 minutes */\n    ctx.font = '9px sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';\n    for (var tg = Math.ceil(t0 / 600e3) * 600e3; tg <= tTo; tg += 600e3) {\n      var xg = xOf(tg); ctx.strokeStyle = K.grid; ctx.lineWidth = 1;\n      ctx.beginPath(); ctx.moveTo(xg, 0); ctx.lineTo(xg, h - AXB); ctx.stroke();\n      ctx.fillStyle = K.sub; ctx.fillText(hhmm(tg), xg, h - AXB / 2);\n    }\n    var prevNet = null, band = 0;\n    lanes.forEach(function (n, i) {\n      var y0 = i * laneH, base = y0 + laneH - 5, mid = y0 + laneH / 2;\n      if (n.net !== prevNet) { band++; prevNet = n.net; if (i > 0) { ctx.strokeStyle = K.sep; ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(w, y0); ctx.stroke() } }\n      if (band % 2 === 0) { ctx.fillStyle = K.band; ctx.fillRect(0, y0, w, laneH) }\n      var down = n.up === 0, sync = !down && n.gap > 600;\n      /* label: status dot, pod, network and role */\n      ctx.beginPath(); ctx.arc(8, mid, 3.5, 0, Math.PI * 2); ctx.fillStyle = down ? '#ef4444' : sync ? '#3b82f6' : '#22c55e'; ctx.fill();\n      ctx.textAlign = 'left'; ctx.fillStyle = K.txt; ctx.font = 'bold 11px sans-serif'; ctx.fillText(n.pod, 17, mid - 6);\n      ctx.fillStyle = K.sub; ctx.font = '9px sans-serif'; ctx.fillText(n.net + ' · ' + (n.prod ? 'producer' : 'relay'), 17, mid + 7);\n      /* baseline and the 1 s line */\n      ctx.strokeStyle = K.base; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(px0, base); ctx.lineTo(px1, base); ctx.stroke();\n      var y1s = base - yFrac(1) * maxH; ctx.strokeStyle = K.slot; ctx.setLineDash([2, 4]); ctx.beginPath(); ctx.moveTo(px0, y1s); ctx.lineTo(px1, y1s); ctx.stroke(); ctx.setLineDash([]);\n      if (i === 0) { ctx.fillStyle = K.slotTxt; ctx.font = '9px sans-serif'; ctx.textAlign = 'right'; ctx.fillText('1 s', px1 - 2, y1s - 5) }\n      var hits = [];\n      if (down || sync || !n.blocks.length) {\n        ctx.textAlign = 'center'; ctx.font = '11px sans-serif';\n        ctx.fillStyle = down ? '#ef4444' : sync ? K.sync : K.mute;\n        var txt = down ? 'DOWN: Prometheus cannot scrape this Dingo'\n          : sync ? 'syncing: ' + Math.round(n.gap).toLocaleString() + ' slots behind the wall clock (' + (n.gap / 86400 >= 1 ? (n.gap / 86400).toFixed(1) + ' days' : (n.gap / 3600).toFixed(1) + ' hours') + ' of chain); not judged as at tip'\n            : 'no blocks heard in the last hour';\n        ctx.fillText(txt, (px0 + px1) / 2, mid);\n      }\n      n.blocks.forEach(function (b) {\n        var x = Math.round(xOf(b.t)), endv = b.a !== undefined && b.a !== null ? Math.max(b.a, b.h) : b.h;\n        var yh = base - yFrac(b.h) * maxH, ye = base - yFrac(endv) * maxH, bw = 3;\n        ctx.fillStyle = 'rgba(150,160,175,.5)'; ctx.fillRect(x - 1, yh, bw, base - yh);\n        if (b.a !== undefined && b.a !== null) { ctx.fillStyle = col(b.a); ctx.fillRect(x - 1, ye, bw, Math.max(1.5, yh - ye)) }\n        else { ctx.fillStyle = K.open; ctx.fillRect(x - 1, yh - 1, bw, 1.5) }\n        if (b.first) { ctx.beginPath(); ctx.arc(x + 0.5, ye - 3.5, 2, 0, Math.PI * 2); ctx.fillStyle = K.first; ctx.fill() }\n        if (hl && hl.net === n.net && hl.bn === b.bn) { ctx.strokeStyle = K.hl; ctx.lineWidth = 1; ctx.strokeRect(x - 2.5, ye - 6.5, bw + 3, base - ye + 8) }\n        hits.push({ x: x, b: b });\n      });\n      /* right gutter: lane summary */\n      var hs = n.blocks.map(function (b) { return b.h }), as = n.blocks.filter(function (b) { return b.a !== undefined && b.a !== null }).map(function (b) { return b.a });\n      ctx.textAlign = 'left'; ctx.font = '10px sans-serif';\n      if (n.blocks.length) {\n        ctx.fillStyle = K.txt2;\n        ctx.fillText(n.blocks.length + ' blocks · heard ' + ms(med(hs)) + (as.length ? ' · tip ' + ms(med(as)) : ''), px1 + 8, mid - 6);\n        if (n.races) {\n          ctx.fillStyle = K.first;\n          ctx.fillText('first ' + Math.round(100 * n.wins / n.races) + '% of ' + n.races + (n.lags.length ? ' · else +' + ms(med(n.lags)) : ''), px1 + 8, mid + 7);\n        } else { ctx.fillStyle = K.mute; ctx.fillText('only Dingo on this network', px1 + 8, mid + 7) }\n      }\n      geo.lanes.push({ y0: y0, y1: y0 + laneH, n: n, hits: hits });\n    });\n  }\n  cv._render = render;\n  render(cv._hl || null);\n  function tipText(n, b) {\n    var L = [n.pod + ' · ' + n.net, 'block ' + b.bn.toLocaleString() + ' · slot ' + b.slot.toLocaleString() + ' · ' + hhmm(b.t, true),\n      'header heard  ' + ms(b.h) + ' after the slot'];\n    if (b.a !== undefined && b.a !== null) L.push('adopted (tip) ' + ms(b.a) + ' after the slot' + (b.a >= b.h ? ', ' + ms(b.a - b.h) + ' after the header' : ''));\n    else L.push('adoption not in the ring');\n    var sib = (byNet[n.net] || []).filter(function (q) { return q.byBn[b.bn] });\n    if (sib.length > 1) {\n      L.push('same block on this network:');\n      sib.slice().sort(function (p, q) { return p.byBn[b.bn].h - q.byBn[b.bn].h }).forEach(function (q) {\n        var o = q.byBn[b.bn]; L.push('  ' + (o.first ? '● ' : '  ') + q.pod + '  heard ' + ms(o.h) + (o.a !== undefined && o.a !== null ? '  tip ' + ms(o.a) : ''));\n      });\n    }\n    return L.join('\\n');\n  }\n  if (!cv._bound) {\n    cv._bound = true;\n    cv.addEventListener('mousemove', function (ev) {\n      var g = cv._geo, mx = ev.offsetX, my = ev.offsetY, hit = null, ln = null;\n      if (g) for (var i = 0; i < g.lanes.length; i++) if (my >= g.lanes[i].y0 && my < g.lanes[i].y1) { ln = g.lanes[i]; break }\n      if (ln) { var bd = 6; ln.hits.forEach(function (q) { var d = Math.abs(q.x - mx); if (d < bd) { bd = d; hit = q } }) }\n      var key = hit ? ln.n.pod + '#' + hit.b.bn : '';\n      if (key !== cv._hk) { cv._hk = key; cv._hl = hit ? { net: ln.n.net, bn: hit.b.bn } : null; if (cv._render) cv._render(cv._hl); emit(hit ? hit.b.t : null) }\n      if (!tip) return;\n      if (!hit) { tip.style.display = 'none'; return }\n      tip.textContent = cv._tipText(ln.n, hit.b); tip.style.display = 'block'; placeTip(mx, my);\n    });\n    cv.addEventListener('mouseleave', function () { cv._hk = ''; cv._hl = null; if (cv._render) cv._render(null); emit(null); if (tip) tip.style.display = 'none' });\n  }\n  cv._tipText = tipText;\n})();\n",
+        "content": "<div class=\"pk\"><div class=\"lg\"><span><i style=\"background:rgba(150,160,175,.6)\"></i>slot → header heard</span><span><i style=\"background:#1a7a42\"></i>header → adopted as tip: under 250 ms</span><span><i style=\"background:#73BF69\"></i>≤1 s</span><span><i style=\"background:#E88C30\"></i>&gt;1 s</span><span><i style=\"background:#D4413A\"></i>≥2 s</span><span><i style=\"background:#B7307A\"></i>≥5 s</span><span><i style=\"background:#FADE2A;width:6px;height:6px;border-radius:3px\"></i>first Dingo on its network to hear the block</span><span class=\"nt\" id=\"pack-lanes-note\"></span></div><canvas id=\"pack-lanes\"></canvas><div class=\"tp\" id=\"pack-lanes-tip\"></div></div>",
+        "contentPartials": [],
+        "defaultContent": "<div style=\"display:flex;flex-direction:column;align-items:center;gap:6px;padding:48px 8px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif\"><div style=\"font-size:15px;opacity:.85\">No Dingo data in this time range</div><div style=\"font-size:11px;opacity:.55\">needs up and dingo_chainsync_recent_header_*</div></div>",
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "editors": [],
+        "externalStyles": [],
+        "helpers": "",
+        "renderMode": "data",
+        "styles": ".pk{position:relative;width:100%;height:100%;padding:4px 6px;box-sizing:border-box;display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:inherit}.pk .lg{display:flex;gap:4px 14px;font-size:10px;opacity:.8;align-items:center;flex-wrap:wrap}.pk .lg i{display:inline-block;width:10px;height:6px;margin-right:4px;vertical-align:middle;border-radius:1px}.pk .nt{font-size:10px;color:#FADE2A;margin-left:auto}.pk.pk-light .nt{color:#8a6500}.pk canvas{width:100%;flex:1;min-height:120px}.pk .tp{position:absolute;display:none;pointer-events:none;white-space:pre;background:rgba(20,26,36,.96);border:1px solid rgba(250,222,42,.35);border-radius:5px;padding:6px 8px;font:11px ui-monospace,monospace;color:#e6edf3;z-index:5}",
+        "wrap": false
+      },
+      "pluginVersion": "6.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "dingo_chainsync_recent_header_block_number{cardano_network=~\"$network\"}[1h]",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "HN"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "dingo_chainsync_recent_header_delay_seconds{cardano_network=~\"$network\"}[1h]",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "HD"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "dingo_chainsync_recent_header_block_slot{cardano_network=~\"$network\"}[1h]",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "HS"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "dingo_ledger_recent_adoption_block_number{cardano_network=~\"$network\"}[1h]",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "AN"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "dingo_ledger_recent_adoption_delay_seconds{cardano_network=~\"$network\"}[1h]",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "AD"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod, cardano_network) (up{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "UP"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "GAP"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "PRD"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (cardano_network) ((timestamp(dingo_tip_gap_slots{cardano_network=~\"$network\"}) - cardano_node_metrics_slotNum_int{cardano_network=~\"$network\"} - dingo_tip_gap_slots{cardano_network=~\"$network\"}) and dingo_tip_gap_slots{cardano_network=~\"$network\"} <= 600)",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "ZRO"
+        }
+      ],
+      "title": "Block Lanes: Every Dingo",
+      "transparent": true,
+      "type": "marcusolsson-dynamictext-panel"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "One row per Dingo. **Healthy: every row up, Tip lag green, Arrival p50 under 1 s, 10 or more hot peers.** **Tip lag**: slots behind the wall clock (blue over 600 = syncing; now${syncing:csv}). **Arrival p50**: median time from a block's slot to the first copy of its header reaching this node over 6 h (`dingo_chainsync_header_arrival_delay_seconds`) - the pack's own block-propagation measure; pack-wide it is ${arrival_p50} ms. A syncing node hears no current blocks, so the column reads *syncing* for it. **Role** is producer for nodes that load forging credentials (now${producers:csv}). **Node disk** is the host filesystem, since local-path volumes report it. CPU is cores. **Next slot**: time until a producer's next scheduled leader slot (`dingo_leader_next_slot`, 1 s slots), *none scheduled* when the schedules it holds contain no further slot; the column appears once a producer runs a newer Dingo, and Forging Health has the schedule behind it.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false,
+            "minWidth": 50
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Up"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "#ef4444",
+                        "text": "DOWN"
+                      },
+                      "1": {
+                        "color": "#22c55e",
+                        "text": "up"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Role"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "#ef4444",
+                        "text": "producer (no creds)"
+                      },
+                      "1": {
+                        "color": "#3b82f6",
+                        "text": "producer"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": "relay"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Next slot"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dtdurations"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "-"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "-1": {
+                        "text": "none scheduled"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tip lag"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 60
+                    },
+                    {
+                      "color": "#3b82f6",
+                      "value": 600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Block"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Arrival p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 1
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 3
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "-1": {
+                        "color": "#3b82f6",
+                        "text": "syncing"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": "-"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hot peers"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#ef4444",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 5
+                    },
+                    {
+                      "color": "#22c55e",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Database"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Node disk"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "gauge",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": null
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 0.75
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 0.95
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Memory"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Restarts 24h"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#22c55e",
+                      "value": 0
+                    },
+                    {
+                      "color": "#f59e0b",
+                      "value": 1
+                    },
+                    {
+                      "color": "#ef4444",
+                      "value": 5
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Uptime"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "id": 24,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "zebraStriping": false
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod, cardano_network) (up{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_database_size_bytes{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (label_replace(((kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (container_memory_working_set_bytes{container=\"dingo\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container=\"dingo\"}[5m]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "L"
+        }
+      ],
+      "title": "Dingo Resources",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #A": true,
+              "Value #B": true,
+              "Value #C": true,
+              "Value #D": true,
+              "Value #E": true,
+              "Value #F": true,
+              "Value #G": true,
+              "Value #H": true,
+              "Value #I": false,
+              "Value #J": false,
+              "Value #K": false,
+              "Value #L": false,
+              "Value #M": true,
+              "Value #N": true,
+              "Value #O": true,
+              "pod": false,
+              "cardano_network": false,
+              "version": true
+            },
+            "indexByName": {
+              "Value #A": 5,
+              "Value #B": 2,
+              "Value #D": 7,
+              "Value #E": 8,
+              "Value #F": 9,
+              "Value #G": 10,
+              "Value #H": 11,
+              "Value #I": 12,
+              "Value #J": 13,
+              "Value #K": 14,
+              "Value #L": 15,
+              "Value #M": 16,
+              "Value #N": 17,
+              "Value #O": 3,
+              "pod": 0,
+              "cardano_network": 1,
+              "version": 6
+            },
+            "renameByName": {
+              "Value #A": "Up",
+              "Value #B": "Role",
+              "Value #D": "Tip lag",
+              "Value #E": "Block",
+              "Value #F": "Arrival p50",
+              "Value #G": "Hot peers",
+              "Value #H": "Mempool txs",
+              "Value #I": "Database",
+              "Value #J": "Node disk",
+              "Value #K": "Memory",
+              "Value #L": "CPU",
+              "Value #M": "Restarts 24h",
+              "Value #N": "Uptime",
+              "Value #O": "Next slot",
+              "pod": "Pod",
+              "cardano_network": "Network",
+              "version": "Version",
+              "namespace": "Namespace"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Network"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "One row per Dingo, one cell per time bucket (30 min or more), coloured by the worst state the node was in during that bucket. In order of severity: **down** (not scraped), **pipeline stuck** (ledger pipeline stuck or halted), **syncing** (over 600 slots behind; blue, not red, because a bootstrap is expected to take a while - now:${syncing:csv}), **lagging** (300 to 600 slots behind), **thin on peers** (under 5 hot peers), **healthy**. A gap means the target did not exist. **Healthy: a solid green grid.** A column of the same colour across nodes points at the cluster or the network; one bad row points at that node.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#ef4444",
+                  "index": 0,
+                  "text": "down"
+                },
+                "1": {
+                  "color": "#b91c1c",
+                  "index": 1,
+                  "text": "pipeline stuck"
+                },
+                "2": {
+                  "color": "#3b82f6",
+                  "index": 2,
+                  "text": "syncing"
+                },
+                "3": {
+                  "color": "#f59e0b",
+                  "index": 3,
+                  "text": "lagging"
+                },
+                "4": {
+                  "color": "#eab308",
+                  "index": 4,
+                  "text": "thin on peers"
+                },
+                "5": {
+                  "color": "#22c55e",
+                  "index": 5,
+                  "text": "healthy"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#6b7280",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 0,
+        "y": 44
+      },
+      "id": 7,
+      "interval": "30m",
+      "maxDataPoints": 60,
+      "options": {
+        "colWidth": 0.92,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "rowHeight": 0.85,
+        "showValue": "never",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "min_over_time(((max by (namespace, pod) (up{cardano_network=~\"$network\"}) == 0) or (max by (namespace, pod) (dingo_ledger_pipeline_stuck{cardano_network=~\"$network\"} + dingo_ledger_pipeline_halted{cardano_network=~\"$network\"}) > 0) * 0 + 1 or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600) * 0 + 2 or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 300) * 0 + 3 or (max by (namespace, pod) (cardano_node_metrics_peerSelection_hot{cardano_network=~\"$network\"}) < 5) * 0 + 4 or max by (namespace, pod) (up{cardano_network=~\"$network\"}) * 0 + 5)[$__interval:1m])",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Health Grid: Dingo by Time",
+      "transparent": true,
+      "type": "status-history"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "One row per Dingo and version, coloured by how long the process had been running at that moment. Every amber block is a restart (the process was under 30 minutes old); it fades to green after 6 hours. A row that ends while a new row for the same Dingo starts is a version change, so a rollout reads as a staircase across the pack. Running now:${versions:csv}. **Healthy: long green bars**; amber blocks that repeat on one row are a crash loop.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#f59e0b",
+                  "index": 0,
+                  "text": "restarted (up under 30 min)"
+                },
+                "1": {
+                  "color": "#86efac",
+                  "index": 1,
+                  "text": "up under 6 h"
+                },
+                "2": {
+                  "color": "#22c55e",
+                  "index": 2,
+                  "text": "up 6 h or more"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#6b7280",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 14,
+        "y": 44
+      },
+      "id": 8,
+      "options": {
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "mergeValues": true,
+        "rowHeight": 0.85,
+        "showValue": "never",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "(max by (namespace, pod, ver) (label_replace(dingo_build_info{cardano_network=~\"$network\"}, \"ver\", \"$1\", \"version\", \"(v[^ ]+).*\") * on (namespace, pod) group_left () max by (namespace, pod) (time() - process_start_time_seconds{cardano_network=~\"$network\"})) >= bool 1800) + (max by (namespace, pod, ver) (label_replace(dingo_build_info{cardano_network=~\"$network\"}, \"ver\", \"$1\", \"version\", \"(v[^ ]+).*\") * on (namespace, pod) group_left () max by (namespace, pod) (time() - process_start_time_seconds{cardano_network=~\"$network\"})) >= bool 21600)",
+          "legendFormat": "{{namespace}}/{{pod}} {{ver}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Restarts and Versions",
+      "transparent": true,
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Three medians per Dingo over the dashboard time range, each measured from the block's slot: **header heard** (first copy of the header, `dingo_chainsync_header_arrival_delay_seconds`), **body fetched** (`dingo_blockfetch_block_delay_seconds`) and **adopted as tip** (`dingo_ledger_block_adoption_delay_seconds`, including validation). Sorted by header heard, fastest first, so the top row is the Dingo that hears blocks soonest. Compare Dingos on the same network; different networks have different producers and block sizes. Syncing nodes record none of these and are absent (now:${syncing:csv}), as is a Dingo that no longer exists. **Healthy: every bar under 1 s**, with adoption close behind the fetch.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 85,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Header heard"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#9ca3af",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Body fetched"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Adopted as tip"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#22c55e",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 10,
+        "x": 0,
+        "y": 53
+      },
+      "id": 10,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.85,
+        "fullHighlight": false,
+        "groupWidth": 0.75,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "stacking": "none",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xField": "Dingo",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (increase(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[$__range]))) > 0) and on (namespace, pod) max by (namespace, pod) (up{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (increase(dingo_blockfetch_block_delay_seconds_bucket{cardano_network=~\"$network\"}[$__range]))) > 0) and on (namespace, pod) max by (namespace, pod) (up{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (increase(dingo_ledger_block_adoption_delay_seconds_bucket{cardano_network=~\"$network\"}[$__range]))) > 0) and on (namespace, pod) max by (namespace, pod) (up{cardano_network=~\"$network\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "C"
+        }
+      ],
+      "title": "Slot to Tip: Leaderboard",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Header heard",
+              "Value #B": "Body fetched",
+              "Value #C": "Adopted as tip",
+              "pod": "Dingo",
+              "namespace": "Namespace"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "desc": false,
+                "field": "Header heard"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Every block header the pack heard, as a heatmap: time runs left to right, the delay from the block's slot to the first copy of its header bottom to top (`dingo_chainsync_header_arrival_delay_seconds` buckets, all Dingos together), and a darker cell means more headers landed in that delay bucket in that 10-minute step. Over a day it shows the hours when blocks arrive late. **Healthy: one dark band in the 0.1 to 0.5 s rows and almost nothing above 1 s** (pack median now: ${arrival_p50} ms). A band that lifts for a while at the same hours every day is network congestion at those hours; a smear above 3 s at one moment is a slow producer or a short fork, and the per-Dingo p95 below says whether one node or all of them saw it.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 14,
+        "x": 10,
+        "y": 53
+      },
+      "id": 11,
+      "interval": "10m",
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "cellValues": {
+          "decimals": 0,
+          "unit": "short"
+        },
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "Oranges",
+          "steps": 64
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-09
+        },
+        "legend": {
+          "placement": "bottom",
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "showValue": "never",
+        "tooltip": {
+          "mode": "single",
+          "showColorScale": true,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "s"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (le) (increase(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[$__interval]))",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Block Arrival Delay: When Are Blocks Late?",
+      "transparent": true,
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "95th percentile delay from a block's slot to the first copy of its header reaching each Dingo, over 30-minute windows: the slow blocks, per node. The medians are on the leaderboard above and the whole distribution in the heatmap. A rise on one node points at its peers or its link; a rise on every node points at the network or at whoever produced the blocks. The shaded bands start at 2 s (amber) and 5 s (red). **Healthy: every line under the amber band.**",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": 0
+              },
+              {
+                "color": "#f59e0b",
+                "value": 2
+              },
+              {
+                "color": "#ef4444",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 63
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, pod) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[30m])))",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Block Arrival p95 by Dingo",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Slots between the wall clock and each Dingo's chain tip, log scale so a syncing node and the at-tip nodes fit on one chart. At tip is a few slots to a few tens; over 600 (the red line) counts as syncing (now:${syncing:csv}). **Healthy: every line far below the red line.** A node at tip whose line climbs has stopped following the chain.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "log": 10,
+              "type": "log"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              },
+              {
+                "color": "#ef4444",
+                "value": 600
+              }
+            ]
+          },
+          "unit": "suffix: slots"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 63
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) + 1",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Tip Lag by Dingo",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "The hot (active) peers of each Dingo right now, stacked by how the node found them (`dingo_metrics_peerSelection_peers_by_source`): **ledger** peers are stake pool relays taken from the chain, **gossip** peers come from peer sharing, **local roots** are the peers pinned in the topology (for a producer, its own relays), **public roots and bootstrap** come from the topology's public lists, and the last group is inbound or unclassified. The whole bar is the node's hot peer count. **Healthy: at least 5 hot peers per Dingo (the header warns below that), relays with a healthy mix of ledger and gossip peers, producers on their local roots.** A relay whose bar is only local roots has stopped discovering peers; a short bar hears blocks late.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 85,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ledger"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gossip"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#B877D9",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Local roots"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#22c55e",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Public roots and bootstrap"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Inbound and unknown"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#6b7280",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 63
+      },
+      "id": 15,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.85,
+        "fullHighlight": false,
+        "groupWidth": 0.75,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "stacking": "normal",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xField": "Dingo",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"ledger\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"gossip\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"topology-local-root\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"topology-public-root|topology-bootstrap\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"inbound|unknown\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "E"
+        }
+      ],
+      "title": "Hot Peers by Source",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Ledger",
+              "Value #B": "Gossip",
+              "Value #C": "Local roots",
+              "Value #D": "Public roots and bootstrap",
+              "Value #E": "Inbound and unknown",
+              "pod": "Dingo",
+              "namespace": "Namespace"
+            }
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "A fuel gauge per producer: days of KES validity left on its operational certificate (remaining KES periods times the period length, `cardano_node_metrics_remainingKESPeriods_int` x `dingo_forge_slots_per_kes_period`, 1 s slots, so 1.5 days a period). Emptiest first; a dial is full at 93 days (62 periods, a fresh key). Lowest now: ${kes_min} periods on ${kes_min_pod}. Amber starts at 8 periods (12 days), the default renewBeforePeriods; only rotation mode Auto renews, at the DingoNode's own renewBeforePeriods, and MonitorOnly, the default, never renews. **Healthy: green, 12 days or more**; amber under 12 days means the key is at the default renewal point, red under 6 that it is close to expiry, and the producer stops forging when the dial is empty.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "max": 93,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 7.5
+              },
+              {
+                "color": "#22c55e",
+                "value": 12
+              }
+            ]
+          },
+          "unit": "d"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 0,
+        "y": 71
+      },
+      "id": 17,
+      "options": {
+        "barShape": "flat",
+        "barWidthFactor": 0.5,
+        "effects": {
+          "barGlow": false,
+          "centerGlow": false,
+          "gradient": true
+        },
+        "endpointMarker": "none",
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "segmentCount": 31,
+        "segmentSpacing": 0.3,
+        "shape": "gauge",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto",
+        "sparkline": false,
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sort(max by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"} * dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"}) / 86400)",
+          "instant": true,
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "KES Fuel per Producer",
+      "transparent": true,
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Days until each Dingo data volume (`dingo-data-<pod>`) is full, at the last 24 hours' fill rate (available bytes divided by the `deriv` of `kubelet_volume_stats_available_bytes`; volumes that share one filesystem report the same figure and move together). Shortest now: ${runway_min} days on ${runway_pod}. A sync or Mithril bootstrap fills fast and then stops, so a short bar while a node is syncing (now:${syncing:csv}) is a prompt to check, not a countdown. Capped at one year, which is also shown when nothing is filling. **Healthy: 30 days or more**; under 7 days act now.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "365": {
+                  "color": "#22c55e",
+                  "text": "> 1 y"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "max": 365,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": 0
+              },
+              {
+                "color": "#f59e0b",
+                "value": 7
+              },
+              {
+                "color": "#22c55e",
+                "value": 30
+              }
+            ]
+          },
+          "unit": "suffix: days"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 7,
+        "x": 10,
+        "y": 71
+      },
+      "id": 18,
+      "options": {
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 300,
+        "minVizHeight": 10,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "textMode": "auto",
+        "valueMode": "color"
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sort(max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\")))",
+          "instant": true,
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Disk Runway by Volume",
+      "transparent": true,
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "How much each Dingo's own database grew per day over the last 24 hours, summed over its stores (dingo_database_size_bytes). Negative means compaction freed more than new blocks added. Volume stats are not used here: on local-path storage every volume on a node reports that node's whole disk. **Healthy: a few MB a day at tip; a syncing Dingo grows fastest.**",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 7,
+        "x": 17,
+        "y": 71
+      },
+      "id": 19,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 300,
+        "minVizHeight": 10,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "textMode": "auto",
+        "valueMode": "color"
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "expr": "sort_desc(sum by (namespace, pod) (deriv(dingo_database_size_bytes{cardano_network=~\"$network\"}[24h])) * 86400)"
+        }
+      ],
+      "title": "Database Growth by Dingo (per day)",
+      "transparent": true,
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "Working-set memory of each Dingo container (cAdvisor). **Healthy: flat between restarts.** Watch for steady growth on one node: that is a leak, and it ends in an OOM kill, which shows as an amber block in Restarts and Versions.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 79
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "max by (namespace, pod) (container_memory_working_set_bytes{container=\"dingo\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory by Dingo",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "CPU each Dingo container uses, in cores (cAdvisor). Syncing and epoch boundaries spike. **Healthy: a node at tip sits low, well under one core.** A node at tip that stays high is replaying, stuck in a loop, or being hammered by a peer.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 79
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container=\"dingo\"}[5m]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU by Dingo (cores)",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "default"
+      },
+      "description": "On-disk size of each Dingo's database now, largest first, split into its two stores (`dingo_database_size_bytes`): the **blob store** holds the blocks, the **metadata** database the ledger state and indexes. This is what each node takes from its data volume, so read it with Disk Runway above when a volume is filling. Mainnet is far larger than the test networks. **Healthy: sizes that match the network the node follows**; two Dingos on the same network should be close, and one that is much larger than its sibling is carrying data it could shed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 85,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Blob store (blocks)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Metadata (ledger state)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#B877D9",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 79
+      },
+      "id": 23,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.85,
+        "fullHighlight": false,
+        "groupWidth": 0.75,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "stacking": "normal",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xField": "Dingo",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "13.3.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_database_size_bytes{cardano_network=~\"$network\",store=\"blob\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "default"
+          },
+          "expr": "sum by (namespace, pod) (dingo_database_size_bytes{cardano_network=~\"$network\",store=\"metadata\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Database Size by Dingo",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Blob store (blocks)",
+              "Value #B": "Metadata (ledger state)",
+              "pod": "Dingo",
+              "namespace": "Namespace"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "desc": true,
+                "field": "Blob store (blocks)"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "barchart"
+    }
+  ],
+  "preload": false,
+  "refresh": "1m",
+  "schemaVersion": 42,
+  "tags": [
+    "dingo",
+    "cardano",
+    "fleet"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".+",
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Network",
+        "multi": true,
+        "name": "network",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
+          "refId": "network"
+        },
+        "refresh": 2,
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(label_replace(max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600, \"l\", \" $1\", \"pod\", \"(.+)\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "syncing",
+        "options": [],
+        "query": "query_result(label_replace(max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600, \"l\", \" $1\", \"pod\", \"(.+)\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
+        "refresh": 2,
+        "regex": "/l=\"([^\"]+)\"/",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(label_replace(max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"}), \"l\", \" $1\", \"pod\", \"(.+)\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "producers",
+        "options": [],
+        "query": "query_result(label_replace(max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"}), \"l\", \" $1\", \"pod\", \"(.+)\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
+        "refresh": 2,
+        "regex": "/l=\"([^\"]+)\"/",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(label_replace(count by (version) (dingo_build_info{cardano_network=~\"$network\"}), \"l\", \" $1\", \"version\", \"v?([^ ]+).*\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "versions",
+        "options": [],
+        "query": "query_result(label_replace(count by (version) (dingo_build_info{cardano_network=~\"$network\"}), \"l\", \" $1\", \"version\", \"v?([^ ]+).*\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
+        "refresh": 2,
+        "regex": "/l=\"([^\"]+)\"/",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(min(cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"}))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "kes_min",
+        "options": [],
+        "query": "query_result(min(cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"}))",
+        "refresh": 2,
+        "regex": "/\\} ([-0-9.e+]+) /",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(bottomk(1, min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "kes_min_pod",
+        "options": [],
+        "query": "query_result(bottomk(1, min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})))",
+        "refresh": 2,
+        "regex": "/pod=\"([^\"]+)\"/",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(round(1000 * histogram_quantile(0.5, sum by (le) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h])))))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "arrival_p50",
+        "options": [],
+        "query": "query_result(round(1000 * histogram_quantile(0.5, sum by (le) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h])))))",
+        "refresh": 2,
+        "regex": "/\\} ([-0-9.e+]+) /",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(round(min(max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\")))))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "runway_min",
+        "options": [],
+        "query": "query_result(round(min(max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\")))))",
+        "refresh": 2,
+        "regex": "/\\} ([-0-9.e+]+) /",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "default"
+        },
+        "definition": "query_result(bottomk(1, max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "runway_pod",
+        "options": [],
+        "query": "query_result(bottomk(1, max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))))",
+        "refresh": 2,
+        "regex": "/pod=\"([^\"]+)\"/",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Dingo — DingoNodes",
+  "uid": "dingonodes"
+}

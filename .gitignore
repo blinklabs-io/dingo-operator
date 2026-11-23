@@ -43,6 +43,7 @@ testbin/
 # the published design and is tracked.
 /docs/*
 !/docs/design.md
+!/docs/dashboards/
 
 # Editor/IDE
 # .idea/
