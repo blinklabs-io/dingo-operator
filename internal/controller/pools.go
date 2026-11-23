@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"sort"
@@ -384,8 +385,18 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		}
 	}
 	// The pool list is read at startup only, so a held template keeps the
-	// list its pod started with.
-	if !keepTemplate {
+	// list its pod started with. So does a template fenced from moving to
+	// another agent: a pod restarted while several run would otherwise read
+	// the new agent beside pods on the old one.
+	writePools := !keepTemplate
+	if writePools {
+		fenced, err := r.fencesPoolsAgentMove(ctx, dn, rendered)
+		if err != nil {
+			return false, "", err
+		}
+		writePools = !fenced
+	}
+	if writePools {
 		if err := r.upsertPoolsConfigMap(ctx, dn, rendered); err != nil {
 			return false, "", fmt.Errorf("apply pools configmap: %w", err)
 		}
@@ -394,6 +405,28 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		r.setPoolKeysCondition(dn, bundles)
 	}
 	return keepTemplate, holdMessage, nil
+}
+
+// fencesPoolsAgentMove reports whether the rendered pool list moves the live
+// pods to another agent while several run, the case upsertStatefulSet fences.
+func (r *DingoNodeReconciler) fencesPoolsAgentMove(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	rendered []resources.RenderPool,
+) (bool, error) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(dn), sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read statefulset for agent move: %w", err)
+	}
+	link, linked := poolsAgentLink(resources.PoolsConfig(dn, rendered))
+	moves, _, err := r.movesToAnotherAgent(
+		ctx, dn, sts, link, linked,
+		checksum(resources.PoolsConfig(dn, rendered)),
+	)
+	return moves && runsSeveralPods(sts), err
 }
 
 // poolInstallPending reports whether a pool's Secret holds an older opcert
@@ -553,12 +586,13 @@ type scrapedPodRead struct {
 	err error
 }
 
-// readScrapedPod reads replica 0 of dn, the pod whose metrics a block
-// producer's status is taken from. Pods are listed, not read by name: the
-// operator may list them but not get them, and holds no Pod informer.
+// readScrapedPod reads the pod of dn called name, one of the pods whose
+// metrics a block producer's status is taken from. Pods are listed, not read by
+// name: the operator may list them but not get them, and holds no Pod informer.
 func (r *DingoNodeReconciler) readScrapedPod(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	name string,
 ) scrapedPodRead {
 	if r.APIReader == nil && r.Client == nil {
 		return scrapedPodRead{}
@@ -570,7 +604,6 @@ func (r *DingoNodeReconciler) readScrapedPod(
 	); err != nil {
 		return scrapedPodRead{err: err}
 	}
-	name := dn.Name + "-0"
 	for i := range pods.Items {
 		if pods.Items[i].Name == name {
 			return scrapedPodRead{pod: &pods.Items[i]}
@@ -579,7 +612,7 @@ func (r *DingoNodeReconciler) readScrapedPod(
 	return scrapedPodRead{}
 }
 
-// runningPools returns the pools the scraped pod stages, from the keys-pool
+// runningPools returns the pools the pod called name stages, from the keys-pool
 // annotation its template gave it, and whether they are known. before is the
 // pod as read before the scrape; it is read again here, and only the same pod
 // at both reads is the one that answered. During a roll the StatefulSet
@@ -595,10 +628,11 @@ func (r *DingoNodeReconciler) readScrapedPod(
 func (r *DingoNodeReconciler) runningPools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	name string,
 	before scrapedPodRead,
 ) (map[string]bool, bool) {
 	running := map[string]bool{}
-	after := r.readScrapedPod(ctx, dn)
+	after := r.readScrapedPod(ctx, dn, name)
 	if before.err != nil || after.err != nil {
 		return nil, false
 	}
@@ -634,6 +668,76 @@ func (r *DingoNodeReconciler) runningPools(
 		running[normalizedPoolID(p)] = true
 	}
 	return running, true
+}
+
+// mergePoolPods folds the scrapes of a pool-list producer's pods into merged,
+// the one status observePools reads, and returns the pools that run and
+// whether they are known. Each pod's pools are attributed by that pod's own
+// before/after read, then every pool keeps the metrics of the pod that is
+// furthest behind on it, and a pool counts as running when any pod runs it. A
+// pod that runs a pool without reporting metrics for it leaves the pool
+// unobserved.
+// The pools are known only when they are known for every pod. statuses holds
+// one scrape per pod of podNames, in order.
+func (r *DingoNodeReconciler) mergePoolPods(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	podNames []string,
+	statuses []*forgestatus.Status,
+	before map[string]scrapedPodRead,
+	merged *forgestatus.Status,
+) (map[string]bool, bool) {
+	if len(statuses) == 1 {
+		if st := statuses[0]; st != nil {
+			*merged = *st
+			return r.runningPools(ctx, dn, podNames[0], before[podNames[0]])
+		}
+	}
+	merged.Pools = map[string]*forgestatus.PoolMetrics{}
+	running := map[string]bool{}
+	allKnown := true
+	for i, st := range statuses {
+		if st == nil {
+			continue
+		}
+		podRunning, known := r.runningPools(
+			ctx, dn, podNames[i], before[podNames[i]],
+		)
+		allKnown = allKnown && known
+		maps.Copy(running, podRunning)
+		byID := poolMetricsByID(podRunning, st)
+		// A pod that stages a pool and reports nothing for it is the one
+		// furthest behind on it, not a pod to skip.
+		for id := range podRunning {
+			if _, ok := byID[id]; !ok {
+				byID[id] = &forgestatus.PoolMetrics{}
+			}
+		}
+		for id, pm := range byID {
+			if prev, ok := merged.Pools[id]; ok {
+				pm = furthestBehindPool(prev, pm)
+			}
+			merged.Pools[id] = pm
+		}
+	}
+	return running, allKnown
+}
+
+// furthestBehindPool is furthestBehind for one pool's metrics of two pods.
+func furthestBehindPool(
+	a, b *forgestatus.PoolMetrics,
+) *forgestatus.PoolMetrics {
+	worst := a
+	if a.HasKESData &&
+		(!b.HasKESData || b.RemainingKESPeriods < a.RemainingKESPeriods) {
+		worst = b
+	}
+	merged := *worst
+	merged.HasOpCertCounter = a.HasOpCertCounter && b.HasOpCertCounter
+	merged.OpCertUnloaded = !merged.HasOpCertCounter &&
+		(a.OpCertUnloaded || b.OpCertUnloaded)
+	merged.OpCertCounter = min(a.OpCertCounter, b.OpCertCounter)
+	return &merged
 }
 
 // poolMetricsByID returns the node's per-pool metrics keyed by normalized pool

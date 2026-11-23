@@ -28,9 +28,9 @@ func TestRenderRelayRefPorts(t *testing.T) {
 	dn := newNode(dingov1alpha1.TopologySpec{
 		RelayRefs: []string{"musashi", "default-port", "unresolved"},
 	})
-	out, hasContent, err := Render(dn, "cardano", map[string]int32{
-		"musashi":      3010,
-		"default-port": 3001,
+	out, hasContent, err := Render(dn, "cardano", map[string]Peer{
+		"musashi":      {Port: 3010},
+		"default-port": {Port: 3001},
 	})
 	require.NoError(t, err)
 	require.True(t, hasContent)

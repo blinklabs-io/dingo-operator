@@ -27,6 +27,11 @@ OPERATOR_IMAGE="${OPERATOR_IMAGE:-dingo-operator:latest}"
 # build forever, while CI silently tracked upstream. Keep in sync with
 # defaultDingoImage in test/e2e/harness_test.go.
 DINGO_IMAGE="${DINGO_IMAGE:-ghcr.io/blinklabs-io/dingo:0.85.0}"
+# Images the agent-signed producer test runs. The Dingo build must read
+# CARDANO_SHELLEY_KES_AGENT_ADDRESS (the 0.85.0 default above does not; see
+# resources.MinSigningAgentMinor). Keep in sync with agentDingoImage,
+# bursaImage and agentSidecarImage in test/e2e/agent_test.go.
+AGENT_IMAGES="${AGENT_IMAGES:-ghcr.io/blinklabs-io/dingo:0.94.2 ghcr.io/blinklabs-io/bursa:0.27.0 docker.io/library/alpine:3.20}"
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-dingo-operator-system}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${ROOT_DIR}/.e2e/kubeconfig}"
 
@@ -67,7 +72,16 @@ if ! docker image inspect "${DINGO_IMAGE}" >/dev/null 2>&1; then
   docker pull "${DINGO_IMAGE}"
 fi
 
-echo "[e2e] importing ${OPERATOR_IMAGE} and ${DINGO_IMAGE}"
+# shellcheck disable=SC2206 # AGENT_IMAGES is a space-separated list
+agent_images=(${AGENT_IMAGES})
+for image in "${agent_images[@]}"; do
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    echo "[e2e] pulling ${image}"
+    docker pull "${image}"
+  fi
+done
+
+echo "[e2e] importing ${OPERATOR_IMAGE}, ${DINGO_IMAGE} and ${AGENT_IMAGES}"
 # With Docker's containerd image store, a pulled multi-platform image keeps
 # its index but only the host platform's layers, and `k3d image import`
 # fails with "content digest ... not found". Exporting the host platform
@@ -76,10 +90,12 @@ if [ "${containerd_store}" = true ]; then
   images_tar="$(mktemp -t dingo-operator-e2e-images.XXXXXX.tar)"
   trap 'rm -f "${images_tar}"' EXIT
   docker save --platform "linux/$(docker version --format '{{.Server.Arch}}')" \
-    --output "${images_tar}" "${OPERATOR_IMAGE}" "${DINGO_IMAGE}"
+    --output "${images_tar}" "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" \
+    "${agent_images[@]}"
   k3d image import "${images_tar}" --cluster "${CLUSTER_NAME}"
 else
-  k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" --cluster "${CLUSTER_NAME}"
+  k3d image import "${OPERATOR_IMAGE}" "${DINGO_IMAGE}" "${agent_images[@]}" \
+    --cluster "${CLUSTER_NAME}"
 fi
 
 echo "[e2e] writing kubeconfig to ${KUBECONFIG_PATH}"

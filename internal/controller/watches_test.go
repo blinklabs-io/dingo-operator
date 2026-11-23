@@ -23,6 +23,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/resources"
+	"github.com/blinklabs-io/dingo-operator/internal/topology"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -424,7 +425,9 @@ func TestRelayRefPortFollowsLiveRelayTemplate(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(watchScheme(t)).
 		WithObjects(peer, dialer, live).Build()
 
-	ports, err := reconcilerFor(c).relayRefPorts(context.Background(), dialer)
+	peers, err := reconcilerFor(c).relayRefPeers(context.Background(), dialer)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int32{"peer": 3001}, ports)
+	assert.Equal(
+		t, map[string]topology.Peer{"peer": {Port: 3001, Replicas: 1}}, peers,
+	)
 }

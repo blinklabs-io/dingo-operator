@@ -34,8 +34,9 @@ func PDBEnabled(dn *dingov1alpha1.DingoNode) bool {
 }
 
 // BuildPodDisruptionBudget keeps at least one node available during voluntary
-// disruptions. For a single-active block producer this blocks voluntary evicts
-// that would leave zero forgers.
+// disruptions. A block producer with one pod cannot be evicted voluntarily, as
+// that would leave no forger; with several, all but one may be evicted at a
+// time.
 func BuildPodDisruptionBudget(
 	dn *dingov1alpha1.DingoNode,
 ) *policyv1.PodDisruptionBudget {

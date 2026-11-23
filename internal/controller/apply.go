@@ -202,12 +202,36 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 		} else {
 			// Update: only mutable fields (selector, serviceName,
 			// volumeClaimTemplates and podManagementPolicy are immutable).
-			if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
-				sts.Spec.Replicas = desired.Spec.Replicas
+			link, linked := desiredAgentLink(dn, renderOpts, desired)
+			moves, unsure, err := r.movesToAnotherAgent(
+				ctx, dn, sts, link, linked,
+				desired.Spec.Template.
+					Annotations[resources.PoolsConfigChecksumAnnotation],
+			)
+			if err != nil {
+				return err
 			}
-			if keepTemplate {
+			// Pods on two agents could each sign a different header for
+			// one slot, so while several pods run the old agent they shrink
+			// to one with the old template, and only then does the template
+			// move; see movesToAnotherAgent.
+			fenced := moves && !keepTemplate && runsSeveralPods(sts)
+			if fenced {
+				sts.Spec.Replicas = new(int32(1))
+			} else if !holdsStoppedLocalSigner(dn, sts, keepTemplate) {
+				if scaleUpBehindLocalSigner(dn, sts, desired) ||
+					(moves || unsure) && desired.Spec.Replicas != nil &&
+						*desired.Spec.Replicas > liveReplicas(sts) {
+					sts.Spec.Replicas = new(liveReplicas(sts))
+				} else {
+					sts.Spec.Replicas = desired.Spec.Replicas
+				}
+			}
+			switch {
+			case fenced:
+			case keepTemplate:
 				withheld = &desired.Spec.Template
-			} else {
+			default:
 				sts.Spec.Template = desired.Spec.Template
 			}
 			sts.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
@@ -329,6 +353,128 @@ func holdsStoppedLocalSigner(
 	return keepTemplate && resources.UsesSigningAgent(dn) &&
 		sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 &&
 		forgesWithLocalKES(sts.Spec.Template.Spec)
+}
+
+// scaleUpBehindLocalSigner reports whether a block producer's StatefulSet
+// must stay at its live replica count rather than scale up to desired. Only
+// the agent's one-header-per-slot guard makes several producer pods safe, and
+// it never sees a pod that signs with a local KES key. A StatefulSet scaled up
+// while it runs a local-KES template, or while a roll is unfinished, starts
+// the new ordinal beside such a pod: on the agent beside the old revision, or
+// on the same kes.skey when the template is held. A relay holds no key, so it
+// scales at once. live is the StatefulSet as read, before desired is applied.
+func scaleUpBehindLocalSigner(
+	dn *dingov1alpha1.DingoNode,
+	live, desired *appsv1.StatefulSet,
+) bool {
+	if !resources.IsBlockProducer(dn) || desired.Spec.Replicas == nil ||
+		*desired.Spec.Replicas <= liveReplicas(live) {
+		return false
+	}
+	st := live.Status
+	return forgesWithLocalKES(live.Spec.Template.Spec) ||
+		st.ObservedGeneration < live.Generation ||
+		st.CurrentRevision != st.UpdateRevision
+}
+
+// agentLink is the agent a pod signs through: its address and server key pin,
+// either of which can reach another slot guard.
+type agentLink struct {
+	address, pin string
+}
+
+// desiredAgentLink returns the agent a rendered pod template signs through,
+// from its environment or, for a pool list, from the pool list it is rendered
+// with.
+func desiredAgentLink(
+	dn *dingov1alpha1.DingoNode,
+	opts resources.RenderOptions,
+	desired *appsv1.StatefulSet,
+) (agentLink, bool) {
+	spec := desired.Spec.Template.Spec
+	if address, pin, ok := resources.SigningAgentLink(spec); ok {
+		return agentLink{address, pin}, true
+	}
+	if !resources.PodMountsPoolList(spec) {
+		return agentLink{}, false
+	}
+	return poolsAgentLink(resources.PoolsConfig(dn, opts.Pools))
+}
+
+func poolsAgentLink(config string) (agentLink, bool) {
+	address, pin, ok := resources.PoolsConfigAgentLink(config)
+	return agentLink{address, pin}, ok
+}
+
+// movesToAnotherAgent reports whether the desired agent differs from the one
+// the live pods sign through. Pods of one StatefulSet must never sign through
+// two agents at once, since each could sign a different header for a slot.
+// Moving takes one pod, so the template is held while several pods run, and
+// scaling up waits for the roll like any other.
+//
+// A pool-list pod reads its agent from the pool list ConfigMap at startup, so
+// that ConfigMap shows what the pods run only while its checksum is the live
+// template's; reconcilePoolKeys holds it with the template. When it is ahead,
+// unsure is set and no pod is added beside the roll. A ConfigMap ahead because
+// a StatefulSet update failed after writing it says nothing of the live
+// agent, so unless it is the pool list being rendered (rendered is its
+// checksum), moves is set too: the pool list and the template stay held while
+// several pods run. The ConfigMap a reconcile has just written is the
+// rendered one, which keeps an ordinary pool-list change from shrinking pods.
+func (r *DingoNodeReconciler) movesToAnotherAgent(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	live *appsv1.StatefulSet,
+	desired agentLink,
+	linked bool,
+	rendered string,
+) (moves, unsure bool, err error) {
+	if !linked {
+		return false, false, nil
+	}
+	spec := live.Spec.Template.Spec
+	if address, pin, ok := resources.SigningAgentLink(spec); ok {
+		return agentLink{address, pin} != desired, false, nil
+	}
+	if !resources.PodMountsPoolList(spec) {
+		return false, false, nil
+	}
+	cm := &corev1.ConfigMap{}
+	key := client.ObjectKey{
+		Name: resources.PoolsConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	if err := r.Get(ctx, key, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, true, nil
+		}
+		return false, false, fmt.Errorf("read pools configmap: %w", err)
+	}
+	config := cm.Data[resources.PoolsConfigKey]
+	unknown := checksum(config) != rendered
+	if checksum(config) != live.Spec.Template.
+		Annotations[resources.PoolsConfigChecksumAnnotation] {
+		return unknown, true, nil
+	}
+	link, ok := poolsAgentLink(config)
+	if !ok {
+		return unknown, true, nil
+	}
+	return link != desired, false, nil
+}
+
+// runsSeveralPods reports whether a StatefulSet asks for or still has more
+// than one pod.
+func runsSeveralPods(sts *appsv1.StatefulSet) bool {
+	return liveReplicas(sts) > 1 || sts.Status.Replicas > 1
+}
+
+// liveReplicas is the replica count a StatefulSet runs, at least one: a nil
+// count defaults to one, and a stopped one restarts with one pod.
+func liveReplicas(sts *appsv1.StatefulSet) int32 {
+	if sts.Spec.Replicas == nil {
+		return 1
+	}
+	return max(*sts.Spec.Replicas, 1)
 }
 
 // setsVoteKey reports whether a pod template sets the vote key variable.

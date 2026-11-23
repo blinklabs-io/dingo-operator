@@ -277,6 +277,12 @@ operators.
   its node does not complete. Set
   `spec.blockProducer.podDisruptionBudget.enabled: false` to let a drain evict
   it; the operator then deletes the budget.
+  A producer that signs through `spec.blockProducer.signingAgent` may run
+  several pods with `spec.replicas`; `status.replicas` reports each one. Every
+  pod forges, so the agent must refuse a second header for a signed slot: a
+  Bursa KES agent of v0.23.0 or later does, and every pod must reach the same
+  agent guard. A producer moving from a local KES key to an agent scales up
+  only after its pods have rolled onto the agent.
 - **Secure by default** — non-root, read-only root filesystem with writable
   `/tmp` and `/ipc` volumes, dropped capabilities, no privilege escalation,
   RuntimeDefault seccomp, no node service-account token, least-privilege RBAC,
@@ -841,6 +847,12 @@ port, the readiness-probe port of images without the health listener, and
 in this node's pod template, which follows `relayService.port`. Peers move to a
 new port when the template changes: as soon as this node is reconciled, or, for
 a block producer whose template is held, only when the hold is released.
+
+A `topology.relayRefs` entry that names a DingoNode is listed once per pod,
+as `<name>-<ordinal>.<name>-headless`, so every pod of a referenced node is a
+peer rather than the one address its headless name resolves to. The count is
+the node's replicas as the operator runs them (a key-file block producer is
+always one pod); a node scaled to zero keeps its headless name.
 Publish the relay elsewhere with `relayService.hostPort` (the container's host
 port) or `relayService.nodePort` on a NodePort or
 LoadBalancer Service.

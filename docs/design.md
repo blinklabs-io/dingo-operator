@@ -20,6 +20,13 @@ Block producers admit node-to-node ingress from same-namespace
 `relayService.ingressFrom`. Relays keep unrestricted node-to-node ingress when
 that list is empty. Node-to-client, API, and metrics grants remain separate.
 
+A `relayRefs` entry naming a DingoNode renders one access point per pod
+(`<ref>-<i>.<ref>-headless`, `i < desiredReplicas`), not the headless name: a
+node dials one resolved address per access point, so sibling pods of an
+agent-signed producer or a scaled relay would otherwise never be peers
+(`relayRefPeers`, `topology.Peer`). A peer scaled to zero keeps the headless
+name so the topology is never emptied. Unknown refs stay on the headless name.
+
 ## Dingo constraints that shape the design
 
 - KES auto-evolves in memory while forging — no action within an opcert's
@@ -744,6 +751,25 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   NetworkPolicy → exactly one forger; rely on reschedule. With one replica the
   PDB blocks every voluntary eviction, so a drain never completes;
   `spec.blockProducer.podDisruptionBudget.enabled: false` removes it.
+  A producer that signs through `spec.blockProducer.signingAgent` may set
+  `spec.replicas` above 1: every pod forges and the agent's one-header-per-slot
+  guard admits the first, so a roll does not stop forging, and the PDB
+  (`minAvailable: 1`) allows voluntary evictions until one pod is left. A change
+  of agent address or server key pin never leaves pods on two agents, which
+  could hold independent guards: the StatefulSet shrinks to one pod on the old
+  template, the template moves once the others are gone, and it scales up when
+  the roll finishes (`movesToAnotherAgent`, `upsertStatefulSet`). A pool-list
+  pod reads its agent from the pool list ConfigMap at startup, so that
+  ConfigMap is held with the template (`fencesPoolsAgentMove`). The guard is Bursa's (v0.23.0 and
+  later), and it holds only when every pod reaches one guard. Anti-affinity is
+  preferred, not required, so two pods can share a node. A producer that holds
+  its KES key in a Secret runs one pod, and `validateSpec` refuses a larger
+  `spec.replicas`. `upsertStatefulSet` keeps the live replica count while the
+  StatefulSet runs a local-KES template or has a roll unfinished
+  (`scaleUpBehindLocalSigner`): a new ordinal would otherwise start beside a
+  pod the agent's guard never sees. `status.replicas` reports each pod's
+  scrape; `status.kes` and `status.opcert.loadedCounter` summarize the pod
+  furthest behind.
 - `ActiveStandby` (not implemented): `validateSpec` rejects it. The intended
   design is a keyless hot standby with the operator holding a Lease so only the
   holder is keyed, and fenced promotion (old primary confirmed down/keyless).

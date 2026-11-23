@@ -24,6 +24,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
+	"github.com/blinklabs-io/dingo-operator/internal/topology"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -194,7 +195,7 @@ func TestHeldTemplateKeepsLiveRelayPort(t *testing.T) {
 	assert.Equal(t, []int32{3001}, peerIngressPorts(t, ctx, c, "bp", ns),
 		"the policy must admit the live port to declared relays")
 	assert.Equal(t, int32(3001), topologyPortFor(
-		t, ctx, c, "rl", ns, "bp-headless.held-port-ns.svc.cluster.local",
+		t, ctx, c, "rl", ns, "bp-0.bp-headless.held-port-ns.svc.cluster.local",
 	), "relay peers must dial the live port")
 
 	// Valid keys return: the template rolls and everything moves.
@@ -214,7 +215,7 @@ func TestHeldTemplateKeepsLiveRelayPort(t *testing.T) {
 	}
 	assert.Equal(t, []int32{4001}, peerIngressPorts(t, ctx, c, "bp", ns))
 	assert.Equal(t, int32(4001), topologyPortFor(
-		t, ctx, c, "rl", ns, "bp-headless.held-port-ns.svc.cluster.local",
+		t, ctx, c, "rl", ns, "bp-0.bp-headless.held-port-ns.svc.cluster.local",
 	))
 }
 
@@ -254,9 +255,9 @@ func TestRelayRefPortsPropagatesStatefulSetReadError(t *testing.T) {
 			WithObjects(bp.DeepCopy(), rl.DeepCopy()).
 			WithInterceptorFuncs(interceptor.Funcs{Get: stsGetErr}).
 			Build()
-		ports, err := reconcilerFor(c).relayRefPorts(context.Background(), rl)
+		peers, err := reconcilerFor(c).relayRefPeers(context.Background(), rl)
 		require.ErrorIs(t, err, sentinel)
-		assert.Nil(t, ports)
+		assert.Nil(t, peers)
 	})
 
 	t.Run("not found", func(t *testing.T) {
@@ -264,8 +265,10 @@ func TestRelayRefPortsPropagatesStatefulSetReadError(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).
 			WithObjects(bp.DeepCopy(), rl.DeepCopy()).
 			Build()
-		ports, err := reconcilerFor(c).relayRefPorts(context.Background(), rl)
+		peers, err := reconcilerFor(c).relayRefPeers(context.Background(), rl)
 		require.NoError(t, err)
-		assert.Equal(t, map[string]int32{"bp": 4001}, ports)
+		assert.Equal(
+			t, map[string]topology.Peer{"bp": {Port: 4001, Replicas: 1}}, peers,
+		)
 	})
 }

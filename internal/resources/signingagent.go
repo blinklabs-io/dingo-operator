@@ -21,6 +21,7 @@ import (
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 // Dingo settings for a remote KES signing agent. Dingo reads them through
@@ -87,6 +88,58 @@ func PodSignsThroughAgent(spec corev1.PodSpec) bool {
 		}
 	}
 	return agent
+}
+
+// SigningAgentLink returns the agent address and server key pin the dingo
+// container of a pod spec is wired to, and whether it has an address. A pod
+// signing through another agent can reach another slot guard.
+func SigningAgentLink(spec corev1.PodSpec) (address, pin string, ok bool) {
+	c, found := DingoContainer(spec)
+	if !found {
+		return "", "", false
+	}
+	for _, e := range c.Env {
+		switch e.Name {
+		case signingAgentAddressEnv:
+			address = e.Value
+		case signingAgentPinEnv:
+			pin = e.Value
+		}
+	}
+	return address, pin, address != ""
+}
+
+// PodMountsPoolList reports whether the dingo container of a pod spec reads
+// the pool list ConfigMap as its configuration file, where each pool names its
+// agent.
+func PodMountsPoolList(spec corev1.PodSpec) bool {
+	c, ok := DingoContainer(spec)
+	if !ok {
+		return false
+	}
+	return mountsPoolList(spec, c)
+}
+
+// PoolsConfigAgentLink returns the agent address and server key pin a rendered
+// pool list signs through, and whether every pool names that one agent.
+func PoolsConfigAgentLink(config string) (address, pin string, ok bool) {
+	var cfg struct {
+		Pools []struct {
+			Address string `json:"shelleyKesAgentAddress"`
+			Pin     string `json:"shelleyKesAgentServerSpkiSha256"`
+		} `json:"blockProducerPools"`
+	}
+	if err := yaml.Unmarshal([]byte(config), &cfg); err != nil ||
+		len(cfg.Pools) == 0 {
+		return "", "", false
+	}
+	address, pin = cfg.Pools[0].Address, cfg.Pools[0].Pin
+	for _, p := range cfg.Pools[1:] {
+		if p.Address != address || p.Pin != pin {
+			return "", "", false
+		}
+	}
+	return address, pin, address != ""
 }
 
 // mountsPoolList reports whether c, the dingo container of spec, reads the
