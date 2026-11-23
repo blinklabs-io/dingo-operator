@@ -246,7 +246,10 @@ operators.
   `dingo.blinklabs.io/node-to-client=allowed` on the client pod — see the
   NetworkPolicy note below.
 - **OpCert rotation** — `MonitorOnly`, `Assisted`, or full `Auto` issuance via a
-  pluggable cold-signer (Bursa) that keeps cold keys out of the cluster.
+  pluggable cold signer: Bursa keeps cold keys out of the cluster, while the
+  in-cluster `secret` signer holds the cold key in a Secret and is for
+  testnets only. See
+  [Cold signer and Auto rotation](#cold-signer-and-auto-rotation).
 - **Safe HA** — `SingleActive` is the only supported strategy: exactly one
   forger, with reschedule on failure. `ActiveStandby` is rejected by
   validation until fenced failover is implemented. A block producer gets
@@ -399,6 +402,52 @@ producer pair, agent-signed or not. Anyone who may create or edit a DingoNode
 in a listed namespace can then stop a producer in another listed namespace, so
 list only namespaces one party controls.
 
+## Cold signer and Auto rotation
+
+`spec.blockProducer.rotation.coldSigner` selects who signs the opcert when
+`rotation.mode` is `Auto`.
+
+| `coldSigner.type` | Use | Fields |
+|---|---|---|
+| `bursa` (default) | Bursa signer service; the cold key stays outside the cluster. | `endpoint` (https URL), `mtlsSecretRef` (Secret with `tls.crt`, `tls.key`, optionally `ca.crt`), `coldKeyHash`, optional `profile` |
+| `secret` | The cold key is a cardano-cli text envelope in the `cold.skey` entry of a Secret in the cluster. Testnets only. | `secretRef`, optional `allowMainnet` |
+| `none` | Assisted and MonitorOnly, which never issue. | none |
+
+`coldKeyHash` is the hex blake2b-224 hash of the cold verification key and
+must equal the pool ID in hex under Auto, even when `poolId` is bech32.
+`profile` names the Bursa signer profile that holds the cold key and is needed
+only when the signer holds the same key in several profiles. The `secret`
+signer is refused under Auto when `spec.network` is `mainnet` or
+`spec.networkMagic` is 764824073, because it keeps the cold key in the cluster.
+`allowMainnet: true` lifts that refusal for a network that reuses the mainnet
+magic without being Cardano mainnet; set it only when the cold key does not
+guard a mainnet pool or funds. It is refused with any signer type other than
+`secret`. `none` cannot issue under Auto.
+
+Validation refuses Auto unless the spec has both of these:
+
+- `spec.blockProducer.nodeToClient.enabled: true`, so the operator can read the
+  on-chain opcert counter.
+- A cold signer that can issue: `bursa` with an https `endpoint`,
+  `mtlsSecretRef` and a `coldKeyHash` equal to the pool ID, or `secret` with a
+  `secretRef` on a non-mainnet network or with `allowMainnet: true`.
+
+Auto also needs `spec.networkMagic` on any network the operator does not know
+by name. Validation requires it only for `network: custom`; on another unknown
+name the spec is accepted, but the operator cannot derive the magic, so the
+counter query never runs. `OnChainCounterAvailable` is then False with reason
+`UnknownNetworkMagic`, and once rotation falls due each issuance attempt sets
+`OpCertIssued` False with reason `OnChainCounterUnknown`.
+
+Under Auto the operator writes each new opcert, and the new KES key unless a
+signing agent holds it, to the keys Secret. Do not re-apply that Secret from
+Helm or GitOps after creation: an upgrade would restore the old KES key.
+Create it once and keep it out of reconciliation without deleting it: removing
+it from a Helm release or from a pruning GitOps source deletes the live Secret,
+and with it the rotated KES key and opcert. Annotate it first so it is kept,
+for example `helm.sh/resource-policy: keep` for Helm or
+`kustomize.toolkit.fluxcd.io/prune: disabled` for Flux.
+
 ## Installation
 
 Install the operator via its Helm chart (published to GHCR as an OCI artifact):
@@ -406,7 +455,7 @@ Install the operator via its Helm chart (published to GHCR as an OCI artifact):
 ```sh
 helm install dingo-operator \
   oci://ghcr.io/blinklabs-io/helm-charts/charts/dingo-operator \
-  --namespace dingo-operator-system --create-namespace
+  --namespace dingo-operator --create-namespace
 ```
 
 The chart installs the `DingoNode` CRD, the operator Deployment, RBAC, and
@@ -417,7 +466,7 @@ The operator reads block-producer Secrets (the keys Secret, a signing agent's
 client certificate and control client certificate, a Bursa signer's mTLS
 credentials) with an uncached `get`
 and keeps no cluster-wide Secret cache or informer. The chart grants that `get`
-cluster-wide by default, or only in the namespaces listed in
+only in the release namespace by default, or in the namespaces listed in
 `rbac.keySecretsNamespaces` when that is set. By default a newly delivered key
 bundle is therefore picked up on the next periodic reconcile, up to two
 minutes later. Pass `--key-namespaces` (comma-separated) to apply it at once:
@@ -428,6 +477,18 @@ whole Secret in an annotation, so no key material enters its cache. The watch
 still needs `list` and `watch` on Secrets in each namespace, and
 Kubernetes RBAC cannot restrict `list` to metadata or to named Secrets. Leave
 the flag unset where the operator's Secret access is limited to named Secrets.
+
+### Secret RBAC
+
+The chart's Secret access is a namespaced Role per listed namespace. Each value
+below is a chart value under `rbac`:
+
+| Value | Grants | Needed for |
+| --- | --- | --- |
+| `keySecretsNamespaces` | `get` on Secrets in each listed namespace. Empty means the release namespace only. List every namespace that holds a block-producer `DingoNode`. | Any block producer |
+| `readSecretNames` | Limits `get` to the named Secrets plus `keySecretNames`, instead of every Secret in those namespaces. List each Secret the operator reads: the `keys.secretRef` and every `pools[].keys.secretRef` of each block-producer `DingoNode` in the namespace; with a signing agent, its `clientCertSecretRef` and `controlClientCertSecretRef`; and with a cold signer, the Bursa `mtlsSecretRef` or the `secretRef` of a `secret` signer. A Secret not listed is refused at its first read. | Optional hardening, any mode |
+| `keySecretsUpdate` with `keySecretNames` | `update` on the Secrets named in `keySecretNames`, in each listed namespace. List the `keys.secretRef` of each `rotation.mode: Auto` node. Rendering fails if `keySecretNames` is empty. | `rotation.mode: Auto`, where the operator writes the new opcert to the keys Secret, and for a local KES key also `kes.skey` and, with a Bursa signer, `kes.pending.skey`. A signing agent keeps the KES key, so only the opcert is written. Leave off for `MonitorOnly` and `Assisted`, which only read it. |
+| `watchKeySecrets` | Adds `list` and `watch` on every Secret in each listed namespace and passes `--key-namespaces`, so a delivered key bundle applies at once. Cannot be combined with `readSecretNames`. Needs an operator image that supports `--key-namespaces`. | Optional, any mode |
 
 ## Quick start
 
@@ -479,9 +540,8 @@ spec:
     ha: { strategy: SingleActive }
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the design summary, rotation/HA models, delivery
-roadmap, and the upstream issues that unlock full automation, and
-[AGENTS.md](AGENTS.md) for coding and review standards.
+See [docs/design.md](docs/design.md) for the design summary, key rotation,
+cold signers, and the HA model.
 
 Named networks are `mainnet`, `preprod`, `preview`, `devnet`, `musashi` and
 `dijkstra`. Mithril bootstrap defaults on only where Dingo has a built-in
@@ -508,7 +568,8 @@ make run                  # run the operator against the current kubecontext
 
 Requires Go 1.26.10+. A local Cardano devnet for end-to-end testing lives in the
 [Dingo repo](https://github.com/blinklabs-io/dingo) under
-`internal/test/devnet/`.
+`internal/test/devnet/`. Coding and review standards are in
+[AGENTS.md](AGENTS.md).
 
 ## License
 

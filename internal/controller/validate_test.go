@@ -773,3 +773,116 @@ func TestValidateSpecBlockProducerRequiresPoolID(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSpecAutoRotationSecretSignerAllowMainnet(t *testing.T) {
+	t.Parallel()
+
+	dn := func(
+		network string,
+		magic *int64,
+		cs dingov1alpha1.ColdSignerSpec,
+	) *dingov1alpha1.DingoNode {
+		spec := dingov1alpha1.DingoNodeSpec{
+			Role:         dingov1alpha1.RoleBlockProducer,
+			Network:      network,
+			NetworkMagic: magic,
+			Topology:     validTopology,
+			BlockProducer: &dingov1alpha1.BlockProducerSpec{
+				PoolID:       strings.Repeat("ab", 28),
+				Keys:         dingov1alpha1.KeysSpec{SecretRef: "keys"},
+				NodeToClient: dingov1alpha1.NodeToClientSpec{Enabled: true},
+				Rotation: dingov1alpha1.RotationSpec{
+					Mode:       dingov1alpha1.RotationModeAuto,
+					ColdSigner: cs,
+				},
+			},
+		}
+		if network == "custom" {
+			spec.ConfigRef = "custom-config"
+			spec.Mithril.Enabled = new(false)
+		}
+		return &dingov1alpha1.DingoNode{Spec: spec}
+	}
+	secret := func(allow bool) dingov1alpha1.ColdSignerSpec {
+		return dingov1alpha1.ColdSignerSpec{
+			Type:         dingov1alpha1.ColdSignerSecret,
+			SecretRef:    "cold",
+			AllowMainnet: allow,
+		}
+	}
+	const refusal = "cannot use the secret cold signer on mainnet"
+
+	tests := []struct {
+		name    string
+		dn      *dingov1alpha1.DingoNode
+		wantErr string
+	}{
+		{
+			name:    "mainnet name refused by default",
+			dn:      dn("mainnet", nil, secret(false)),
+			wantErr: refusal,
+		},
+		{
+			name:    "mainnet magic refused by default",
+			dn:      dn("custom", new(int64(mainnetMagic)), secret(false)),
+			wantErr: refusal,
+		},
+		{
+			name: "mainnet name allowed with opt-in",
+			dn:   dn("mainnet", nil, secret(true)),
+		},
+		{
+			name: "mainnet magic allowed with opt-in",
+			dn:   dn("custom", new(int64(mainnetMagic)), secret(true)),
+		},
+		{
+			name: "opt-in still requires secretRef",
+			dn: dn("mainnet", nil, dingov1alpha1.ColdSignerSpec{
+				Type:         dingov1alpha1.ColdSignerSecret,
+				AllowMainnet: true,
+			}),
+			wantErr: "secretRef",
+		},
+		{
+			name: "opt-in with bursa refused",
+			dn: dn("preview", nil, dingov1alpha1.ColdSignerSpec{
+				Type:          dingov1alpha1.ColdSignerBursa,
+				Endpoint:      "https://signer:8443",
+				MTLSSecretRef: "signer-mtls",
+				ColdKeyHash:   strings.Repeat("ab", 28),
+				AllowMainnet:  true,
+			}),
+			wantErr: "coldSigner.allowMainnet",
+		},
+		{
+			name: "opt-in with the default type refused",
+			dn: dn("preview", nil, dingov1alpha1.ColdSignerSpec{
+				Endpoint:      "https://signer:8443",
+				MTLSSecretRef: "signer-mtls",
+				ColdKeyHash:   strings.Repeat("ab", 28),
+				AllowMainnet:  true,
+			}),
+			wantErr: "coldSigner.allowMainnet",
+		},
+		{
+			name: "opt-in with none refused",
+			dn: dn("preview", nil, dingov1alpha1.ColdSignerSpec{
+				Type:         dingov1alpha1.ColdSignerNone,
+				AllowMainnet: true,
+			}),
+			wantErr: "coldSigner.allowMainnet",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSpec(tc.dn)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}

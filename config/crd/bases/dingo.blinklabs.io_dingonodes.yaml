@@ -1350,6 +1350,16 @@ spec:
                         description: ColdSignerSpec configures the pluggable cold-signer
                           used for opcert issuance.
                         properties:
+                          allowMainnet:
+                            default: false
+                            description: |-
+                              AllowMainnet lets Mode=Auto use the secret signer on a network named
+                              mainnet or with the mainnet network magic, which is otherwise refused.
+                              It exists for networks that reuse the mainnet magic without being
+                              Cardano mainnet. The cold key stays in the cluster, so only set it
+                              when that key does not guard mainnet funds or pool. Only for
+                              Type=secret. DEV/TESTNET ONLY.
+                            type: boolean
                           coldKeyHash:
                             description: |-
                               ColdKeyHash is the blake2b224 hash of the cold verification key; the

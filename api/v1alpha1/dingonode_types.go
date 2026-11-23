@@ -291,6 +291,15 @@ type ColdSignerSpec struct {
 	// envelope in cold.skey (only when Type=secret). DEV/TESTNET ONLY.
 	// +optional
 	SecretRef string `json:"secretRef,omitempty"`
+	// AllowMainnet lets Mode=Auto use the secret signer on a network named
+	// mainnet or with the mainnet network magic, which is otherwise refused.
+	// It exists for networks that reuse the mainnet magic without being
+	// Cardano mainnet. The cold key stays in the cluster, so only set it
+	// when that key does not guard mainnet funds or pool. Only for
+	// Type=secret. DEV/TESTNET ONLY.
+	// +kubebuilder:default=false
+	// +optional
+	AllowMainnet bool `json:"allowMainnet,omitempty"`
 }
 
 // RotationSpec configures KES/OpCert rotation behaviour.
