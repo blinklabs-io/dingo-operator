@@ -279,7 +279,7 @@ func validateSpec(dn *dingov1alpha1.DingoNode) error {
 
 // validatePools checks spec.blockProducer.pools: what Dingo refuses for a pool
 // list (an agent address shared by pools with one profile, more than one pool
-// with Leios) and what the operator does not do for one (Auto rotation).
+// with Leios).
 func validatePools(
 	dn *dingov1alpha1.DingoNode,
 	bp *dingov1alpha1.BlockProducerSpec,
@@ -303,13 +303,6 @@ func validatePools(
 			"spec.blockProducer.pools requires a Dingo image of v0.%d.0 or "+
 				"later; set spec.image.tag",
 			resources.MinPoolListMinor,
-		)
-	}
-	if bp.Rotation.Mode == dingov1alpha1.RotationModeAuto {
-		return errors.New(
-			"rotation mode Auto is not supported with " +
-				"spec.blockProducer.pools: rotating through the signing " +
-				"agent per pool comes later; use Assisted or MonitorOnly",
 		)
 	}
 	pools := make(map[string]string, len(bp.Pools))
@@ -504,15 +497,27 @@ const mainnetMagic = 764824073
 // validateAutoRotation checks what Auto rotation needs before it can issue
 // an opcert: the pool ID and the node-to-client listener that together give
 // the on-chain counter it issues from, and a cold signer that can sign for
-// that pool. The secret signer holds the cold key in the cluster, so it is
-// refused on mainnet unless coldSigner.allowMainnet opts in.
+// that pool, or for each pool of a pool list. The secret signer holds the cold
+// key in the cluster, so it is refused on mainnet unless
+// coldSigner.allowMainnet opts in, and holds one cold key, so it is refused for
+// more than one pool.
 func validateAutoRotation(
 	spec *dingov1alpha1.DingoNodeSpec,
 	bp *dingov1alpha1.BlockProducerSpec,
 ) error {
-	pool, err := parsePoolID(bp.PoolID)
-	if err != nil {
-		return err
+	var single string
+	if len(bp.Pools) > 0 {
+		for i, p := range bp.Pools {
+			if _, err := parsePoolID(p.PoolID); err != nil {
+				return fmt.Errorf("spec.blockProducer.pools[%d]: %w", i, err)
+			}
+		}
+	} else {
+		id, err := parsePoolID(bp.PoolID)
+		if err != nil {
+			return err
+		}
+		single = id.String()
 	}
 	if !bp.NodeToClient.Enabled {
 		return errors.New(
@@ -542,7 +547,16 @@ func validateAutoRotation(
 					"coldSigner.mtlsSecretRef",
 			)
 		}
-		if !strings.EqualFold(cs.ColdKeyHash, pool.String()) {
+		// A pool list asks the signer for each pool's own cold key.
+		if len(bp.Pools) > 0 {
+			if cs.ColdKeyHash != "" {
+				return errors.New(
+					"coldSigner.coldKeyHash must be empty with " +
+						"spec.blockProducer.pools: the operator asks the " +
+						"signer for each pool's own cold key",
+				)
+			}
+		} else if !strings.EqualFold(cs.ColdKeyHash, single) {
 			return errors.New(
 				"coldSigner.coldKeyHash must equal the pool ID " +
 					"(blake2b-224 of the cold verification key)",
@@ -561,6 +575,15 @@ func validateAutoRotation(
 			return errors.New(
 				"rotation mode Auto with the secret signer requires " +
 					"coldSigner.secretRef",
+			)
+		}
+		// A pool ID is the hash of its cold key, so one cold key issues a
+		// valid opcert for one pool only.
+		if len(bp.Pools) > 1 {
+			return errors.New(
+				"rotation mode Auto with the secret signer cannot rotate " +
+					"more than one pool of spec.blockProducer.pools: it " +
+					"holds one cold key; use the bursa signer",
 			)
 		}
 	case dingov1alpha1.ColdSignerNone:

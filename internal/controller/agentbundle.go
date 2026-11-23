@@ -83,7 +83,9 @@ func (r *DingoNodeReconciler) agentBundleProblem(
 		return nil, nil, nil //nolint:nilerr // validateKeysSecret reports it
 	}
 
-	cfg, problem, err := r.agentControlConfig(ctx, dn)
+	cfg, problem, err := r.agentControlConfig(
+		ctx, dn, bp.SigningAgent.ControlProfile,
+	)
 	if err != nil {
 		return nil, err, nil
 	}

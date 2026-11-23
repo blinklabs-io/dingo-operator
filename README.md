@@ -174,7 +174,13 @@ operators.
   reported in `status.pools` with `keysValid: false` and the reason, and the
   node is `Degraded`. Only when every bundle fails is the node refused as a
   whole and its live pod template kept, as for a refused single-pool bundle;
-  the pools that template runs are still observed.
+  the pools that template runs are still observed. In Auto rotation, a pool
+  refused because its Secret holds an older opcert than one installed in the
+  signing agent (its Secret write failed) is not left out: the live pod
+  template is kept until the operator writes the agent's opcert back to the
+  Secret. The counter is recorded in the pool's
+  `status.pools[].pendingInstallCounter` before the agent installs it, and
+  kept until an accepted bundle reaches it.
   `status.pools` also holds each pool's on-disk, on-chain (one
   node-to-client query reads all of them) and loaded opcert counters and KES
   periods, read from the `pool_id`-labelled series Dingo exposes with several
@@ -187,8 +193,22 @@ operators.
   without labelled series keep their status. `status.kes` is the pool with the
   fewest KES periods left, and `RotationDue` is true while any pool is due.
 
-  `rotation.mode` may be `Assisted` or `MonitorOnly`; `Auto` through the agent
-  per pool is not supported yet and is refused. In `Assisted`, a new opcert in
+  `rotation.mode` may be `Assisted`, `MonitorOnly` or `Auto`. With `Auto` the
+  operator rotates each pool that is due on its own KES state, as for a single
+  pool above but through that pool's `agentProfile` and into that pool's
+  `keys.secretRef` only: a pool that is not due is left alone, and the agent is
+  not contacted while none is. A pool's refusal (an unread on-chain counter,
+  say) does not hold back another; each attempted pool is reported in the
+  `OpCertIssued` condition and as an Event naming it. The same prerequisites
+  apply (`controlClientCertSecretRef`, TLS, `serverSpkiSha256`,
+  `reloadInPlace`, `nodeToClient.enabled`, a cold signer that can issue),
+  except that `controlProfile` is refused, since each pool names its profile,
+  and a Bursa signer's `coldKeyHash` must be left empty, since the signer is
+  asked for each pool's own cold key. The `secret` signer holds one cold key,
+  so it is refused for more than one pool, and on mainnet as for a single
+  pool. A pool whose Secret write failed after the agent installed its new key
+  is repaired from what the agent serves, as for a single pool. An agent that
+  lost a pool's key is not re-keyed. In `Assisted`, a new opcert in
   one pool's Secret reaches Dingo without rolling the pod: a container beside
   Dingo stages it once the operator has validated and approved it, and Dingo
   reloads it on its key file watch. Only a change to a pool's other Secret
@@ -217,6 +237,8 @@ operators.
   block-apply batch latency, and the KES/opcert metrics used for status and
   rotation monitoring. Series carry the pod's `cardano_network`,
   `cardano_service` and `spec.podLabels` labels, and `instance` is the pod name.
+  Grafana dashboards and Prometheus alert rules for the operator and its nodes
+  are in [docs/dashboards](docs/dashboards/README.md).
 - **Tracing and logging** — `spec.tracing` exports OpenTelemetry spans over
   OTLP/HTTP (endpoint, service name defaulting to the node name, sample ratio)
   and needs a Dingo image of v0.82.0 or later, which the operator checks before

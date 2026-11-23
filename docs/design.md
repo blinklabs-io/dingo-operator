@@ -626,7 +626,7 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
 - Spec. Each entry has `poolId`, `keys.secretRef` and `agentProfile`; all share
   `signingAgent`, which is required (no local KES keys in list mode).
   `validatePools` refuses `poolId` or `keys` beside `pools`, a duplicate pool ID
-  (compared normalized, so bech32 and hex match) or agent profile, `Auto`, an
+  (compared normalized, so bech32 and hex match) or agent profile, an
   image older than `resources.MinPoolListMinor`, and, with more than one pool,
   the Leios run mode or the Musashi network (`leiosForging`, read from the
   effective env). `resources.ValidateKeyEnv` refuses `spec.environment`
@@ -660,7 +660,17 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   Only when every pool is dropped is the node refused as a whole: the live
   template and checksum are kept. Dropping applies to a pool that was forging
   as well: a bad opcert delivered for a running pool stops that pool at the
-  roll, unlike a refused single-pool bundle, which keeps its pod.
+  roll, unlike a refused single-pool bundle, which keeps its pod. The
+  exception is a pending install in Auto rotation (`poolInstallPending`): a
+  refused pool whose Secret holds an older opcert than its node's loaded
+  counter, or than `pendingInstallCounter`, keeps the live template, since
+  dropping it would clear the loaded counter `adoptPendingInstall` repairs the
+  Secret from. `pendingInstallCounter` is patched into status by
+  `recordPendingInstall` from `rotateKey`, before `install-key` and the Secret
+  write, because resources are applied before the node is scraped: the
+  reconcile right after a failed write, or after an operator restart, still
+  sees the old loaded counter. A refused status patch fails the attempt before
+  the agent is changed. An accepted bundle at or above it clears it.
 - Template stability. `keys-checksum` is the checksum of each accepted pool's
   Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
   ID, so it covers every Secret's static entries and the set of pools but not
@@ -675,9 +685,23 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   node-level `keys-static-checksum` and `keys-counter` annotations are not
   written. The agent client certificate checksum and its hold behave as for
   one pool.
-- Rotation. `Assisted` and `MonitorOnly` only; `Auto` through the agent per
-  pool is refused. The operator makes no call to the agent in these modes
-  (`agentBundleProblem` and the control role are Auto-only), so a per-pool
+- Rotation. `Auto` runs `autoRotatePools` (`rotate.go`): per pool, due from
+  its own `status.pools[].kes` (`RemainingPeriods <= renewBeforePeriods`, KES
+  observed), counter from its own `onChainCounter` (fresh, as for one pool),
+  issued by `rotateKey` through `issueThroughAgent` on the pool's
+  `agentProfile` (`agentControlConfig` takes the profile; `controlProfile` is
+  refused with pools) into that pool's Secret only, validated with
+  `validateBundle(poolChecks)`. The cold signer is built for a copy of the node
+  whose `coldKeyHash` is the pool's ID (it must be blank in the spec); the
+  `secret` signer is refused with more than one pool, since it holds one cold
+  key. The backoff is keyed per pool. Outcomes are per-pool Events and one
+  aggregate `OpCertIssued` condition. `adoptPendingInstall` runs per pool
+  ahead of the due check, from the pool's `loadedCounter`, so a lost Secret
+  write is repaired after the node reloads in place; with nothing pending and
+  no pool due the agent is not called. A pool whose agent lost its key is not
+  re-keyed. In `Assisted` and `MonitorOnly` the operator makes
+  no call to the agent (`agentBundleProblem` and the control role are
+  Auto-only), so a per-pool
   opcert is checked against its Secret and chain counters, never against what
   the agent serves; Dingo checks it against the agent when it loads it.
   `Assisted` updates the approval ConfigMap so the staging container loads a
@@ -686,8 +710,8 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   reporting the replacement.
 - Status. `status.pools[]` (keyed by hex pool ID, cleared once the node no
   longer uses a pool list) holds `keysValid`,
-  reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter` and
-  `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
+  reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter`,
+  `pendingInstallCounter` and `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
   `lcommon.PoolId.String`) and normalizes it; Dingo labels them only while the
   node forges for more than one pool, so a node left with one pool is read from
   the unlabelled series. The loaded counter is
