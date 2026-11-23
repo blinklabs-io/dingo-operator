@@ -658,11 +658,12 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   refused pool whose Secret holds an older opcert than its node's loaded
   counter, or than `pendingInstallCounter`, keeps the live template, since
   dropping it would clear the loaded counter `adoptPendingInstall` repairs the
-  Secret from. `pendingInstallCounter` is set by `autoRotatePools` when the
-  Secret write fails after the agent serves the new opcert, because resources
-  are applied before the node is scraped: the reconcile right after the
-  failure still sees the old loaded counter. An accepted bundle at or above it
-  clears it.
+  Secret from. `pendingInstallCounter` is patched into status by
+  `recordPendingInstall` from `rotateKey`, before `install-key` and the Secret
+  write, because resources are applied before the node is scraped: the
+  reconcile right after a failed write, or after an operator restart, still
+  sees the old loaded counter. A refused status patch fails the attempt before
+  the agent is changed. An accepted bundle at or above it clears it.
 - Template stability. `keys-checksum` is the checksum of each accepted pool's
   Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
   ID, so it covers every Secret's static entries and the set of pools but not

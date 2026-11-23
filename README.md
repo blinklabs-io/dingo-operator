@@ -178,8 +178,9 @@ operators.
   refused because its Secret holds an older opcert than one installed in the
   signing agent (its Secret write failed) is not left out: the live pod
   template is kept until the operator writes the agent's opcert back to the
-  Secret. The installed counter is recorded in the pool's
-  `status.pools[].pendingInstallCounter` until an accepted bundle reaches it.
+  Secret. The counter is recorded in the pool's
+  `status.pools[].pendingInstallCounter` before the agent installs it, and
+  kept until an accepted bundle reaches it.
   `status.pools` also holds each pool's on-disk, on-chain (one
   node-to-client query reads all of them) and loaded opcert counters and KES
   periods, read from the `pool_id`-labelled series Dingo exposes with several

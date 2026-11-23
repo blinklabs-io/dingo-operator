@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -82,9 +83,6 @@ type issueOutcome struct {
 	// replayed marks a refusal repeated from the backoff after an earlier
 	// failure, which is shown again but not logged or evented again.
 	replayed bool
-	// pendingInstall is the counter of an opcert the signing agent serves
-	// that could not be written to the keys Secret; zero means none.
-	pendingInstall int64
 }
 
 func refused(reason, message string) *issueOutcome {
@@ -113,6 +111,9 @@ type rotationTarget struct {
 	// signerFor is the node the cold signer is built for. A pool list sets
 	// the cold key hash to the pool's own.
 	signerFor *dingov1alpha1.DingoNode
+	// recordInstall, when set, durably records the counter of the opcert
+	// the agent is about to serve, before the agent is changed.
+	recordInstall func(counter int64) error
 }
 
 // autoRotate issues a new KES key and opcert into the keys Secret when an
@@ -226,6 +227,9 @@ func (r *DingoNodeReconciler) autoRotatePools(
 				Name: dn.Name + "/" + id, Namespace: dn.Namespace,
 			},
 			signerFor: &signer,
+			recordInstall: func(counter int64) error {
+				return r.recordPendingInstall(ctx, dn, id, counter)
+			},
 		}
 		// Judged per pool: the agent and signer calls of an earlier pool
 		// can age the reading past onChainCounterMaxAge.
@@ -248,11 +252,6 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		if o == nil {
 			continue
 		}
-		// Recorded in status so the next reconcile, which applies resources
-		// before it scrapes the node, holds the pool rather than dropping it.
-		if o.pendingInstall > 0 {
-			ps.PendingInstallCounter = o.pendingInstall
-		}
 		r.reportIssue(ctx, dn, id, o)
 		outcomes = append(outcomes, poolOutcome{id, o})
 	}
@@ -268,6 +267,33 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		parts = append(parts, fmt.Sprintf("pool %s: %s", o.id, o.message))
 	}
 	setIssueCondition(dn, status, reason, joinPoolMessages(parts))
+}
+
+// recordPendingInstall writes counter as pool's pendingInstallCounter to the
+// stored node's status, then to dn. Only that field is patched, so the status
+// the reconcile has built so far is written by its own status update.
+func (r *DingoNodeReconciler) recordPendingInstall(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	pool string,
+	counter int64,
+) error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &dingov1alpha1.DingoNode{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(dn), latest); err != nil {
+			return err
+		}
+		base := latest.DeepCopy()
+		poolStatus(latest, pool).PendingInstallCounter = counter
+		return r.Status().Patch(ctx, latest, client.MergeFromWithOptions(
+			base, client.MergeFromWithOptimisticLock{},
+		))
+	})
+	if err != nil {
+		return fmt.Errorf("record pending install: %w", err)
+	}
+	poolStatus(dn, pool).PendingInstallCounter = counter
+	return nil
 }
 
 // maxConditionMessage is the CRD's bound on a condition message. A longer one
@@ -536,6 +562,15 @@ func (r *DingoNodeReconciler) rotateKey(
 	if err != nil {
 		return fail("IssuedBundleRejected", err.Error())
 	}
+	// The next reconcile applies resources before it scrapes the node, so
+	// only this record holds a pool whose Secret write below fails. It is
+	// written before the agent changes: a restart after the install would
+	// otherwise leave no evidence and drop the pool.
+	if bp.SigningAgent != nil && t.recordInstall != nil {
+		if err := t.recordInstall(state.Counter); err != nil {
+			return fail("StatusUpdateFailed", err.Error())
+		}
+	}
 	// install promotes the new key in the agent, so the write below is the
 	// only step left that can fail. If it does, the agent serves the new
 	// opcert while the Secret holds the old one, and the next attempt
@@ -548,13 +583,7 @@ func (r *DingoNodeReconciler) rotateKey(
 	// The update carries the resourceVersion read above, so a concurrent edit
 	// of the Secret fails the write instead of being overwritten.
 	if err := r.Update(ctx, candidate); err != nil {
-		o := fail("SecretUpdateFailed", err.Error())
-		if bp.SigningAgent != nil {
-			// The agent serves the candidate's opcert, installed above or
-			// adopted from an earlier attempt.
-			o.pendingInstall = state.Counter
-		}
-		return o
+		return fail("SecretUpdateFailed", err.Error())
 	}
 
 	r.forgetIssueFailure(t.failKey)

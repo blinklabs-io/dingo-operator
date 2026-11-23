@@ -130,7 +130,12 @@ func newPoolRotateFixture(t *testing.T) *poolRotateFixture {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, dingov1alpha1.AddToScheme(scheme))
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	objs = append(objs, dn)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objs...).
+		WithStatusSubresource(&dingov1alpha1.DingoNode{}).
+		Build()
 	r := &DingoNodeReconciler{
 		Client:    c,
 		APIReader: c,
@@ -823,8 +828,9 @@ func (f *poolRotateFixture) denySecretWrites(name string) {
 // next reconcile on. Resources are reconciled before the node is scraped, so
 // that reconcile still sees the counter loaded before the install; once the
 // chain has the installed counter, only a pending install recorded in status
-// keeps the running pool from being dropped. A new reconciler stands for an
-// operator restart.
+// keeps the running pool from being dropped. A new reconciler reading the
+// stored node stands for an operator restart before the reconcile's own
+// status write.
 func TestReconcilePoolKeysHoldsTemplateForRecordedInstall(t *testing.T) {
 	t.Parallel()
 	f := newPoolRotateFixture(t)
@@ -845,23 +851,56 @@ func TestReconcilePoolKeysHoldsTemplateForRecordedInstall(t *testing.T) {
 	_, issue := f.agent.Active(a.profile)
 	require.Equal(t, uint64(4), issue)
 
+	stored := &dingov1alpha1.DingoNode{}
+	require.NoError(t, f.c.Get(ctx, client.ObjectKeyFromObject(f.dn), stored))
 	read := metav1.Now()
-	ps := poolStatus(f.dn, a.id)
+	ps := poolStatus(stored, a.id)
 	assert.Equal(t, int64(4), ps.PendingInstallCounter)
 	ps.OnChainCounter, ps.OnChainCounterAt = 4, &read
-	require.Equal(t, int64(3), *ps.LoadedCounter)
 
 	restarted := &DingoNodeReconciler{
 		Client: f.c, APIReader: f.c, Scheme: f.r.Scheme,
 	}
 	observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
-	keep, msg, err := restarted.reconcilePoolKeys(ctx, f.dn, &observed)
+	keep, msg, err := restarted.reconcilePoolKeys(ctx, stored, &observed)
 	require.NoError(t, err)
-	assert.False(t, poolStatus(f.dn, a.id).KeysValid)
+	assert.False(t, poolStatus(stored, a.id).KeysValid)
 	assert.True(t, keep)
 	assert.Equal(t, installPendingHeldMessage, msg)
 	assert.Equal(t, initial.KeysPool, observed.KeysPool)
 	assert.Equal(t, initial.KeysChecksum, observed.KeysChecksum)
+}
+
+// The pending install is recorded before install-key: when the status write
+// is refused, the agent is left serving its old key.
+func TestAutoRotatePoolsRecordsInstallBeforeAgent(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	a := f.pools[0]
+	denied := interceptor.NewClient(
+		f.c.(client.WithWatch),
+		interceptor.Funcs{SubResourcePatch: func(
+			context.Context, client.Client, string, client.Object,
+			client.Patch, ...client.SubResourcePatchOption,
+		) error {
+			return apierrors.NewForbidden(
+				dingov1alpha1.GroupVersion.WithResource("dingonodes").
+					GroupResource(),
+				f.dn.Name, errors.New("patch not granted"),
+			)
+		}},
+	)
+	f.r.Client, f.r.APIReader = denied, denied
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	_, issue := f.agent.Active(a.profile)
+	assert.Equal(t, uint64(3), issue)
+	assert.Zero(t, poolStatus(f.dn, a.id).PendingInstallCounter)
+	cond := meta.FindStatusCondition(f.dn.Status.Conditions, condOpCertIssued)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "pool "+a.id+": ")
+	assert.Equal(t, "StatusUpdateFailed", cond.Reason)
 }
 
 // A recorded install is cleared once the pool's bundle is accepted at its
