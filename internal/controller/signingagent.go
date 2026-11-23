@@ -107,6 +107,13 @@ func validateAgentControl(
 		}
 		return nil
 	}
+	if len(bp.Pools) > 0 && sa.ControlProfile != "" {
+		return errors.New(
+			"spec.blockProducer.signingAgent.controlProfile cannot be set " +
+				"with spec.blockProducer.pools: each pool's agentProfile " +
+				"names the profile to control",
+		)
+	}
 	switch {
 	case sa.ControlClientCertSecretRef == "":
 		return errors.New(
@@ -217,11 +224,13 @@ func (r *DingoNodeReconciler) checkSigningAgentCert(
 }
 
 // agentControlConfig reads the control client certificate Secret and returns
-// the settings for the agent's control role. problem describes a Secret that
-// is missing or unusable; err is a failed read other than not-found.
+// the settings for the agent's control role on profile, which is the agent
+// profile of the pool the command is for. problem describes a Secret that is
+// missing or unusable; err is a failed read other than not-found.
 func (r *DingoNodeReconciler) agentControlConfig(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
+	profile string,
 ) (cfg kesagent.Config, problem string, err error) {
 	sa := dn.Spec.BlockProducer.SigningAgent
 	if r.APIReader == nil {
@@ -250,7 +259,7 @@ func (r *DingoNodeReconciler) agentControlConfig(
 		ServerSPKISHA256: sa.ServerSPKISHA256,
 		ClientCert:       secret.Data[corev1.TLSCertKey],
 		ClientKey:        secret.Data[corev1.TLSPrivateKeyKey],
-		Profile:          sa.ControlProfile,
+		Profile:          profile,
 	}, "", nil
 }
 

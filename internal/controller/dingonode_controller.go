@@ -83,6 +83,10 @@ const (
 	// template is held for the signing agent client certificate Secret.
 	signingAgentCertHeldMessage = "pod template update held until the " +
 		"signing agent client certificate Secret validates"
+	// installPendingHeldMessage replaces templateHeldMessage when a pool's
+	// Secret holds an older opcert than the one its agent serves.
+	installPendingHeldMessage = "pod template update held until a pool's " +
+		"keys Secret holds the opcert its node forges with"
 )
 
 // DingoNodeReconciler reconciles a DingoNode object.
@@ -134,6 +138,14 @@ type DingoNodeReconciler struct {
 	// a signing round trip (and a timeout, for an unreachable signer) each
 	// time. In-memory for the same reasons as onChainAttempts.
 	issueFailures map[types.NamespacedName]issueFailure
+
+	// kesMu guards kesObserved.
+	kesMu sync.Mutex
+	// kesObserved holds, per pool-list node, the pools whose KES state the
+	// last refreshForgeStatus read from the node. status.pools keeps an
+	// earlier scrape's state for any other pool, which Auto rotation must not
+	// issue from.
+	kesObserved map[types.NamespacedName]map[string]bool
 
 	// onChainMu guards onChainAttempts.
 	onChainMu sync.Mutex
@@ -225,14 +237,16 @@ func (r *DingoNodeReconciler) Reconcile(
 	if err := r.Get(ctx, req.NamespacedName, dn); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetOnChainAttempt(req.NamespacedName)
-			r.forgetIssueFailure(req.NamespacedName)
+			r.forgetNodeIssueFailures(req.NamespacedName)
+			r.setKESObserved(req.NamespacedName, nil)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !dn.DeletionTimestamp.IsZero() {
 		// Owner references handle garbage collection; nothing else to do.
 		r.forgetOnChainAttempt(req.NamespacedName)
-		r.forgetIssueFailure(req.NamespacedName)
+		r.forgetNodeIssueFailures(req.NamespacedName)
+		r.setKESObserved(req.NamespacedName, nil)
 		return ctrl.Result{}, nil
 	}
 
@@ -1197,6 +1211,8 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) {
+	// Cleared first, so every return below leaves no pool observed.
+	r.setKESObserved(client.ObjectKeyFromObject(dn), nil)
 	bp := dn.Spec.BlockProducer
 	isBP := bp != nil
 	if desiredReplicas(dn) == 0 {
