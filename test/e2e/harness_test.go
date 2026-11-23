@@ -185,10 +185,10 @@ const (
 // context while the others run at measured pace still reports that test's own
 // failure rather than dying on the outer timeout. That is worst when the
 // shortest test is the one that wedges — where "shortest" means the shortest
-// that *can* wedge. The two 0s tests cannot: one is a single
-// SubjectAccessReview, the other runs against a fake client, and neither enters
-// waitFor. The shortest that can is the deletion test at 55s, so one wedge
-// costs 15m + (22.7 - 0.9) = ~36.8m.
+// that *can* wedge. The two 0s tests cannot: the SubjectAccessReview test
+// waits at most rbacPropagationTimeout (30s) rather than a testTimeout context,
+// and the other runs against a fake client. The shortest that can is the
+// deletion test at 55s, so one wedge costs 15m + (22.7 - 0.9) = ~36.8m.
 //
 // Two wedges cost 30m + (22.7 - 0.9 - 1.9) = ~49.9m, which is why 45m no longer
 // suffices: it covered two wedges against a six-test, ~20m suite, and both
@@ -208,6 +208,10 @@ const (
 	forgeTimeout     = 3 * time.Minute
 	kesStatusTimeout = 3 * time.Minute
 	kesPeriodTimeout = 4 * time.Minute
+
+	// rbacPropagationTimeout bounds how long the API server authorizer may
+	// take to observe a freshly created RoleBinding.
+	rbacPropagationTimeout = 30 * time.Second
 
 	// keysDeliveryTimeout bounds the operator reacting to a changed keys
 	// Secret. The reconciler holds no Secret informer by design (see the
