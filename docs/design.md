@@ -1,0 +1,751 @@
+# Dingo Operator design
+
+How the operator models Dingo nodes, rotates block-producer keys, and keeps a
+single forger per pool. The [README](../README.md) covers installation and the
+`DingoNode` fields; this document explains the behaviour behind them.
+
+## Overview
+
+One CRD, `DingoNode` (`dingo.blinklabs.io/v1alpha1`), with `role: relay |
+blockProducer`. A single reconciler branches on role; block-producer-only
+concerns (keys, rotation, HA) run behind dedicated internal paths. Each node is
+a StatefulSet (+ PVC) with a `dingo mithril sync` init container, headless +
+client Services, a topology ConfigMap, and — for block producers — a PDB and a
+default-deny NetworkPolicy. Validation is CRD OpenAPI schema + controller-side
+checks + status conditions; no admission webhooks in v1 (k3s has no
+cert-manager).
+
+Block producers admit node-to-node ingress from same-namespace
+`topology.relayRefs` and the standard NetworkPolicy peers in
+`relayService.ingressFrom`. Relays keep unrestricted node-to-node ingress when
+that list is empty. Node-to-client, API, and metrics grants remain separate.
+
+## Dingo constraints that shape the design
+
+- KES auto-evolves in memory while forging — no action within an opcert's
+  ~93-day window.
+- OpCert rotation today = new KES key + new opcert (counter+1, cold-signed) →
+  replace mounted files → restart the pod, unless the node reloads keys in
+  place (see "In-place reload" below). Dingo reloads its credential files on
+  SIGHUP and, with `CARDANO_SHELLEY_KEY_WATCH_INTERVAL`, when they change.
+- Startup validation is strict: opcert not expired/future, VRF hash matches the
+  pool's on-chain registration, and opcert counter ≥ the on-chain observed
+  counter (guards `CounterOverIncrementedOCERT`).
+- The authoritative on-chain opcert counter is readable now, over
+  node-to-client local-state-query: gouroboros
+  `localstatequery.Client.GetOpCertCounters()` returns a map keyed by pool
+  cold-key hash. Dingo serves NtC over TCP on its private port (3002) as well as
+  its UNIX socket, so the operator dials the pod and needs no access to `/ipc`.
+  The socket itself lives at `/ipc/dingo/dingo.socket` (`DINGO_SOCKET_PATH`),
+  in a directory the `ipc-socket-dir` init container creates as the pod's user
+  with mode 0755: Dingo v0.94.0 and later refuse a socket parent that group or
+  other can write or that another user owns, and the `/ipc` emptyDir root is
+  world-writable.
+  - Two things gate it, both off by default and both documented under "OpCert
+    rotation state machine": `spec.blockProducer.nodeToClient.enabled` (Dingo
+    binds NtC to `127.0.0.1` unless told otherwise) and the NetworkPolicy label
+    `dingo.blinklabs.io/node-to-client=allowed` on the client pod (and its
+    namespace, when it differs).
+- Dingo's graceful shutdown is budgeted 30s by default, and so is
+  Kubernetes'. Dingo traps SIGTERM and flushes its database with a
+  `shutdownTimeout` that defaults to 30s (`internal/config/config.go`), which is
+  exactly Kubernetes' default `terminationGracePeriodSeconds` — so on the
+  defaults kubelet SIGKILLs at the moment Dingo's own deadline expires, and a
+  flush that uses its budget is cut off. The operator therefore sets the pod's
+  grace period (default 60s, `spec.terminationGracePeriodSeconds`) and derives
+  Dingo's budget from it as `CARDANO_SHUTDOWN_TIMEOUT`, so the node's deadline is
+  always strictly inside the pod's, less the preStop drain delay
+  (`spec.drainDelaySeconds`, native `lifecycle.preStop.sleep`, Kubernetes 1.30+)
+  that runs inside the same period before SIGTERM. Relays default to 15s when
+  that leaves Dingo 30s and `spec.environment` does not set the timeout; block
+  producers default to none. Below Kubernetes 1.30, read from the server
+  version at startup, no hook renders: an older API server drops the sleep
+  action and keeps an empty handler that the pods then fail validation on. This matters more
+  here than for most workloads: on a block producer, restarts are routine
+  rather than exceptional, since every key rotation and config-bundle change
+  rolls the pod.
+  - The variable is `CARDANO_`-prefixed, not `DINGO_`. Dingo runs a single
+    `envconfig.Process("cardano", ...)`; the `DINGO_*` names the operator sets
+    work only because those fields carry an explicit `envconfig:"DINGO_..."`
+    tag that envconfig falls back to. `ShutdownTimeout` has no such tag, so
+    `DINGO_SHUTDOWN_TIMEOUT` would be silently ignored.
+- Dingo v0.70.13+ health probes distinguish process health from chain
+  readiness. The operator uses `/healthz` for startup and liveness, so a
+  node remains alive while it bootstraps or catches up. `/readyz` drives pod
+  readiness and returns ready only when the chain tip is within Dingo's
+  `healthReadyGapSlots` tolerance (default 1000 slots). This removes stale
+  nodes from client Services without restarting them. The dedicated listener
+  is on port 12799 and is not added to either Service.
+- Dingo v0.75.0 adds useful sync diagnostics to Prometheus. The existing
+  PodMonitor already scrapes `/metrics`, so blockfetch recent delay and fetch
+  duration, plus ledger block-apply batch latency, are available without an
+  operator API change. These complement the KES/opcert metrics used for status
+  and rotation checks.
+- Probes cannot see a wedged node, so the controller watches Dingo's own
+  wedge gauges. A ledger pipeline that stops following the chain keeps the
+  process live and the pod Ready; a block producer in that state goes on
+  forging at its leader slots and nobody adopts the result.
+  `dingo_ledger_pipeline_stuck` and `dingo_ledger_pipeline_halted` (halted is
+  terminal) are scraped for every node, relays included, and drive the
+  `LedgerPipelineHealthy` condition plus `Degraded`. `Ready` deliberately still
+  reports StatefulSet truth (the desired ready pods *and* a finished rollout:
+  `observedGeneration` caught up and `currentRevision` equal to
+  `updateRevision`, otherwise `Ready=False`/`RolloutInProgress`): the pod really is ready and the chain really is not
+  advancing, and collapsing the two would hide which one failed. An unreadable
+  scrape sets the condition `Unknown`, never True — reading a failed fetch as
+  "no wedge reported" is how this detection goes blind exactly when it matters.
+- The gauges miss a node whose tip stops moving without the pipeline noticing,
+  so the controller also tracks `cardano_node_metrics_slotNum_int` (the tip
+  block's slot; the lowest across replicas) in `status.tip`. When it stays
+  unchanged beyond `--tip-stall-threshold` (default 10m, 0 disables) the
+  condition turns False with reason `TipNotAdvancing` and `Degraded` is set;
+  Halted and Stuck keep precedence. Status is written every reconcile and each
+  write triggers another reconcile, so `status.tip` changes only with the slot
+  and the message carries no elapsed time. Any pass that cannot observe the tip
+  (scrape failure, missing gauge, slot 0 while Dingo loads its tip) clears
+  `status.tip`, restarting the clock. Unlike Halted and Stuck, a stall is not
+  kept through an unreadable scrape: the condition turns `Unknown`. On a
+  network whose blocks can be more than the threshold apart, raise the
+  threshold or disable the check.
+- The metrics listener must be bound explicitly. Dingo defaults
+  `metricsBindAddr` to loopback as of v0.81.0, so the operator sets
+  `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and
+  the operator's own KES and wedge scrapes all fail across the pod boundary and
+  the node reports `RotationDue=Unknown` indefinitely. The block-producer and
+  relay policies allow this listener only to clients carrying the metrics
+  access label. The scrape goes through the *headless* Service: the client
+  Service gates endpoints on readiness, which would hide KES and wedge state
+  precisely while a node is behind, stalled or catching up.
+- Mithril completion is tracked by markers, not by the database file.
+  `.mithril-bootstrap-started` and `.mithril-bootstrap-complete` live in the data
+  dir. A restore interrupted after `metadata.sqlite` appears but before the chain
+  is complete is indistinguishable from success by file existence, and the init
+  container used to take the skip branch and hand the node a partial database.
+  Resuming is safe: `dingo mithril sync` pins its artifact and records
+  per-immutable-file progress, so it continues rather than restarting. Re-running
+  unconditionally is not an option, because catch-up against a complete database
+  is core-storage-mode only. A volume holding a database and no markers predates
+  them and is adopted as complete. `mithril.forceResync` wipes once per
+  false-to-true change: the wipe leaves `.mithril-force-resync-done`, which stops
+  later init runs from wiping again until an init run with the field false
+  removes it, so re-arming needs a pod to start while the field is false. It is
+  inert with `mithril.enabled: false`, since the init
+  container is not rendered. `dingo serve` independently refuses to start
+  on an incomplete sync, so a marker bug fails loudly rather than forging on
+  partial state.
+- A Mithril bootstrap peaks at roughly twice the node's steady-state disk.
+  `dingo mithril sync` keeps the compressed immutable archives and the extracted
+  chain on the data volume simultaneously, reclaiming the archives only once the
+  load completes (`CleanupAfterLoad` / `DINGO_MITHRIL_CLEANUP` defaults to
+  true, so the operator need not set it). Measured on preview with Dingo 0.69.0:
+  34Gi peak, 19Gi steady, ratio 1.8 — 15Gi of that peak was cache, reclaimed
+  to 13Mi afterwards. So `spec.persistence.size` must be sized for the peak: at
+  the 60Gi default the usable steady-state chain is about 34Gi, not 60Gi.
+  - Figures are preview only. preprod and mainnet hold far more chain and need
+    their own measurement; do not assume the default scales.
+  - Wall clock was ~50 minutes for preview on a warm local cluster
+    (~11.3k immutable chunks, then a block copy over ~4.6M blocks at
+    ~1470 blocks/sec). That is why Mithril cannot gate a pull request and needs
+    a scheduled job instead.
+  - An enforcing storage class fails the bootstrap with `ENOSPC` mid-extraction;
+    a hostpath class such as k3s `local-path` does not enforce the request and
+    consumes the node's disk instead, so undersizing shows up as a full node
+    rather than a failed pod.
+- Genesis creation was not restartable before Dingo 0.68.0. Killing a node
+  while it is still writing genesis into its data directory left orphaned
+  `pool_registration` / `pool_registration_owner` rows in the SQLite metadata
+  DB; every subsequent start died on `create genesis pool registration:
+  constraint failed: FOREIGN KEY constraint failed` and CrashLooped forever,
+  with the PVC unrecoverable without wiping it. Dingo 0.68.0 fixed it by
+  making `SetGenesisStaking` idempotent.
+  - This matters to the operator because *every* rotation, config-bundle change
+    and reschedule rolls the pod, so a block producer rolled during its first
+    boot on a pre-0.68.0 image is permanently bricked. `DefaultDingoTag`
+    (`internal/resources/resources.go`) is therefore held at 0.68.0 or later —
+    a `DingoNode` that omits `spec.image.tag` gets that value. A spec that
+    *pins* an older tag is still exposed.
+
+## OpCert rotation state machine (block producers)
+
+`rotation.mode`: `MonitorOnly` (status/events only), `Assisted` (see below), or
+`Auto`.
+
+Key-material validation runs for every block producer, in all three modes
+(`internal/controller/keys.go`). `MonitorOnly` reports a valid replacement but
+keeps the live key checksum and withdraws its staging approval, so it neither
+rolls nor reloads the node. `Assisted` validates and delivers an externally
+managed replacement; `Auto` also issues it. A pod recreated outside the
+operator still stages the Secret's current contents. The shared validation
+contract is:
+
+- Validated: all three files present (the certificate as `opcert.cert` or the
+  dingo chart's `node.cert`, identical if both); `kes.skey`/`vrf.skey` are
+  well-formed text envelopes of the right kind; the opcert envelope parses and
+  its cold signature verifies (`VerifyOpCertSignature`); blake2b-224 of the
+  signing cold vkey equals `spec.blockProducer.poolId` (hex or bech32), so
+  another pool's self-consistent certificate cannot pass (`validateSpec`
+  rejects a block producer without `poolId`); the delivered `kes.skey` is
+  exactly 608 bytes and its derived public key equals the certificate's KES
+  vkey, so a new opcert shipped without its matching KES key is refused rather
+  than CrashLooping the pod on Dingo's own "KES verification key mismatch";
+  `vrf.skey` is a 32-byte seed or the 64-byte cardano-cli seed||pubkey form
+  (matching `dingo/keystore/keyfile.go`); the counter does not regress below
+  `status.opcert.onDiskCounter` or below the on-chain counter (see below); and
+  the KES window covers the node's current period.
+  - The KES length check must precede the derivation: gouroboros
+    `kes.PublicKey` slices the key at fixed depth-6 offsets with no bounds
+    check and panics on a short key.
+- With `spec.blockProducer.signingAgent` a remote Bursa KES agent signs
+  block headers. `kes.skey` is then not required; its envelope and its
+  binding to the opcert are not checked, and one left in the Secret is never
+  staged or wired (`KeysValid` notes it). Dingo checks the opcert against the
+  agent when it connects. Everything else above still runs, the optional vote
+  key included. The operator sets `CARDANO_SHELLEY_KES_AGENT_*` instead of
+  `CARDANO_SHELLEY_KES_KEY`, which Dingo refuses alongside an agent address,
+  and `validateSpec` mirrors Dingo's own refusals (address not host:port,
+  `plaintext` with a pin or client certificate, a pin that is not 64 hex
+  characters), refuses a port outside 1-65535, and with
+  `rotation.mode: Auto` requires TLS, the pin, `controlClientCertSecretRef`
+  and `rotation.reloadInPlace` (`validateAgentControl`), refusing those control
+  settings under any other mode. Auto then rotates through the agent's control
+  role (`issueThroughAgent`, client in `internal/kesagent`): `info`, whose
+  served opcert is written to the Secret instead of issuing another when it is
+  the next counter signed by the pool's cold key (`adoptServedOpCert`, which
+  repairs a write lost after `install-key`; an `info` that does not answer
+  fails the attempt). Because a reloadInPlace node takes the served opcert and
+  stops reporting `RotationDue`, that repair also runs ahead of the
+  `RotationDue` guard (`adoptPendingInstall`) whenever the node's
+  `LoadedCounter` is above the Secret's counter: the served opcert must match
+  `LoadedCounter` and equal the on-chain counter or one above it; with nothing
+  pending the agent is not called. Otherwise `gen-staged-key`, the cold signer's opcert,
+  validation of the candidate Secret, `install-key` (which promotes the key, so
+  everything that can reject runs first), then the Secret write. A node that
+  already reports the Secret's new counter when it is judged keeps its
+  template (`liveKeys.agent` in `decideKeysLoad`). Dingo admits the agent
+  only when its opcert is byte-equal to the key file's (or takes a newer one
+  for the same cold key), so before a changed bundle is rolled out or
+  approved, `agentBundleProblem` asks `info`: a bundle whose opcert is not the
+  served one, at a counter at or above it, is refused like an invalid bundle,
+  and one that cannot be checked is held (`OpCertUnverified`, not Degraded).
+  A bundle confirmed in place is not checked again. Adoption writes the
+  served opcert bytes unchanged (`opcert.EncodeEnvelope`). Each command is its own session because the agent drops a
+  connection idle over 10 seconds. The pin pins the control link; evidence in
+  the attestation response is not verified. The pin is validated and rendered
+  trimmed. The keys checksum still hashes the whole
+  Secret, so editing a stray `kes.skey` rolls the pod. A client certificate
+  Secret that is missing, holds only half the pair, or does not load as a
+  matching PEM pair holds the pod template like a refused bundle. A valid
+  pair is hashed (`tls.crt` and `tls.key` only) into its own pod annotation,
+  `dingo.blinklabs.io/signing-agent-cert-checksum`, so a renewal rolls the pod
+  without touching the keys checksum that forger provenance compares against
+  the keys Secret; a held template carries the live value forward.
+  `validateSpec` refuses the agent on a canonical image older than
+  `resources.MinSigningAgentMinor`, which must track the first Dingo release
+  that reads `CARDANO_SHELLEY_KES_AGENT_ADDRESS`. An agent
+  node's keys Secret needs no KES key, so across namespaces its claim on a
+  pool counts as key-backed only when a stray `kes.skey` binds to the opcert
+  (`holdsKESKey` does not look at the spec). Otherwise it holds other
+  producers back without halting them.
+- The KES period checks — both of them — only run once
+  `status.kes.currentPeriod > 0`. Zero means "not scraped yet", not "period
+  0", and failing on it would refuse a healthy node's own valid keys on the
+  first reconcile. The consequence is real and worth knowing: before the
+  operator's first successful metrics scrape, an *already-expired* opcert is
+  accepted and rolled out, and Dingo's own startup check is what catches it —
+  as a CrashLoop. Once the guard is satisfied, the expiry (upper) bound is
+  unconditional, because mounting a dead opcert can only CrashLoop the one
+  forging pod. The "start period is in the future" lower bound is additionally
+  skipped when the delivered counter advances past `onDiskCounter`:
+  `status.kes.currentPeriod` is only as fresh as the last successful metrics
+  scrape and freezes if scraping breaks, and refusing a correct bundle against a
+  stale period would strand the node on keys it can never renew. A forward
+  counter is unambiguous evidence of a deliberate rotation, and Dingo still
+  rejects a future-dated opcert at startup.
+- On acceptance: `KeysValid=True`/`OpCertAccepted`, the certificate's issue
+  number is published as `status.opcert.onDiskCounter`, and the keys-checksum
+  pod annotation changes, which rolls the pod.
+- On rejection: `KeysValid=False`/`OpCertRejected`, `Degraded=True` and phase
+  `Degraded` rather than `Forging` (the node keeps running on its loaded keys,
+  so `Ready` stays True), plus a Warning Event. The reconcile keeps the live
+  pod template of an existing StatefulSet unchanged until the Secret
+  validates, so the operator does not roll the pod — not for the keys, and not
+  for any other template change, including one introduced by an operator
+  upgrade or a spec edit. The checksum already on the live template is also
+  carried forward. (An empty checksum would *remove* the annotation — itself a
+  template change — and roll the pod onto the rejected keys.) The reconcile
+  does not fail: last-known-good is the safe state.
+  - What this does and does not protect. An init container copies the Secret
+    into a memory-backed `/keys` volume with owner-only permissions. The running
+    pod therefore keeps its staged files when kubelet refreshes the source
+    Secret, not just the keys already loaded by the process. Refusing a bundle
+    still declines only to *initiate* a roll — it does not fence pod recreation.
+    An eviction, drain, reschedule, or `kubectl delete pod` stages the
+    Secret's current contents, and Dingo's startup validation turns a rejected
+    bundle into a CrashLoop. Spec edits and operator upgrades are held back
+    until the Secret validates; while one is held, the `KeysValid` and
+    `Degraded` messages end with "pod template update held until the keys
+    Secret validates". Fix the Secret; do not leave a refused bundle sitting
+    in it.
+- On a missing keys Secret: `KeysValid=False`/`KeysSecretMissing`,
+  `Degraded=True` and a Warning Event. On an existing StatefulSet the live pod
+  template and its checksum are kept, as on rejection, so the operator does not
+  roll the forging pod onto one stuck in `ContainerCreating` (the Secret volume
+  is not optional). Pod recreation is not fenced: a recreated pod cannot start
+  until the Secret returns. With no StatefulSet yet, it is still created as
+  before, without a keys checksum.
+- The on-chain counter floor. `internal/onchain` dials the node's
+  node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
+  pool's counter as `status.opcert.onChainCounter` (with
+  `status.opcert.onChainCounterAt`). Validation then refuses a delivered opcert
+  whose counter is below that value: the chain has already accepted a higher
+  certificate, so nothing forged with this one can be adopted. A counter above
+  `onchain.MaxPlausibleCounter` is discarded rather than enforced — used as a
+  floor, a wrong-but-huge value would invert fail-open into refusing every
+  rotation.
+  - Fail open, always. Unknown counter → today's behaviour (the on-disk
+    floor only). Every way the counter can be missing — node absent, starting,
+    syncing, unreachable, `nodeToClient.enabled` false, pool has never minted —
+    is a normal state, not evidence against the bundle. Refusing rotations
+    whenever the node is unreachable would strand an operator mid-incident, and
+    Dingo re-checks the bound at startup regardless. Same reasoning as the
+    narrowed KES lower bound above.
+  - Stale values are not enforced. Only an observation newer than
+    `onChainCounterMaxAge` (15 min, ~7 requeue intervals) is a floor. The bound
+    is not about monotonicity — the counter only rises, so an old reading is
+    still a valid lower bound — but about provenance: a repoint at another
+    network or a rollback breaks the link between the stored number and the node,
+    and neither updates it. (A `poolId` edit is handled exactly rather than by
+    the age bound — see below.) A failed read never *clears* the value, for the
+    same reason `status.kes.currentPeriod` is not cleared.
+  - Provenance is recorded, not assumed. A successful read also stores the
+    pool it was read for in `status.opcert.onChainCounterPoolId`, and
+    `onChainFloor` enforces a counter only for the pool it names. Editing
+    `spec.blockProducer.poolId` therefore discards the observation on the next
+    reconcile instead of leaving the previous pool's counter enforced until it
+    ages out.
+  - Ordering: the fetch runs *before* `reconcileResources`, in `Reconcile`
+    itself — not in `reconcileStatus` with the metrics scrape, because
+    `reconcileResources` is what validates the bundle and acts on the verdict.
+    Be exact about what that buys, because it differs by case:
+    - StatefulSet already exists — a genuine roll-prevention: the live
+      pod template is kept as it is, and the process keeps forging on its loaded keys.
+    - Fresh cluster, no StatefulSet yet — nothing is prevented.
+      `reconcileResources` applies the StatefulSet unconditionally, the keys
+      Secret is mounted, and Dingo CrashLoops on the below-chain opcert exactly
+      as it would have. What the ordering buys here is correct signalling —
+      `KeysValid=False`, `Degraded`, a Warning Event, no published
+      `onDiskCounter` — rather than the operator reporting a healthy rotation it
+      had not checked. Same distinction as "refusing declines to initiate a roll,
+      it does not fence one" above.
+  - One dial per node per `onChainCounterRefreshInterval`
+    (`onChainCounterMaxAge/3` = 5 min), keyed on the last attempt, held in
+    memory (`onChainAttempts`), *not* on `status.opcert.onChainCounterAt`. The
+    difference is the whole point: only the success path writes that timestamp,
+    so gating on it leaves the failing case ungated — an operator whose pod is
+    not labelled for the NetworkPolicy never succeeds, so it would re-dial every
+    pass forever, which is the state this feature ships in until the Helm chart
+    sets the label. Per-call timeouts bound one query but not the aggregate:
+    reconciles run one at a time (`MaxConcurrentReconciles` is the default 1) and
+    a default-deny CNI *drops* rather than refuses, so each attempt costs the
+    full 5s dial timeout and enough block producers starve every other node's
+    rollout. The remembered attempt also carries its outcome, so a reconcile that
+    skips the dial still restores the observation into status and re-asserts the
+    condition — which is what keeps a successful read from being lost when
+    `reconcileResources` fails after it (the reconcile returns before
+    `reconcileStatus` persists anything) and keeps a controller-runtime backoff
+    retry from re-dialling. The map is in memory on purpose: it resets on
+    operator restart (one fresh read per node, and the persisted status still
+    carries the floor), and entries are dropped when a node is deleted. The cost
+    of the gate: after a transient node outage the floor stays unavailable for up
+    to the refresh interval instead of until the next reconcile, since the
+    recovered node is not re-dialled at once. That is well inside
+    `onChainCounterMaxAge` and fails open the same way the check already does,
+    which is what makes five minutes the accepted trade.
+  - Observability. The `OnChainCounterAvailable` condition reports
+    `Observed` / `QueryFailed` / `NodeNotReady` / `PoolNotOnChain` /
+    `InvalidPoolID` / `UnknownNetworkMagic` / `Disabled`, so the
+    check cannot be silently inert; `QueryFailed` names the NetworkPolicy label a
+    client needs. A failed read whose node has no Service yet reports
+    `NodeNotReady` instead — every healthy new block producer passes through that
+    state (the first dial happens before the reconcile creates the Service), and
+    pointing at a NetworkPolicy label there would be misleading. It is *not*
+    Degraded — an unsynced node or a pool that has never minted is normal.
+    `nodeToClient.enabled: false` reports `Disabled` rather than removing the
+    condition: an absent condition is indistinguishable from a feature that was
+    never wired up.
+  - Reaching the port. `spec.blockProducer.nodeToClient.enabled` sets
+    `CARDANO_PRIVATE_BIND_ADDR=0.0.0.0` (Dingo defaults to loopback, so without
+    it no NetworkPolicy change can help), and *while it is true* the block
+    producer's NetworkPolicy admits port 3002 from pods labelled
+    `dingo.blinklabs.io/node-to-client=allowed` — plus a matching label on the
+    *namespace* when the client is in another one. That label is the only way
+    in: declared `relayRefs` peers get the node-to-node port
+    (`relayService.port`, default 3001) and nothing else. Peering is not
+    consent to drive the node as a client, and the rule is gated on the spec
+    field so the policy cannot grant a port the operator does
+    not query. Both gates are off by default, so the default posture is
+    unchanged. The operator's own Deployment must carry that label; it lives
+    in the `helm-charts` repo (`charts/dingo-operator/`), not here, so until the
+    chart sets it (and labels the operator's namespace) the query fails closed to
+    `QueryFailed` on any CNI that enforces NetworkPolicy.
+- Still not checked: over-incrementing *past* the chain
+  (`CounterOverIncrementedOCERT`). The operator knows the on-chain value but does
+  not cap the delivered counter at `on-chain + 1`, because the value it holds can
+  be stale by design and a legitimate multi-step rotation would be refused.
+  Dingo's startup validation remains the check for that.
+
+Both legs are covered by the envtest controller suite
+(`internal/controller/dingonode_controller_test.go`): a valid bundle rolls the
+pod and publishes its counter; a bundle signed by another pool's cold key leaves
+the pod template byte-identical and marks the node Degraded. They are also
+proven end to end against a real forging node in `test/e2e/rotation_test.go`
+(`make e2e`) — which is what establishes that the roll actually resumes forging
+on the new key, something envtest cannot show.
+
+Only one block producer may forge per pool on a network (a node with
+`spec.blockProducer.pools` claims every listed pool; see "Several pools per
+node"). When two DingoNodes on
+the same network share a pool ID (any namespace, hex or bech32), or share a keys
+Secret (same namespace, whatever network each names), the older one
+by creation time, then namespace/name, keeps the keys. The newer is set
+`Degraded=True` and `Ready=False` with reason `DuplicateForger`, its
+StatefulSet is scaled to zero if it exists (across namespaces only when the
+older node's keys Secret holds the pool's keys, as described below), and it is
+re-checked every requeue interval. One cold key may register the same pool ID on
+several networks, so a pool shared across networks is not a conflict. The network
+is the one Dingo gets from the node's effective environment, including
+`spec.environment` overrides, and for a workload from the environment of its
+`dingo` container: `CARDANO_NETWORK_MAGIC` when it is a non-zero number, the
+magic of the named `CARDANO_NETWORK` when the magic is unset or zero. A network
+that cannot be resolved (an unparseable or out-of-range magic, an unknown name,
+a value from a Secret or ConfigMap, `envFrom`, a container command or
+arguments, which can override it, or no `dingo` container) matches any
+network. Copies of one key bundle under different Secret names count as the
+same keys: the pool is also read from the cold key in the opcert. The newer
+node resumes only after the older DingoNode is gone and its StatefulSet is
+scaled to zero or removed with all its pods finished, since deleting a
+DingoNode does not stop its pod at once. Likewise the older node is held until
+a newer one already running with the same keys has stopped, and an older node
+whose spec fails validation holds the pool only while its workload runs. Any
+other block-producer workload still running the same keys, whatever DingoNode
+now carries its name, also holds them. A pod holds the pool it staged until it
+stops, even after its node's poolId and keys Secret move to another pool: the
+pod template records it in `dingo.blinklabs.io/keys-pool` when it is first
+rendered or its keys change. A template rendered before that annotation existed
+gains it only at its next keys change, normally the next KES rotation, so
+adding it does not restart running producers; until then every pod it starts is
+judged by its keys Secret and its `dingo.blinklabs.io/keys-checksum`: a pod
+whose checksum equals another producer's keys staged the same bundle. Its
+keys Secret names its pool only while that checksum equals the Secret's. Once
+its keys are replaced, the pod may still forge a pool recorded nowhere, so
+until it stops every other block producer is refused, without halting. A
+producer already running still rolls when its own pod staged the pool its keys
+now name, as for a KES rotation: the pod records that pool, or records no pool
+but the keys checksum its keys Secret has now. A producer whose own pod is of
+unknown pool too waits, since the other pod may have staged the pool its keys
+now name. A refused producer keeps its template, which mounts its keys Secret
+by name, so any recreation of its pod, including a `kubectl delete` or the
+loss of its Kubernetes node, stages the Secret's current contents. A refused
+producer is therefore also scaled to zero when its keys Secret no longer holds
+the keys its template was rendered with, unless the new keys are for the pool
+the template records, as after a KES rotation; a template that records no pool
+halts on any new keys. The same rule applies to a node whose spec fails
+validation, such as a block producer without `spec.topology`: its template is
+held too, so it is scaled to zero on such a key change while the spec stays
+invalid. Two legacy producers whose keys are replaced in the same
+window hold each other and are both scaled to zero; the first whose rival pod
+stops rolls onto its new keys, and the other resumes, with its pool recorded,
+once the first one's old pod has stopped. A pod stays unknown while its own
+node's keys are refused or missing, since its template is held. Anyone who may
+create a pod can make one unknown, and so keep every block producer that is not
+running from starting. A pod that records no keys checksum is judged by its
+keys Secret. Besides that held template, only two kinds of
+evidence scale a running producer to zero: an older valid DingoNode
+naming the same pool or keys, and the workload of a live DingoNode that shares
+them, meaning the StatefulSet that DingoNode controls or a pod that StatefulSet
+controls, matched by UID. The workload of a newer valid DingoNode does not
+stop a producer already running beside it in the same namespace, or in two
+namespaces both listed in the operator's `--forger-fence-namespaces`: the newer
+one is stopped instead. Across namespaces either kind counts only when that
+DingoNode's keys Secret holds the KES signing key its opcert certifies for the
+shared pool, or when both namespaces are listed: a pool ID, or an opcert copied
+from a block header, is public, so a DingoNode in another namespace that only
+names the pool refuses without halting. A refusal that does not halt never
+hides one that does. Owner references are set by whoever creates the object,
+so this trusts anyone who may create pods or StatefulSets in the producer's
+namespace, or in the namespace of a DingoNode whose keys Secret holds the
+pool's keys, and anyone who may create or edit a DingoNode in a listed
+namespace: an edited DingoNode keeps its age. A
+producer's own pods are only those controlled, by UID, by the StatefulSet it
+controls; a pod that only carries its name label is another workload. A
+workload no live DingoNode
+accounts for, including one whose DingoNode is gone, refuses without halting:
+it keeps a producer that is not running from starting, and withholds template
+rolls, including KES and opcert rotation, from a running one until it stops or
+is removed. Anyone who may create a pod can label and annotate one, so such a
+workload stops a running producer only through its held template: when the
+producer's keys move to another pool, or change at all under a template that
+records no pool, it is scaled to zero as described above. These checks read StatefulSets and
+pods from the API server, so the operator needs `list` on pods. A failed lookup
+is not a refusal: the reconcile returns the error and leaves the workload as it
+is. The exception is another block producer's keys Secret the operator may not
+read with its current permissions: only that node's pool ID and Secret name
+count, and if its workload is running the reconcile fails closed.
+
+A producer whose spec now names a signing agent but whose held template still
+signs with a local KES key stays at zero replicas until the agent template
+applies.
+
+Full `Auto` rotation (`internal/controller/rotate.go`), run after the
+metrics scrape on every reconcile:
+
+1. Detect: `RotationDue=True` (`remainingPeriods <= renewBeforePeriods`).
+2. Refuse (`OpCertIssued=False`, Warning Event) without calling the signer when
+   the on-chain counter is not fresh for this pool
+   (`observedOnChainCounter`; an observed 0 counts, unlike `onChainFloor`),
+   the KES period has not been scraped, or `renewBeforePeriods` is not below
+   the KES window (every new opcert would be due at once). A pool that has
+   never minted has no on-chain counter, so it cannot auto-rotate; deliver its
+   first opcert with `Assisted`.
+3. Skip if the keys Secret already holds a bundle that validates and is not
+   due. The running pod keeps reporting its old opcert until it rolls and is
+   scraped again, so this check is what keeps one rotation from issuing on
+   every reconcile. A staged bundle that fails validation is replaced. A
+   dry-run update of the Secret then checks the write is allowed before a
+   signature is spent on it.
+4. Generate a KES key and ask the cold signer for an opcert at on-chain
+   counter + 1, starting at the current KES period
+   (`coldsigner.Issuer.SignOpCertFromChain`). Reissuing the same number is
+   valid while the pool has not forged with it. Bursa chooses the number from
+   the counter and keeps a per-key floor; the operator verifies the issue
+   number, the cold key against `coldKeyHash`, and the signature.
+5. Run `validateKeysSecret` on the candidate Secret and abort on any failure,
+   so self-issued material passes the same checks as a delivered bundle.
+6. Update the keys Secret (`kes.skey` and the opcert under the name it already
+   uses), carrying the read resourceVersion. `vrf.skey` is untouched.
+7. The next reconcile validates the new bundle and rolls the pod.
+
+A failure from step 4 on (signer unreachable or refusing, bundle rejected,
+Secret write denied) is remembered per node in memory, and the signer is not
+contacted again for `issueRetryInterval` (10 minutes). Without it a signer
+timeout would block every reconcile while `RotationDue` holds. A refusal sets
+`OpCertIssued=False` and a Warning Event but not `Degraded`: the node is still
+forging, and several refusals (counter not yet read, KES not yet scraped) are
+normal transient states.
+
+`validateSpec` requires `poolId` for every block producer and, for `Auto`,
+that it parses, `nodeToClient.enabled`, and a cold signer that can issue.
+Bursa needs an https `endpoint`, `mtlsSecretRef` (a Secret with `tls.crt`, `tls.key` and optionally `ca.crt`) and
+`coldKeyHash` equal to the pool ID, and optionally `profile` (the Bursa
+signer profile holding the cold key, sent as `profile` on the request; needed
+when the signer holds the key in several profiles); `secret` needs `secretRef` holding
+`cold.skey` and is refused on mainnet (by name or network magic), since it
+keeps the cold key in the cluster, unless `coldSigner.allowMainnet` is true
+(for networks that reuse the mainnet magic; `validateSpec` refuses it with any
+other signer type). Auto writes the keys Secret, so the deployment must grant the
+operator `update` on Secrets in the keys namespaces, on top of `get`.
+In every rotation mode, `validateSpec` refuses `coldSigner.profile` with a
+signer type other than bursa.
+
+## In-place reload (`rotation.reloadInPlace`)
+
+Off by default. When on, a validated bundle that changes only `kes.skey` and
+the opcert is loaded into the running node instead of rolling the pod
+(`internal/controller/keyreload.go`, `internal/resources/keyreload.go`).
+
+- Why a container is needed. Dingo reads the owner-only copies in `/keys`, not
+  the Secret volume, which the pod's `fsGroup` makes group-readable. The
+  kubelet refreshes the Secret volume in place, but nothing refreshes `/keys`.
+  `sync-block-producer-keys` runs beside Dingo and does.
+- The operator's validation still gates every bundle. The container stages the
+  Secret's `kes.skey` and certificate only when SHA-256 of the two equals the
+  digest in the `<name>-keys-approval` ConfigMap, which the operator writes
+  only for a bundle that validated. It checks the copies against the digest
+  again before they replace the live files, since the Secret volume can be
+  swapped mid-read. A rejected bundle is never approved, so it is never staged
+  into the running pod.
+- Which changes qualify. The pod template records
+  `dingo.blinklabs.io/keys-static-checksum`, the checksum of every Secret
+  entry except `kes.skey` and the opcert (the VRF key, the vote key and
+  anything else). A bundle loads in place only when that and the recorded
+  pool (`keys-pool`) still match, and the node has reported a loaded opcert
+  counter that differs from the bundle's: confirmation is by counter, so a
+  bundle reusing the loaded counter, or one approved while the counter is
+  unobserved, cannot be confirmed and rolls. Anything else rolls, as does the first
+  render after enabling the setting, which adds the container, the approval
+  volume and Dingo's watch interval.
+- After a roll. The scrape goes through the pod's stable DNS name, so until the
+  new pod is scraped, `loadedCounter` may still be the outgoing pod's. Every
+  render that changes the live `keys-checksum` (or creates the StatefulSet)
+  records the bundle's counter on the template as `keys-counter`, written with
+  the checksum and carried with it (an in-place reload keeps both, and a
+  template from before the annotation keeps its absence, so adding it rolls
+  nothing). A bundle loads in place only with a counter above it and the
+  loaded one, which neither pod can report before that bundle loads. Because
+  the floor is read from the live template, a status write lost after the roll
+  cannot drop it. The same counter goes to `status.opcert.rolledCounter`, and
+  so does a render whose live template already staged the bundle while the
+  node reports another counter; that value is the floor only for a template
+  without `keys-counter`. The scrape clears it when the node reports exactly
+  that counter (any other value may be the outgoing pod's), or when an
+  in-place reload is confirmed.
+- While a reload is pending, the live `keys-checksum` is carried forward, so
+  the template does not change, and `status.opcert.inPlaceReload` records the
+  approved checksum, counter and time. The scrape reads
+  `dingo_forge_opcert_counter` into `status.opcert.loadedCounter`; when it
+  equals the approved counter the reload is `applied` and a
+  `KeysReloadedInPlace` Event is recorded. If it is not confirmed within
+  `keysReloadTimeout` (10 minutes: kubelet refresh, the container's 5s poll,
+  Dingo's 10s watch, the 2 minute requeue), the new checksum is rendered and
+  the pod rolls, with a `KeysReloadTimedOut` Event. A Dingo without in-place
+  reload therefore still rotates, ten minutes later.
+- Fencing is unchanged. The pool recorded on the template stays true, since a
+  reload never changes the pool, so the forger checks that read `keys-pool`
+  hold. A template that keeps an older `keys-checksum` than its Secret is
+  judged by its recorded pool, as after any KES rotation.
+
+## Several pools per node (`spec.blockProducer.pools`)
+
+Dingo v0.94.0 forges for several pools from one node, but only from a YAML
+`blockProducerPools` list, and it refuses the list while any single-pool
+setting is in the environment (`CARDANO_SHELLEY_VRF_KEY`, `_KES_KEY`,
+`_OPERATIONAL_CERTIFICATE`, `_KES_AGENT_SOCKET`, `_MODE`, `_ADDRESS`,
+`_ADDRESSES`, `_CLIENT_CERT_FILE`, `_CLIENT_KEY_FILE`, `_SERVER_SPKI_SHA256`,
+`_PLAINTEXT`, `_PROFILE`, with or without `CARDANO_`). Dingo's per-node
+settings (`CARDANO_BLOCK_PRODUCER`, `_KES_AGENT_SIGN_TIMEOUT`,
+`_KEY_WATCH_INTERVAL`) stay environment. Single-pool rendering is unchanged;
+everything below applies only when `pools` is set (`resources.UsesPoolList`).
+
+- Spec. Each entry has `poolId`, `keys.secretRef` and `agentProfile`; all share
+  `signingAgent`, which is required (no local KES keys in list mode).
+  `validatePools` refuses `poolId` or `keys` beside `pools`, a duplicate pool ID
+  (compared normalized, so bech32 and hex match) or agent profile, an
+  image older than `resources.MinPoolListMinor`, and, with more than one pool,
+  the Leios run mode or the Musashi network (`leiosForging`, read from the
+  effective env). `resources.ValidateKeyEnv` refuses `spec.environment`
+  overrides of the single-pool settings and of the vote key path. `Keys` is
+  `omitzero`, so a list node serializes no `keys`.
+- Rendering. `reconcilePoolKeys` (`internal/controller/pools.go`) replaces the
+  single-bundle block in `reconcileResources`. A ConfigMap `<name>-pools`
+  holds `blockProducerPools` (`resources.PoolsConfig`: one entry per accepted
+  pool in pool ID order, `/keys/<hex pool id>/vrf.skey` and `opcert.cert`, the
+  shared agent address, pin, plaintext and client certificate paths, and the
+  pool's `shelleyKesAgentProfile`). It is mounted by subPath at
+  `/etc/dingo/dingo.yaml`: the image entrypoint (`bin/entrypoint.sh`) passes
+  no `--config`, only `serve` and an optional `--debug`, so Dingo resolves
+  that default path (`resolveConfigFile`, after `~/.dingo/dingo.yaml`). A
+  subPath mount never refreshes, so the YAML's checksum is the pod annotation
+  `dingo.blinklabs.io/pools-config-checksum`. Pods get one Secret volume per
+  pool (`block-producer-keys-source-<i>`, pools in ID order), staged by the
+  init container into `/keys/<pool id>/`. A pool-list pod with no accepted pool
+  renders as a node that does not forge (no key mounts, no
+  `CARDANO_BLOCK_PRODUCER`).
+- Bundles. Each pool's Secret is validated by `validateBundle` (the body of
+  `validateKeysSecret`) against that pool's ID, its own `status.pools`
+  counters and on-chain floor, and the KES period the node last reported for
+  any pool (`nodeKESPeriod`: the period follows from the slot, so an
+  unobserved or dropped pool is still checked for expiry). A bundle that fails,
+  a missing Secret
+  or, with more than one pool, a vote key, drops that pool from the YAML, the
+  volumes, the approvals and `keys-pool`; the other pools keep forging after
+  one pod roll, and the pool is reported in `status.pools` (`keysValid: false`,
+  reason `PoolKeysRejected` or `KeysSecretMissing`) with the node `Degraded`.
+  Only when every pool is dropped is the node refused as a whole: the live
+  template and checksum are kept. Dropping applies to a pool that was forging
+  as well: a bad opcert delivered for a running pool stops that pool at the
+  roll, unlike a refused single-pool bundle, which keeps its pod. The
+  exception is a pending install in Auto rotation (`poolInstallPending`): a
+  refused pool whose Secret holds an older opcert than its node's loaded
+  counter, or than `pendingInstallCounter`, keeps the live template, since
+  dropping it would clear the loaded counter `adoptPendingInstall` repairs the
+  Secret from. `pendingInstallCounter` is set by `autoRotatePools` when the
+  Secret write fails after the agent serves the new opcert, because resources
+  are applied before the node is scraped: the reconcile right after the
+  failure still sees the old loaded counter. An accepted bundle at or above it
+  clears it.
+- Template stability. `keys-checksum` is the checksum of each accepted pool's
+  Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
+  ID, so it covers every Secret's static entries and the set of pools but not
+  a new opcert. A new opcert goes through the approval ConfigMap
+  (`<name>-keys-approval`, one key per pool ID holding the SHA-256 of that
+  pool's opcert) and the staging container (`syncPoolListKeysScript`), which
+  copies a pool's opcert into `/keys/<pool id>/` only when its digest is
+  approved. Dingo reloads it through `CARDANO_SHELLEY_KEY_WATCH_INTERVAL`,
+  which list mode always sets. So list mode is always in-place, with or
+  without `rotation.reloadInPlace`, and has none of the single-pool
+  counter-confirmation and timeout-roll machinery (`decideKeysRollout`): the
+  node-level `keys-static-checksum` and `keys-counter` annotations are not
+  written. The agent client certificate checksum and its hold behave as for
+  one pool.
+- Rotation. `Auto` runs `autoRotatePools` (`rotate.go`): per pool, due from
+  its own `status.pools[].kes` (`RemainingPeriods <= renewBeforePeriods`, KES
+  observed), counter from its own `onChainCounter` (fresh, as for one pool),
+  issued by `rotateKey` through `issueThroughAgent` on the pool's
+  `agentProfile` (`agentControlConfig` takes the profile; `controlProfile` is
+  refused with pools) into that pool's Secret only, validated with
+  `validateBundle(poolChecks)`. The cold signer is built for a copy of the node
+  whose `coldKeyHash` is the pool's ID (it must be blank in the spec); the
+  `secret` signer is refused with more than one pool, since it holds one cold
+  key. The backoff is keyed per pool. Outcomes are per-pool Events and one
+  aggregate `OpCertIssued` condition. `adoptPendingInstall` runs per pool
+  ahead of the due check, from the pool's `loadedCounter`, so a lost Secret
+  write is repaired after the node reloads in place; with nothing pending and
+  no pool due the agent is not called. A pool whose agent lost its key is not
+  re-keyed. In `Assisted` and `MonitorOnly` the operator makes
+  no call to the agent (`agentBundleProblem` and the control role are
+  Auto-only), so a per-pool
+  opcert is checked against its Secret and chain counters, never against what
+  the agent serves; Dingo checks it against the agent when it loads it.
+  `Assisted` updates the approval ConfigMap so the staging container loads a
+  new opcert, and rolls on static key or pool-list changes. `MonitorOnly`
+  withdraws staging approval and leaves the live template unchanged while
+  reporting the replacement.
+- Status. `status.pools[]` (keyed by hex pool ID, cleared once the node no
+  longer uses a pool list) holds `keysValid`,
+  reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter`,
+  `pendingInstallCounter` and `kes`. The scrape reads the series Dingo labels with `pool_id` (bech32,
+  `lcommon.PoolId.String`) and normalizes it; Dingo labels them only while the
+  node forges for more than one pool, so a node left with one pool is read from
+  the unlabelled series. The loaded counter is
+  `dingo_forge_opcert_counter_loaded`, labelled or not
+  (`forgestatus.Status.OpCertCounter` for the unlabelled one, the field a
+  single-pool node reads). One
+  `GetOpCertCounters` answer serves every pool (`onchain.PoolsFetcher`, same
+  refresh interval and fail-open behaviour as one pool, per-pool provenance by
+  pool ID; an attempt remembered for a pool list is never reused for
+  `poolId`, nor the reverse, as `onChainAttempt.list` marks it). Node status summarizes: `status.kes` is the pool with the fewest
+  periods left (so `Forging` needs it above zero), `RotationDue` is true when
+  any forging pool is due (one the live template stages, `runningPools`, or
+  one with labelled series, whatever its bundle's verdict; the others' KES
+  status is cleared), unknown when one reports nothing, and `KeysValid`
+  is true only while every pool is accepted. `status.opcert` stays a
+  single-pool field.
+- Fence. `forgerIdentity` holds every listed pool and Secret (`pools`,
+  `secrets`), from the spec as well as from each Secret's opcert, whether or
+  not the pool was dropped from the pod. `forgerConflict` compares the spec
+  lists. The pod template records the staged pools as a sorted, comma-separated
+  `keys-pool` (`resources.SplitKeysPools`/`JoinKeysPools`; a single-pool value
+  is the one-item case) and mounts one Secret per pool
+  (`resources.KeysSecretNames`); `orphanHolds`, `rollsPastUnknownPool` and
+  `restagesOtherPool` iterate over both; `rollsPastUnknownPool` passes a list
+  node only when its running pod recorded every listed pool, since a pool new
+  to it may be the one the unknown pod forges. `nodeIdentity` records the
+  spec's pools and Secrets before reading any Secret, so a failed read still
+  returns them. A list template whose Secret now
+  holds another pool's opcert is judged to restage another pool
+  (`restagesOtherPoolOfList`), since Dingo takes the pool from the opcert. A
+  list node's `keys-checksum` is not any Secret's checksum, so checksum
+  equality never matches it.
+
+## HA
+
+- `SingleActive` (default): `replicas: 1` + pod anti-affinity + PDB +
+  NetworkPolicy → exactly one forger; rely on reschedule. With one replica the
+  PDB blocks every voluntary eviction, so a drain never completes;
+  `spec.blockProducer.podDisruptionBudget.enabled: false` removes it.
+- `ActiveStandby` (not implemented): `validateSpec` rejects it. The intended
+  design is a keyless hot standby with the operator holding a Lease so only the
+  holder is keyed, and fenced promotion (old primary confirmed down/keyless).
+  The `failover` field and `status.ha` (`activePod`, `standbyPods`,
+  `lastPromotion`) are declared in `api/v1alpha1` but nothing reads or writes
+  them. `status.opcert.lastRotated` is likewise declared and never written.

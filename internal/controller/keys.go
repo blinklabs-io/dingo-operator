@@ -395,7 +395,7 @@ func voteKeyFile(data map[string][]byte) ([]byte, string, error) {
 // with the node down and KES marching toward expiry — and it would do so to
 // enforce a bound the node itself re-checks at startup anyway. The same
 // reasoning already narrowed the KES lower-bound check below; see the
-// rotation-mode discussion in CLAUDE.md.
+// rotation-mode discussion in docs/design.md.
 //
 // A zero counter is treated as absent: the field is omitempty and a pool that
 // has never minted has no counter, so "0" is not distinguishable from unset —
