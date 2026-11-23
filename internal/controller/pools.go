@@ -406,7 +406,10 @@ func (r *DingoNodeReconciler) fencesPoolsAgentMove(
 		return false, fmt.Errorf("read statefulset for agent move: %w", err)
 	}
 	link, linked := poolsAgentLink(resources.PoolsConfig(dn, rendered))
-	moves, _, err := r.movesToAnotherAgent(ctx, dn, sts, link, linked)
+	moves, _, err := r.movesToAnotherAgent(
+		ctx, dn, sts, link, linked,
+		checksum(resources.PoolsConfig(dn, rendered)),
+	)
 	return moves && runsSeveralPods(sts), err
 }
 

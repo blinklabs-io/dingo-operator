@@ -75,6 +75,13 @@ func (m *poolListMove) apply() appsv1.StatefulSet {
 	return got
 }
 
+func (m *poolListMove) get() appsv1.StatefulSet {
+	m.t.Helper()
+	var got appsv1.StatefulSet
+	require.NoError(m.t, m.c.Get(m.t.Context(), m.key, &got))
+	return got
+}
+
 func (m *poolListMove) setStatus(st appsv1.StatefulSetStatus) {
 	m.t.Helper()
 	var got appsv1.StatefulSet
@@ -239,4 +246,82 @@ func TestPoolListKeepsPodsForChangeThatKeepsTheAgent(t *testing.T) {
 				"the pool list must move with the template")
 		})
 	}
+}
+
+// addPool appends a pool to the producer.
+func addPool(dn *dingov1alpha1.DingoNode, p testPool) {
+	dn.Spec.BlockProducer.Pools = append(
+		dn.Spec.BlockProducer.Pools,
+		dingov1alpha1.BlockProducerPool{
+			PoolID:       p.id,
+			AgentProfile: p.profile,
+			Keys:         dingov1alpha1.KeysSpec{SecretRef: p.secret},
+		},
+	)
+}
+
+// writePoolsOnly stops a reconcile after the pool list ConfigMap, as a failed
+// StatefulSet update does, leaving the ConfigMap ahead of the live template.
+func (m *poolListMove) writePoolsOnly() {
+	m.t.Helper()
+	opts := resources.RenderOptions{
+		MountKeys: true, Replicas: desiredReplicas(m.dn),
+	}
+	keep, _, err := m.r.reconcilePoolKeys(m.t.Context(), m.dn, &opts)
+	require.NoError(m.t, err)
+	require.False(m.t, keep)
+}
+
+// A pool-list update whose StatefulSet update failed leaves the ConfigMap
+// ahead of the template, so the agent the pods run cannot be read from it. An
+// agent move then must not write the new agent or roll the template while two
+// pods run.
+func TestPoolListAgentMoveAfterFailedUpdateIsFenced(t *testing.T) {
+	t.Parallel()
+	pools := newTestPools(t, "a", "b")
+	m := newPoolListMove(t, pools[:1], poolSecret(t, "ns", pools[1], 4))
+	old := poolsChecksumOf(m.running())
+	oldConfig := m.poolsConfig()
+
+	addPool(m.dn, pools[1])
+	m.writePoolsOnly()
+	require.NotEqual(t, oldConfig, m.poolsConfig())
+	require.Equal(t, old, poolsChecksumOf(m.get()))
+	aheadConfig := m.poolsConfig()
+
+	m.dn.Spec.BlockProducer.SigningAgent.Address = "kes-agent-b.signing.svc:7000"
+	got := m.apply()
+	assert.Equal(t, int32(1), *got.Spec.Replicas,
+		"two pods may not run beside a template that moves their agent")
+	assert.Equal(t, old, poolsChecksumOf(got),
+		"the template must not move while two pods run an unknown agent")
+	assert.Equal(t, aheadConfig, m.poolsConfig(),
+		"the pool list must not take the new agent while two pods run")
+
+	// One pod left: the move proceeds.
+	m.setStatus(appsv1.StatefulSetStatus{
+		ObservedGeneration: got.Generation, Replicas: 1,
+		CurrentRevision: "bp-a", UpdateRevision: "bp-a",
+	})
+	got = m.apply()
+	assert.NotEqual(t, old, poolsChecksumOf(got))
+	assert.Contains(t, m.poolsConfig(), "kes-agent-b.signing.svc:7000")
+	assert.Equal(t, int32(1), *got.Spec.Replicas)
+}
+
+// Retrying the same pool list after a failed StatefulSet update keeps both
+// pods: the ConfigMap is what is being rendered.
+func TestPoolListRetryAfterFailedUpdateKeepsPods(t *testing.T) {
+	t.Parallel()
+	pools := newTestPools(t, "a", "b")
+	m := newPoolListMove(t, pools[:1], poolSecret(t, "ns", pools[1], 4))
+	old := poolsChecksumOf(m.running())
+
+	addPool(m.dn, pools[1])
+	m.writePoolsOnly()
+
+	got := m.apply()
+	assert.Equal(t, int32(2), *got.Spec.Replicas)
+	assert.NotEqual(t, old, poolsChecksumOf(got))
+	assert.Equal(t, poolsChecksumOf(got), checksum(m.poolsConfig()))
 }

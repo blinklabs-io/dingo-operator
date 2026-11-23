@@ -205,6 +205,8 @@ func (r *DingoNodeReconciler) upsertStatefulSet(
 			link, linked := desiredAgentLink(dn, renderOpts, desired)
 			moves, unsure, err := r.movesToAnotherAgent(
 				ctx, dn, sts, link, linked,
+				desired.Spec.Template.
+					Annotations[resources.PoolsConfigChecksumAnnotation],
 			)
 			if err != nil {
 				return err
@@ -413,13 +415,19 @@ func poolsAgentLink(config string) (agentLink, bool) {
 // A pool-list pod reads its agent from the pool list ConfigMap at startup, so
 // that ConfigMap shows what the pods run only while its checksum is the live
 // template's; reconcilePoolKeys holds it with the template. When it is ahead,
-// unsure is set: nothing is fenced, but no pod is added beside the roll.
+// unsure is set and no pod is added beside the roll. A ConfigMap ahead because
+// a StatefulSet update failed after writing it says nothing of the live
+// agent, so unless it is the pool list being rendered (rendered is its
+// checksum), moves is set too: the pool list and the template stay held while
+// several pods run. The ConfigMap a reconcile has just written is the
+// rendered one, which keeps an ordinary pool-list change from shrinking pods.
 func (r *DingoNodeReconciler) movesToAnotherAgent(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 	live *appsv1.StatefulSet,
 	desired agentLink,
 	linked bool,
+	rendered string,
 ) (moves, unsure bool, err error) {
 	if !linked {
 		return false, false, nil
@@ -437,18 +445,19 @@ func (r *DingoNodeReconciler) movesToAnotherAgent(
 	}
 	if err := r.Get(ctx, key, cm); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, true, nil
+			return true, true, nil
 		}
 		return false, false, fmt.Errorf("read pools configmap: %w", err)
 	}
 	config := cm.Data[resources.PoolsConfigKey]
+	unknown := checksum(config) != rendered
 	if checksum(config) != live.Spec.Template.
 		Annotations[resources.PoolsConfigChecksumAnnotation] {
-		return false, true, nil
+		return unknown, true, nil
 	}
 	link, ok := poolsAgentLink(config)
 	if !ok {
-		return false, true, nil
+		return unknown, true, nil
 	}
 	return link != desired, false, nil
 }
