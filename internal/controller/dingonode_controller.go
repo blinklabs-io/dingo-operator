@@ -322,7 +322,7 @@ func (r *DingoNodeReconciler) Reconcile(
 	//     signalling* — KeysValid=False, Degraded, a Warning Event, and no
 	//     published onDiskCounter — instead of the operator reporting a healthy
 	//     rotation it had not yet checked. Same distinction as "refusing declines
-	//     to initiate a roll, it does not fence one" in CLAUDE.md.
+	//     to initiate a roll, it does not fence one" in docs/design.md.
 	//
 	// The attempt gate inside keeps this to at most one dial per node per refresh
 	// interval, so moving it ahead of resource application does not put a dead
