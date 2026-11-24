@@ -15,6 +15,7 @@
 package coldsigner
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -23,6 +24,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -33,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -284,4 +287,45 @@ func TestBursaRequestProfile(t *testing.T) {
 			assert.Equal(t, tc.profile, f.got["profile"])
 		})
 	}
+}
+
+func TestBursaSendsStagedKeyAttestation(t *testing.T) {
+	t.Parallel()
+	f := newFakeBursa(t)
+	_, s := startBursa(t, f)
+	kes := bytes.Repeat([]byte{7}, 32)
+	att := &kesagent.StagedKeyAttestation{
+		Profile:     "pool-a",
+		KESVKey:     kes,
+		ColdKeyHash: bytes.Repeat([]byte{1}, 28),
+		SPKI:        []byte("spki-der"),
+		Signature:   []byte("sig"),
+	}
+
+	_, err := s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, att)
+	require.NoError(t, err)
+
+	// Bytes marshal as base64, the encoding of Bursa's wire type.
+	assert.Equal(t, map[string]any{
+		"profile":       "pool-a",
+		"kes_vkey":      base64.StdEncoding.EncodeToString(kes),
+		"cold_key_hash": base64.StdEncoding.EncodeToString(att.ColdKeyHash),
+		"spki":          base64.StdEncoding.EncodeToString(att.SPKI),
+		"signature":     base64.StdEncoding.EncodeToString(att.Signature),
+	}, f.got["attestation"], "the opcert request must carry the attestation")
+}
+
+func TestBursaOmitsAttestationWhenAbsent(t *testing.T) {
+	t.Parallel()
+	f := newFakeBursa(t)
+	_, s := startBursa(t, f)
+	kes := bytes.Repeat([]byte{7}, 32)
+
+	_, err := s.SignOpCertFromChain(context.Background(), kes, 4, 900)
+	require.NoError(t, err)
+	assert.NotContains(t, f.got, "attestation")
+
+	_, err = s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, f.got, "attestation")
 }

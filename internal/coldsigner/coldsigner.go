@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 )
 
@@ -64,6 +65,21 @@ type Issuer interface {
 		ctx context.Context,
 		kesVkey []byte,
 		chainCounter, kesPeriod uint64,
+	) (*OpCertResult, error)
+}
+
+// AttestedIssuer is an Issuer whose signer can check the agent's attestation
+// of the staged KES key it is asked to certify. SecretSigner is not one: it
+// holds the cold key and authorizes nothing.
+type AttestedIssuer interface {
+	Issuer
+	// SignOpCertWithAttestation is SignOpCertFromChain with att sent as the
+	// staged-key attestation. A nil att sends none.
+	SignOpCertWithAttestation(
+		ctx context.Context,
+		kesVkey []byte,
+		chainCounter, kesPeriod uint64,
+		att *kesagent.StagedKeyAttestation,
 	) (*OpCertResult, error)
 }
 
@@ -198,6 +214,9 @@ type bursaOpCertRequest struct {
 	ChainCounter uint64 `json:"chain_counter"`
 	KesPeriod    uint64 `json:"kes_period"`
 	Profile      string `json:"profile,omitempty"`
+	// Attestation is the agent's staged-key attestation; the signer treats
+	// a request without one as authorized by its per-key grants alone.
+	Attestation *kesagent.StagedKeyAttestation `json:"attestation,omitempty"`
 }
 
 type bursaOpCertResponse struct {
@@ -277,6 +296,19 @@ func (b *BursaSigner) SignOpCertFromChain(
 	kesVkey []byte,
 	chainCounter, kesPeriod uint64,
 ) (*OpCertResult, error) {
+	return b.SignOpCertWithAttestation(ctx, kesVkey, chainCounter, kesPeriod, nil)
+}
+
+// SignOpCertWithAttestation is SignOpCertFromChain carrying the agent's
+// attestation of kesVkey. The signer decides the request on a present
+// attestation alone, refusing one that does not verify, and without one on
+// its per-key grants.
+func (b *BursaSigner) SignOpCertWithAttestation(
+	ctx context.Context,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+	att *kesagent.StagedKeyAttestation,
+) (*OpCertResult, error) {
 	if err := checkOpCertInput(kesVkey, chainCounter); err != nil {
 		return nil, err
 	}
@@ -287,6 +319,7 @@ func (b *BursaSigner) SignOpCertFromChain(
 		ChainCounter: chainCounter,
 		KesPeriod:    kesPeriod,
 		Profile:      b.cfg.Profile,
+		Attestation:  att,
 	})
 	if err != nil {
 		return nil, err

@@ -212,6 +212,126 @@ func TestAutoRotateThroughAgentReusesBursaGrantedKey(t *testing.T) {
 	assert.Equal(t, uint64(4), issue)
 }
 
+func attestingFixture(t *testing.T) *agentRotateFixture {
+	t.Helper()
+	f := newAgentRotateFixture(t, func(p *fakeagent.Profile) { p.Attest = true })
+	f.dn.Spec.BlockProducer.Rotation.ColdSigner.Type =
+		dingov1alpha1.ColdSignerBursa
+	return f
+}
+
+func (f *agentRotateFixture) retryNow() {
+	f.r.issueMu.Lock()
+	defer f.r.issueMu.Unlock()
+	key := client.ObjectKeyFromObject(f.dn)
+	at := f.r.issueFailures[key]
+	at.at = at.at.Add(-issueRetryInterval)
+	f.r.issueFailures[key] = at
+}
+
+func (f *agentRotateFixture) generated() int {
+	var n int
+	for _, c := range f.agent.Commands() {
+		if c.Command == "gen-staged-key" {
+			n++
+		}
+	}
+	return n
+}
+
+// attests asserts att is the attestation the fake agent gave for vkey.
+func attests(t *testing.T, att *kesagent.StagedKeyAttestation, vkey []byte) {
+	t.Helper()
+	require.NotNil(t, att, "the signer was sent no attestation")
+	assert.Equal(t, "pool-a", att.Profile)
+	assert.Equal(t, vkey, att.KESVKey)
+	assert.Equal(t, fakeagent.AttestationSignature(vkey), att.Signature)
+}
+
+// The attestation the agent returns with a staged key reaches the Bursa
+// signer, which authorizes the key through it.
+func TestAutoRotateThroughAgentSendsAttestation(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	require.Len(t, f.issuer.atts, 1)
+	attests(t, f.issuer.atts[0], f.issuer.vkeys[0])
+}
+
+// Info does not report the attestation, so a retry that reuses the staged key
+// sends the one the operator kept from gen-staged-key.
+func TestAutoRotateThroughAgentReuseKeepsAttestation(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+	f.issuer.err = errors.New("attestation refused")
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+	f.issuer.err = nil
+	f.retryNow()
+	f.r.autoRotate(ctx, f.dn)
+
+	require.Len(t, f.issuer.atts, 2)
+	assert.Equal(t, f.issuer.vkeys[0], f.issuer.vkeys[1])
+	attests(t, f.issuer.atts[1], f.issuer.vkeys[1])
+	assert.Equal(t, 1, f.generated())
+}
+
+// A staged key whose attestation the operator no longer holds is not offered
+// bare: the agent stages a new key and attests that one.
+func TestAutoRotateThroughAgentRestagesWithoutKeptAttestation(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+	f.issuer.err = errors.New("signer unreachable")
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+	// An operator restart loses what it kept.
+	f.r.stagedMu.Lock()
+	f.r.stagedAttestations = nil
+	f.r.stagedMu.Unlock()
+	f.issuer.err = nil
+	f.retryNow()
+	f.r.autoRotate(ctx, f.dn)
+
+	require.Len(t, f.issuer.atts, 2)
+	assert.NotEqual(t, f.issuer.vkeys[0], f.issuer.vkeys[1])
+	attests(t, f.issuer.atts[1], f.issuer.vkeys[1])
+	assert.Equal(t, 2, f.generated())
+}
+
+// An agent with no attestation identity sends none, and its staged key is
+// still reused for an exact-key grant.
+func TestAutoRotateThroughAgentWithoutAttestation(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, nil)
+	f.dn.Spec.BlockProducer.Rotation.ColdSigner.Type =
+		dingov1alpha1.ColdSignerBursa
+	f.issuer.err = errors.New("KES verification key is not granted")
+	ctx := context.Background()
+
+	f.r.autoRotate(ctx, f.dn)
+	f.issuer.err = nil
+	f.retryNow()
+	f.r.autoRotate(ctx, f.dn)
+
+	assert.Equal(t, []*kesagent.StagedKeyAttestation{nil, nil}, f.issuer.atts)
+	assert.Equal(t, f.issuer.vkeys[0], f.issuer.vkeys[1])
+	assert.Equal(t, 1, f.generated())
+}
+
+// The attestation is for the Bursa signer alone.
+func TestAutoRotateThroughAgentSecretSignerSendsNoAttestation(t *testing.T) {
+	t.Parallel()
+	f := newAgentRotateFixture(t, func(p *fakeagent.Profile) { p.Attest = true })
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, []*kesagent.StagedKeyAttestation{nil}, f.issuer.atts)
+}
+
 // A rotation that fails at any step leaves the previous key serving and the
 // Secret as it was, and is not retried before issueRetryInterval.
 func TestAutoRotateThroughAgentFailureKeepsOldKey(t *testing.T) {

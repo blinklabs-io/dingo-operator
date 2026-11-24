@@ -139,6 +139,16 @@ type DingoNodeReconciler struct {
 	// time. In-memory for the same reasons as onChainAttempts.
 	issueFailures map[types.NamespacedName]issueFailure
 
+	// stagedMu guards stagedAttestations.
+	stagedMu sync.Mutex
+	// stagedAttestations holds, per node and agent profile, the staged KES key
+	// the operator last had the agent generate and the attestation that came
+	// with it (nil when the agent gave none). Info reports the staged key but
+	// not its attestation, so a retry that reuses the key needs this to offer
+	// the attestation again. In-memory like issueFailures: a key without an
+	// entry is staged anew.
+	stagedAttestations map[stagedKeyID]stagedAttestation
+
 	// kesMu guards kesObserved.
 	kesMu sync.Mutex
 	// kesObserved holds, per pool-list node, the pools whose KES state the

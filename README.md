@@ -137,6 +137,14 @@ operators.
   issuance, and removes the pending entry. For a signing agent, the operator
   reuses the agent's staged key. The pending key does not trigger a rollout.
 
+  When the agent returns a `staged_key_attestation` with the staged key, the
+  operator sends it to Bursa as `attestation` in the opcert request, so a
+  caller grant that trusts the agent through `opcerts[].kes_agents` needs no
+  `kes_vkeys` entry. Info does not report the attestation, so the operator
+  reuses a staged key only while it still holds the attestation it received
+  with that key (it is held in memory). After an operator restart the agent
+  stages a new key instead. An agent with no attestation identity sends none.
+
   ```yaml
   blockProducer:
     poolId: <pool id, bech32 or hex>

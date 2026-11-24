@@ -27,6 +27,7 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/test/fakeagent"
 	"github.com/blinklabs-io/gouroboros/ledger"
+	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -131,10 +132,32 @@ func (r *rig) opcert(t *testing.T, vkey []byte, issue uint64) []byte {
 	return b
 }
 
+func TestGenStagedKeyReturnsAttestation(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, func(p *fakeagent.Profile) { p.Attest = true })
+	vkey, att, err := GenStagedKey(t.Context(), r.cfg)
+	require.NoError(t, err)
+	require.NotNil(t, att, "the agent's staged_key_attestation is dropped")
+	hash := lcommon.Blake2b224Hash(r.cold.Public().(ed25519.PublicKey))
+	assert.Equal(t, "pool-a", att.Profile)
+	assert.Equal(t, vkey, att.KESVKey)
+	assert.Equal(t, hash[:], att.ColdKeyHash)
+	assert.Equal(t, fakeagent.AttestationSPKI, att.SPKI)
+	assert.Equal(t, fakeagent.AttestationSignature(vkey), att.Signature)
+}
+
+func TestGenStagedKeyWithoutAttestation(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, nil)
+	_, att, err := GenStagedKey(t.Context(), r.cfg)
+	require.NoError(t, err)
+	assert.Nil(t, att)
+}
+
 func TestGenerateThenInstall(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, nil)
-	vkey, err := GenStagedKey(t.Context(), r.cfg)
+	vkey, _, err := GenStagedKey(t.Context(), r.cfg)
 	require.NoError(t, err)
 	assert.Equal(t, vkey, r.agent.Staged("pool-a"))
 
@@ -159,7 +182,7 @@ func TestGenerateThenInstall(t *testing.T) {
 func TestActiveKeyReportsInstalledOpCert(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, nil)
-	vkey, err := GenStagedKey(t.Context(), r.cfg)
+	vkey, _, err := GenStagedKey(t.Context(), r.cfg)
 	require.NoError(t, err)
 	raw := r.opcert(t, vkey, 8)
 	require.NoError(t, InstallKey(t.Context(), r.cfg, raw, vkey, 8))
@@ -180,7 +203,7 @@ func TestRefusals(t *testing.T) {
 		t.Parallel()
 		r := newRig(t, nil)
 		r.cfg.Profile = "pool-b"
-		_, err := GenStagedKey(t.Context(), r.cfg)
+		_, _, err := GenStagedKey(t.Context(), r.cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), fakeagent.ErrRoleNotPermitted)
 		assert.Empty(t, r.agent.Commands())
@@ -189,7 +212,7 @@ func TestRefusals(t *testing.T) {
 		t.Parallel()
 		r := newRig(t, nil)
 		r.cfg.ClientCert, r.cfg.ClientKey, _ = fakeagent.ClientCert(t)
-		_, err := GenStagedKey(t.Context(), r.cfg)
+		_, _, err := GenStagedKey(t.Context(), r.cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), fakeagent.ErrRoleNotPermitted)
 	})
@@ -197,7 +220,7 @@ func TestRefusals(t *testing.T) {
 		t.Parallel()
 		r := newRig(t, nil)
 		r.cfg.ServerSPKISHA256 = hexOf(sha256.Sum256([]byte("other")))
-		_, err := GenStagedKey(t.Context(), r.cfg)
+		_, _, err := GenStagedKey(t.Context(), r.cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not match the pin")
 		assert.Empty(t, r.agent.Commands())
@@ -207,7 +230,7 @@ func TestRefusals(t *testing.T) {
 		r := newRig(t, func(p *fakeagent.Profile) {
 			p.InstallError = "kesagent: opcert expired"
 		})
-		vkey, err := GenStagedKey(t.Context(), r.cfg)
+		vkey, _, err := GenStagedKey(t.Context(), r.cfg)
 		require.NoError(t, err)
 		err = InstallKey(t.Context(), r.cfg, r.opcert(t, vkey, 8), vkey, 8)
 		require.Error(t, err)
@@ -216,7 +239,7 @@ func TestRefusals(t *testing.T) {
 	t.Run("install-key for another key", func(t *testing.T) {
 		t.Parallel()
 		r := newRig(t, nil)
-		vkey, err := GenStagedKey(t.Context(), r.cfg)
+		vkey, _, err := GenStagedKey(t.Context(), r.cfg)
 		require.NoError(t, err)
 		other := make([]byte, 32)
 		err = InstallKey(t.Context(), r.cfg, r.opcert(t, other, 8), other, 8)

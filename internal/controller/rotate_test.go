@@ -35,6 +35,7 @@ import (
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/blinklabs-io/dingo-operator/internal/coldsigner"
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	"github.com/blinklabs-io/dingo-operator/internal/onchain"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
 	"github.com/stretchr/testify/assert"
@@ -58,6 +59,8 @@ type countingIssuer struct {
 	err   error
 	calls int
 	vkeys [][]byte
+	// atts holds the attestation each request carried, nil for none.
+	atts []*kesagent.StagedKeyAttestation
 }
 
 func (c *countingIssuer) SignOpCertFromChain(
@@ -65,7 +68,19 @@ func (c *countingIssuer) SignOpCertFromChain(
 	kesVkey []byte,
 	chainCounter, kesPeriod uint64,
 ) (*coldsigner.OpCertResult, error) {
+	return c.SignOpCertWithAttestation(
+		ctx, kesVkey, chainCounter, kesPeriod, nil,
+	)
+}
+
+func (c *countingIssuer) SignOpCertWithAttestation(
+	ctx context.Context,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+	att *kesagent.StagedKeyAttestation,
+) (*coldsigner.OpCertResult, error) {
 	c.calls++
+	c.atts = append(c.atts, att)
 	c.vkeys = append(c.vkeys, append([]byte(nil), kesVkey...))
 	if c.err != nil {
 		return nil, c.err
