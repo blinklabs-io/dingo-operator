@@ -664,7 +664,7 @@ func TestAutoRotateThroughAgentAdoptsAfterChainAdvances(t *testing.T) {
 }
 
 // A healthy node whose Secret matches what it loaded is left alone: the agent
-// is not asked and no condition is set.
+// is asked only whether its profile holds a key, and no condition is set.
 func TestAutoRotateThroughAgentNotDueLeavesAgentAlone(t *testing.T) {
 	t.Parallel()
 	f := newAgentRotateFixture(t, nil)
@@ -677,7 +677,7 @@ func TestAutoRotateThroughAgentNotDueLeavesAgentAlone(t *testing.T) {
 
 	f.r.autoRotate(context.Background(), f.dn)
 
-	assert.Empty(t, f.agent.Commands())
+	assert.Equal(t, []string{"info"}, f.commandNames())
 	assert.Nil(t, f.issued(t))
 	assert.Equal(t, before.Data, f.secret(t).Data)
 	assert.Equal(t, 0, f.issuer.calls)
@@ -732,4 +732,175 @@ func TestServedOpCertSecretKeepsServedBytes(t *testing.T) {
 	payload, err := opcert.Payload(got.Data[keyFileOpCert])
 	require.NoError(t, err)
 	assert.Equal(t, served, payload)
+}
+
+// newKeylessFixture is an agent-signed Auto producer whose agent profile holds
+// no key and whose keys Secret holds an opcert with most of its KES window
+// left. RotationDue is False, as the node reports it.
+func newKeylessFixture(t *testing.T) *agentRotateFixture {
+	t.Helper()
+	return newKeylessFixtureFor(t, true)
+}
+
+// newKeylessFixtureFor is newKeylessFixture with the profile keyless or, when
+// keyless is false, serving its running key.
+func newKeylessFixtureFor(t *testing.T, keyless bool) *agentRotateFixture {
+	t.Helper()
+	f := newAgentRotateFixture(t, func(p *fakeagent.Profile) {
+		if keyless {
+			p.ActiveVKey, p.ActiveIssue = nil, 0
+		}
+	})
+	f.dn.Spec.BlockProducer.MaxKESEvolutions = 62
+	f.dn.Status.KES = dingov1alpha1.KESStatus{
+		CurrentPeriod:    105,
+		OpCertKESPeriod:  100,
+		ExpiryPeriod:     162,
+		RemainingPeriods: 57,
+	}
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse,
+		Reason: "KESWindowHealthy",
+	})
+	return f
+}
+
+func (f *agentRotateFixture) commandNames() []string {
+	var got []string
+	for _, c := range f.agent.Commands() {
+		got = append(got, c.Command)
+	}
+	return got
+}
+
+// An agent that lost its key serves no sign session, and the Secret's opcert
+// being valid does not change that: a new key is issued without RotationDue.
+func TestAutoRotateRekeysKeylessProfileBeforeDue(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	before := f.secret(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond, "a keyless profile was not re-keyed")
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Equal(t, 1, f.issuer.calls)
+	assert.Equal(t,
+		[]string{"info", "info", "gen-staged-key", "install-key"},
+		f.commandNames(),
+	)
+
+	key, issue := f.agent.Active("pool-a")
+	assert.NotEmpty(t, key)
+	assert.Equal(t, uint64(4), issue)
+	after := f.secret(t)
+	state, err := validateKeysSecret(after, f.dn)
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), state.Counter)
+	assert.Equal(t, int64(105), state.KESPeriod)
+	inSecret, _, err := opcert.Parse(after.Data[keyFileOpCert])
+	require.NoError(t, err)
+	assert.Equal(t, key, inSecret.KesVkey)
+	assert.NotEqual(t, before.Data[keyFileOpCert], after.Data[keyFileOpCert])
+	assert.NotContains(t, after.Data, keyFileKES)
+}
+
+// An agent that reports an active key is left alone: the only command is the
+// info that told it so.
+func TestAutoRotateKeepsKeyedProfileBeforeDue(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixtureFor(t, false)
+	before := f.secret(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, []string{"info"}, f.commandNames())
+	assert.Zero(t, f.issuer.calls)
+	assert.Nil(t, f.issued(t))
+	assert.Equal(t, before.Data, f.secret(t).Data)
+}
+
+// A failed info is not a keyless profile: nothing is issued or staged.
+func TestAutoRotateAgentInfoErrorDoesNotRekey(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	f.agent.SetInfoError("pool-a", "kesagent: info unavailable")
+	before := f.secret(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, []string{"info"}, f.commandNames())
+	assert.Zero(t, f.issuer.calls)
+	assert.Nil(t, f.issued(t))
+	assert.Equal(t, before.Data, f.secret(t).Data)
+}
+
+// The agent is asked at most once per keylessProbeInterval.
+func TestAutoRotateKeylessProbeIsThrottled(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixtureFor(t, false)
+
+	f.r.autoRotate(context.Background(), f.dn)
+	f.r.autoRotate(context.Background(), f.dn)
+	require.Equal(t, []string{"info"}, f.commandNames())
+
+	key := client.ObjectKeyFromObject(f.dn)
+	f.r.issueMu.Lock()
+	f.r.keylessProbes[key] = f.r.keylessProbes[key].Add(-keylessProbeInterval)
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(context.Background(), f.dn)
+	assert.Equal(t, []string{"info", "info"}, f.commandNames())
+}
+
+// A re-key that failed waits issueRetryInterval before the agent is asked or
+// the signer reached again.
+func TestAutoRotateRekeyBacksOffAfterFailure(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	f.issuer.err = errors.New("signer unreachable")
+
+	f.r.autoRotate(context.Background(), f.dn)
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Equal(t, "IssueFailed", cond.Reason)
+	conns, calls := f.agent.Connections(), f.issuer.calls
+
+	key := client.ObjectKeyFromObject(f.dn)
+	f.r.issueMu.Lock()
+	f.r.keylessProbes[key] = f.r.keylessProbes[key].Add(-keylessProbeInterval)
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, conns, f.agent.Connections())
+	assert.Equal(t, calls, f.issuer.calls)
+}
+
+// Without the on-chain counter nothing is issued, and the agent is not asked.
+func TestAutoRotateKeylessNeedsOnChainCounter(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	f.dn.Status.OpCert.OnChainCounterAt = nil
+	f.dn.Status.OpCert.OnChainCounter = -1
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Empty(t, f.agent.Commands())
+	assert.Zero(t, f.issuer.calls)
+}
+
+// A node without a signing agent is not probed.
+func TestAutoRotateWithoutAgentIgnoresKeyless(t *testing.T) {
+	t.Parallel()
+	f := newRotateFixture(t)
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionFalse,
+		Reason: "KESHealthy",
+	})
+	before := f.secret(t)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Zero(t, f.issuer.calls)
+	assert.Equal(t, before.Data, f.secret(t).Data)
 }

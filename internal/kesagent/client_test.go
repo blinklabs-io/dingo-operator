@@ -174,6 +174,33 @@ func TestActiveKeyReportsInstalledOpCert(t *testing.T) {
 	assert.Equal(t, "pool-a", cmds[len(cmds)-1].Profile)
 }
 
+// A profile without a key, as after an agent restart, answers control
+// sessions: KeyState reports no active key, and ActiveKey refuses it.
+func TestKeyStateKeylessProfile(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, func(p *fakeagent.Profile) {
+		p.ActiveVKey, p.ActiveIssue = nil, 0
+	})
+
+	state, err := KeyState(t.Context(), r.cfg)
+	require.NoError(t, err)
+	assert.Nil(t, state.Active)
+
+	_, err = ActiveKey(t.Context(), r.cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no active key")
+
+	vkey, err := GenStagedKey(t.Context(), r.cfg)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		InstallKey(t.Context(), r.cfg, r.opcert(t, vkey, 1), vkey, 1),
+	)
+	got, err := ActiveKey(t.Context(), r.cfg)
+	require.NoError(t, err)
+	assert.Equal(t, vkey, got.KESVKey)
+}
+
 func TestRefusals(t *testing.T) {
 	t.Parallel()
 	t.Run("profile outside the permitted set", func(t *testing.T) {
