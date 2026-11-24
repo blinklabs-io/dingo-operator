@@ -128,8 +128,10 @@ operators.
   `OpCertRejected`) and the pod keeps running on what it loaded. While the
   agent does not answer, a new bundle is held with reason `OpCertUnverified`.
 
-  Bursa requires each caller's operational-certificate grant to list the
-  exact KES verification keys it may certify. When that grant refuses a new
+  Bursa authorizes an operational certificate through the caller's grant,
+  which lists the exact KES verification keys it may certify
+  (`opcerts[].kes_vkeys`), trusts the agent that staged the key
+  (`opcerts[].kes_agents`, below), or both. When that grant refuses a new
   key, `status.conditions[OpCertIssued].message` includes the verification key
   in hex. Grant that key in the Bursa caller's `opcerts[].kes_vkeys`; the next
   retry offers the same key. For a local KES key, the operator retains it as
