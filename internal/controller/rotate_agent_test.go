@@ -806,6 +806,24 @@ func TestAutoRotateRekeysKeylessProfileBeforeDue(t *testing.T) {
 	assert.NotContains(t, after.Data, keyFileKES)
 }
 
+// A reconcile whose scrape carried no KES data leaves status.kes as an earlier
+// scrape had it and sets RotationDue Unknown. An opcert issued from that
+// retained period could start behind the node's actual one, so the agent is
+// not asked and nothing is issued.
+func TestAutoRotateKeylessProfileNeedsKESObservedThisReconcile(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	setRotationDueUnknown(
+		f.dn, "KESMetricsUnavailable", "KES metrics are not available",
+	)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Empty(t, f.commandNames())
+	assert.Nil(t, f.issued(t))
+	assert.Zero(t, f.issuer.calls)
+}
+
 // An agent that reports an active key is left alone: the only command is the
 // info that told it so.
 func TestAutoRotateKeepsKeyedProfileBeforeDue(t *testing.T) {

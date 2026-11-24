@@ -180,7 +180,11 @@ func (r *DingoNodeReconciler) autoRotate(
 		}
 	}
 	if !meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
-		if !r.agentKeyless(ctx, dn, t) {
+		// Only a scrape that carried KES data sets RotationDue False; any
+		// other reconcile leaves status.kes as an earlier one had it, and
+		// a new opcert starts at that period.
+		if !meta.IsStatusConditionFalse(dn.Status.Conditions, condRotationDue) ||
+			!r.agentKeyless(ctx, dn, t) {
 			return
 		}
 		t.rekey = true
