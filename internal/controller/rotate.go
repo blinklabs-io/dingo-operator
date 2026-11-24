@@ -268,9 +268,9 @@ func (r *DingoNodeReconciler) probeDue(key types.NamespacedName) bool {
 // writing only that pool's keys Secret. A pool that is not due is rotated only
 // when the agent holds no key for its profile (see agentKeyless), and only
 // while the node reports its KES state; otherwise its Secret is only read to
-// find a lost write. One pool's refusal does not hold back another. The outcome of every
-// attempted pool is reported in the OpCertIssued condition and as an Event
-// naming the pool.
+// find a lost write. One pool's refusal does not hold back another. The
+// outcome of every attempted pool is reported in the OpCertIssued condition
+// and as an Event naming the pool.
 func (r *DingoNodeReconciler) autoRotatePools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
