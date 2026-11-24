@@ -15,16 +15,19 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
+	"github.com/blinklabs-io/dingo-operator/internal/coldsigner"
 	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/dingo-operator/internal/test/devnet"
@@ -300,6 +303,81 @@ func TestAutoRotateThroughAgentRestagesWithoutKeptAttestation(t *testing.T) {
 	assert.NotEqual(t, f.issuer.vkeys[0], f.issuer.vkeys[1])
 	attests(t, f.issuer.atts[1], f.issuer.vkeys[1])
 	assert.Equal(t, 2, f.generated())
+}
+
+// bursaGrant applies the rule of Bursa's opcert endpoint: a request with an
+// attestation is decided by the pinned agents alone, one without by the
+// granted KES keys alone.
+func bursaGrant(
+	f *agentRotateFixture,
+	agentPinned, keyGranted bool,
+) func([]byte, *kesagent.StagedKeyAttestation) error {
+	return func(vkey []byte, att *kesagent.StagedKeyAttestation) error {
+		if att != nil {
+			if agentPinned &&
+				bytes.Equal(att.SPKI, fakeagent.AttestationSPKI) &&
+				bytes.Equal(att.Signature, fakeagent.AttestationSignature(vkey)) {
+				return nil
+			}
+			return fmt.Errorf(
+				"%w: attestation signer is not a trusted KES agent",
+				coldsigner.ErrAttestationRefused,
+			)
+		}
+		if keyGranted && bytes.Equal(vkey, f.agent.Staged("pool-a")) {
+			return nil
+		}
+		return errors.New("caller is not authorized for this opcert")
+	}
+}
+
+// Every attesting agent attests, so a signer whose grant lists only the KES
+// key refuses the attestation; the same key is then offered without it.
+func TestAutoRotateThroughAgentFallsBackToKESKeyGrant(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+	f.issuer.authorize = bursaGrant(f, false, true)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	require.Len(t, f.issuer.atts, 2)
+	attests(t, f.issuer.atts[0], f.issuer.vkeys[0])
+	assert.Nil(t, f.issuer.atts[1])
+	assert.Equal(t, f.issuer.vkeys[0], f.issuer.vkeys[1])
+	assert.Equal(t, 1, f.generated())
+}
+
+// A grant that pins the agent accepts the attestation at once.
+func TestAutoRotateThroughAgentAgentPinGrant(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+	f.issuer.authorize = bursaGrant(f, true, false)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Len(t, f.issuer.atts, 1)
+}
+
+// With neither the agent pinned nor the key granted the rotation is refused
+// and the message names the key to grant.
+func TestAutoRotateThroughAgentRefusalNamesKey(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+	f.issuer.authorize = bursaGrant(f, false, false)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.NotEqual(t, metav1.ConditionTrue, cond.Status)
+	require.Len(t, f.issuer.atts, 2)
+	assert.Contains(t, cond.Message, hex.EncodeToString(f.issuer.vkeys[0]))
 }
 
 // An agent with no attestation identity sends none, and its staged key is

@@ -138,12 +138,17 @@ operators.
   reuses the agent's staged key. The pending key does not trigger a rollout.
 
   When the agent returns a `staged_key_attestation` with the staged key, the
-  operator sends it to Bursa as `attestation` in the opcert request, so a
-  caller grant that trusts the agent through `opcerts[].kes_agents` needs no
-  `kes_vkeys` entry. Info does not report the attestation, so the operator
-  reuses a staged key only while it still holds the attestation it received
-  with that key (it is held in memory). After an operator restart the agent
-  stages a new key instead. An agent with no attestation identity sends none.
+  operator sends it to Bursa as `attestation` in the opcert request. Bursa
+  decides such a request on the attestation alone, so it is accepted when the
+  caller's grant trusts the agent through `opcerts[].kes_agents`. An agent
+  with an attestation identity attests every key. A grant that lists only
+  `kes_vkeys` therefore refuses the attested request, and the operator offers
+  the same key again in that attempt without the attestation, which that grant
+  accepts. If both are refused, the message names the key in hex to grant.
+  Info does not report the attestation, so the operator reuses a staged key
+  only while it still holds the attestation it received with that key (it is
+  held in memory). After an operator restart the agent stages a new key
+  instead.
 
   ```yaml
   blockProducer:

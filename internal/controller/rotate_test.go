@@ -61,6 +61,9 @@ type countingIssuer struct {
 	vkeys [][]byte
 	// atts holds the attestation each request carried, nil for none.
 	atts []*kesagent.StagedKeyAttestation
+	// authorize, when set, decides each request before it is signed, as a
+	// signer's grant does.
+	authorize func(kesVkey []byte, att *kesagent.StagedKeyAttestation) error
 }
 
 func (c *countingIssuer) SignOpCertFromChain(
@@ -82,6 +85,11 @@ func (c *countingIssuer) SignOpCertWithAttestation(
 	c.calls++
 	c.atts = append(c.atts, att)
 	c.vkeys = append(c.vkeys, append([]byte(nil), kesVkey...))
+	if c.authorize != nil {
+		if err := c.authorize(kesVkey, att); err != nil {
+			return nil, err
+		}
+	}
 	if c.err != nil {
 		return nil, c.err
 	}

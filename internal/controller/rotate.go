@@ -615,6 +615,15 @@ func issueOpCert(
 		res, err = ai.SignOpCertWithAttestation(
 			ctx, kesVkey, chainCounter, kesPeriod, att,
 		)
+		// The signer decides an attested request on the attestation alone,
+		// and an attesting agent attests every key, so a grant that lists
+		// only the KES key refuses it. The same key is offered once more
+		// without the attestation.
+		if errors.Is(err, coldsigner.ErrAttestationRefused) {
+			res, err = issuer.SignOpCertFromChain(
+				ctx, kesVkey, chainCounter, kesPeriod,
+			)
+		}
 	} else {
 		res, err = issuer.SignOpCertFromChain(
 			ctx, kesVkey, chainCounter, kesPeriod,

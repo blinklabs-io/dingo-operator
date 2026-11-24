@@ -197,6 +197,27 @@ const (
 // because it is below one already reported for the cold key.
 var ErrCounterConflict = errors.New("opcert counter conflict")
 
+// ErrAttestationRefused is returned when the signer refused a request that
+// carried a staged-key attestation. The signer decides such a request on the
+// attestation alone, so the same key may still be granted without one.
+var ErrAttestationRefused = errors.New("opcert attestation refused")
+
+// attestationRefusedPrefix starts the signer's error text for a refused
+// attestation; a key that is not granted has different text.
+const attestationRefusedPrefix = "opcert attestation refused:"
+
+// signerMessage returns the error text of a signer response body, which is
+// {"error": text} or plain text.
+func signerMessage(body []byte) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Error != "" {
+		return e.Error
+	}
+	return string(bytes.TrimSpace(body))
+}
+
 // OpCertResult is an operational certificate issued by the signer.
 type OpCertResult struct {
 	// IssueCounter is the issue number the signer chose (chain counter + 1).
@@ -347,6 +368,14 @@ func (b *BursaSigner) SignOpCertWithAttestation(
 	case res.StatusCode == http.StatusConflict:
 		return nil, fmt.Errorf(
 			"%w: %s", ErrCounterConflict, errorText(body),
+		)
+	case res.StatusCode == http.StatusForbidden &&
+		strings.HasPrefix(signerMessage(body), attestationRefusedPrefix):
+		return nil, fmt.Errorf(
+			"%w: %s", ErrAttestationRefused,
+			strings.TrimPrefix(
+				signerMessage(body), attestationRefusedPrefix,
+			),
 		)
 	case res.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf(

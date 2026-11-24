@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -328,4 +329,49 @@ func TestBursaOmitsAttestationWhenAbsent(t *testing.T) {
 	_, err = s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, f.got, "attestation")
+}
+
+func TestBursaClassifiesAttestationRefusal(t *testing.T) {
+	t.Parallel()
+	kes := bytes.Repeat([]byte{7}, 32)
+	att := &kesagent.StagedKeyAttestation{Profile: "pool-a", KESVKey: kes}
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		want   bool
+	}{
+		"attestation refused": {
+			http.StatusForbidden,
+			`{"error":"opcert attestation refused: attestation signer is not a trusted KES agent for this cold key"}`,
+			true,
+		},
+		"key not granted": {
+			http.StatusForbidden,
+			`{"error":"caller is not authorized for this opcert"}`, false,
+		},
+		"other status": {
+			http.StatusBadRequest,
+			`{"error":"opcert attestation refused: x"}`, false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewTLSServer(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				}))
+			t.Cleanup(srv.Close)
+			s, err := NewBursaSigner(BursaConfig{
+				Endpoint: srv.URL, ColdKeyHash: "00", CACert: caPEM(srv),
+			})
+			require.NoError(t, err)
+			_, err = s.SignOpCertWithAttestation(
+				context.Background(), kes, 4, 900, att,
+			)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, errors.Is(err, ErrAttestationRefused))
+		})
+	}
 }
