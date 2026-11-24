@@ -373,7 +373,7 @@ func (b *BursaSigner) SignOpCertWithAttestation(
 		strings.HasPrefix(signerMessage(body), attestationRefusedPrefix):
 		return nil, fmt.Errorf(
 			"%w: %s", ErrAttestationRefused,
-			strings.TrimSpace(strings.TrimPrefix(
+			boundText(strings.TrimPrefix(
 				signerMessage(body), attestationRefusedPrefix,
 			)),
 		)
@@ -391,11 +391,16 @@ func (b *BursaSigner) SignOpCertWithAttestation(
 
 // errorText returns the start of a signer error body for an error message.
 func errorText(body []byte) string {
-	body = bytes.TrimSpace(body)
-	if len(body) <= bursaMaxErrorText {
-		return string(body)
+	return boundText(string(body))
+}
+
+// boundText trims s and cuts it to bursaMaxErrorText bytes.
+func boundText(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= bursaMaxErrorText {
+		return s
 	}
-	return strings.ToValidUTF8(string(body[:bursaMaxErrorText]), "") + "..."
+	return strings.ToValidUTF8(s[:bursaMaxErrorText], "") + "..."
 }
 
 func (b *BursaSigner) verify(

@@ -375,3 +375,31 @@ func TestBursaClassifiesAttestationRefusal(t *testing.T) {
 		})
 	}
 }
+
+// The refusal text ends up in a status condition, so it is bounded like every
+// other signer error; the sentinel still matches.
+func TestBursaBoundsAttestationRefusalText(t *testing.T) {
+	t.Parallel()
+	kes := bytes.Repeat([]byte{7}, 32)
+	att := &kesagent.StagedKeyAttestation{Profile: "pool-a", KESVKey: kes}
+	long, err := json.Marshal(map[string]string{
+		"error": "opcert attestation refused: " + strings.Repeat("x", 40000),
+	})
+	require.NoError(t, err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(long)
+		}))
+	t.Cleanup(srv.Close)
+	s, err := NewBursaSigner(BursaConfig{
+		Endpoint: srv.URL, ColdKeyHash: "00", CACert: caPEM(srv),
+	})
+	require.NoError(t, err)
+
+	_, err = s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, att)
+	require.ErrorIs(t, err, ErrAttestationRefused)
+	assert.LessOrEqual(t, len(err.Error()),
+		len(ErrAttestationRefused.Error())+len(": ...")+bursaMaxErrorText)
+}
