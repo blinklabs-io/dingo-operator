@@ -607,28 +607,7 @@ func issueOpCert(
 	chainCounter, kesPeriod uint64,
 	att *kesagent.StagedKeyAttestation,
 ) (*ledger.OpCert, []byte, error) {
-	var (
-		res *coldsigner.OpCertResult
-		err error
-	)
-	if ai, ok := issuer.(coldsigner.AttestedIssuer); ok && att != nil {
-		res, err = ai.SignOpCertWithAttestation(
-			ctx, kesVkey, chainCounter, kesPeriod, att,
-		)
-		// The signer decides an attested request on the attestation alone,
-		// and an attesting agent attests every key, so a grant that lists
-		// only the KES key refuses it. The same key is offered once more
-		// without the attestation.
-		if errors.Is(err, coldsigner.ErrAttestationRefused) {
-			res, err = issuer.SignOpCertFromChain(
-				ctx, kesVkey, chainCounter, kesPeriod,
-			)
-		}
-	} else {
-		res, err = issuer.SignOpCertFromChain(
-			ctx, kesVkey, chainCounter, kesPeriod,
-		)
-	}
+	res, err := signOpCert(ctx, issuer, kesVkey, chainCounter, kesPeriod, att)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
 			"sign opcert for KES verification key %x: %w", kesVkey, err,
@@ -644,6 +623,37 @@ func issueOpCert(
 		return nil, nil, fmt.Errorf("verify issued opcert: %w", err)
 	}
 	return oc, res.ColdVkey, nil
+}
+
+// signOpCert has issuer sign kesVkey, with att when the issuer's signer takes
+// one. The signer decides an attested request on the attestation alone, and
+// an attesting agent attests every key, so a grant that lists only the KES
+// key refuses it: the same key is then offered once more without the
+// attestation. If that is refused too, both reasons are kept, since a
+// misconfigured agent pin would otherwise read as a KES key that is not
+// granted.
+func signOpCert(
+	ctx context.Context,
+	issuer coldsigner.Issuer,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+	att *kesagent.StagedKeyAttestation,
+) (*coldsigner.OpCertResult, error) {
+	ai, ok := issuer.(coldsigner.AttestedIssuer)
+	if !ok || att == nil {
+		return issuer.SignOpCertFromChain(ctx, kesVkey, chainCounter, kesPeriod)
+	}
+	res, attErr := ai.SignOpCertWithAttestation(
+		ctx, kesVkey, chainCounter, kesPeriod, att,
+	)
+	if !errors.Is(attErr, coldsigner.ErrAttestationRefused) {
+		return res, attErr
+	}
+	res, err := issuer.SignOpCertFromChain(ctx, kesVkey, chainCounter, kesPeriod)
+	if err != nil {
+		return nil, fmt.Errorf("%w; without it: %w", attErr, err)
+	}
+	return res, nil
 }
 
 // generateKESKey returns a new KES signing-key envelope and its verification

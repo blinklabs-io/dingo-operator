@@ -380,6 +380,22 @@ func TestAutoRotateThroughAgentRefusalNamesKey(t *testing.T) {
 	assert.Contains(t, cond.Message, hex.EncodeToString(f.issuer.vkeys[0]))
 }
 
+// When both requests are refused, the message keeps why the attestation was
+// refused: a misconfigured agent pin is otherwise reported only as a KES key
+// that is not granted.
+func TestAutoRotateThroughAgentRefusalKeepsAttestationReason(t *testing.T) {
+	t.Parallel()
+	f := attestingFixture(t)
+	f.issuer.authorize = bursaGrant(f, false, false)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "not a trusted KES agent")
+	assert.Contains(t, cond.Message, "not authorized for this opcert")
+}
+
 // An agent with no attestation identity sends none, and its staged key is
 // still reused for an exact-key grant.
 func TestAutoRotateThroughAgentWithoutAttestation(t *testing.T) {

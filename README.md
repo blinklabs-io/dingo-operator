@@ -144,7 +144,8 @@ operators.
   with an attestation identity attests every key. A grant that lists only
   `kes_vkeys` therefore refuses the attested request, and the operator offers
   the same key again in that attempt without the attestation, which that grant
-  accepts. If both are refused, the message names the key in hex to grant.
+  accepts. If both are refused, the message names the key in hex to grant
+  and keeps the reason the attestation was refused.
   Info does not report the attestation, so the operator reuses a staged key
   only while it still holds the attestation it received with that key (it is
   held in memory). After an operator restart the agent stages a new key

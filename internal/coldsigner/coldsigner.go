@@ -373,9 +373,9 @@ func (b *BursaSigner) SignOpCertWithAttestation(
 		strings.HasPrefix(signerMessage(body), attestationRefusedPrefix):
 		return nil, fmt.Errorf(
 			"%w: %s", ErrAttestationRefused,
-			strings.TrimPrefix(
+			strings.TrimSpace(strings.TrimPrefix(
 				signerMessage(body), attestationRefusedPrefix,
-			),
+			)),
 		)
 	case res.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf(
