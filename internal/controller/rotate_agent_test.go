@@ -663,9 +663,9 @@ func TestAutoRotateThroughAgentAdoptsAfterChainAdvances(t *testing.T) {
 	assertAdoptedServed(t, f, cmdsBefore)
 }
 
-// A healthy node whose Secret matches what it loaded is left alone: the agent
+// A healthy node whose Secret matches what it loaded is not rotated: the agent
 // is asked only whether its profile holds a key, and no condition is set.
-func TestAutoRotateThroughAgentNotDueLeavesAgentAlone(t *testing.T) {
+func TestAutoRotateThroughAgentNotDueOnlyAsksForKeyState(t *testing.T) {
 	t.Parallel()
 	f := newAgentRotateFixture(t, nil)
 	f.dn.Status.OpCert.LoadedCounter = new(int64(3))
@@ -903,4 +903,60 @@ func TestAutoRotateWithoutAgentIgnoresKeyless(t *testing.T) {
 
 	assert.Zero(t, f.issuer.calls)
 	assert.Equal(t, before.Data, f.secret(t).Data)
+}
+
+// The staged bundle is valid and not yet due, but the agent restarted after
+// install-key and before the node reloaded: RotationDue is still True and the
+// early return that leaves a staged rotation to finish must not hide the lost
+// key.
+func TestAutoRotateRekeysKeylessProfileWithFreshStagedBundleWhileDue(
+	t *testing.T,
+) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionTrue,
+		Reason: "KESExpiringSoon",
+	})
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	cond := f.issued(t)
+	require.NotNil(t, cond, "a keyless profile was not re-keyed")
+	require.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	key, issue := f.agent.Active("pool-a")
+	assert.NotEmpty(t, key)
+	assert.Equal(t, uint64(4), issue)
+}
+
+// A staged bundle that a keyed agent serves is still left to finish.
+func TestAutoRotateKeepsKeyedProfileWithFreshStagedBundleWhileDue(
+	t *testing.T,
+) {
+	t.Parallel()
+	f := newKeylessFixtureFor(t, false)
+	meta.SetStatusCondition(&f.dn.Status.Conditions, metav1.Condition{
+		Type: condRotationDue, Status: metav1.ConditionTrue,
+		Reason: "KESExpiringSoon",
+	})
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, []string{"info"}, f.commandNames())
+	assert.Zero(t, f.issuer.calls)
+	assert.Nil(t, f.issued(t))
+}
+
+// The period an opcert starts at is the node's reported one; the agent's info
+// carries none, so without it nothing is issued and the agent is not asked.
+func TestAutoRotateKeylessNeedsKESStatus(t *testing.T) {
+	t.Parallel()
+	f := newKeylessFixture(t)
+	f.dn.Status.KES = dingov1alpha1.KESStatus{}
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Empty(t, f.agent.Commands())
+	assert.Zero(t, f.issuer.calls)
+	assert.Nil(t, f.issued(t))
 }

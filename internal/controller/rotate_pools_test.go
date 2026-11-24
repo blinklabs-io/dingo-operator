@@ -211,13 +211,14 @@ func TestAutoRotatePoolsIssuesOnlyDuePool(t *testing.T) {
 
 	f.r.autoRotate(context.Background(), f.dn)
 
-	// One rotation on pool a's profile, and nothing at all on pool b's.
+	// One rotation on pool a's profile, and only the key-state question on
+	// pool b's.
 	assert.Equal(t,
 		[]string{"info", "gen-staged-key", "install-key"},
 		f.commandsFor(a.profile),
 	)
-	assert.Empty(t, f.commandsFor(b.profile))
-	assert.Len(t, f.agent.Commands(), 3)
+	assert.Equal(t, []string{"info"}, f.commandsFor(b.profile))
+	assert.Len(t, f.agent.Commands(), 4)
 	assert.Equal(t, 1, f.issuers[0].calls)
 	assert.Zero(t, f.issuers[1].calls)
 
@@ -254,11 +255,12 @@ func TestAutoRotatePoolsIssuesOnce(t *testing.T) {
 	f.r.autoRotate(context.Background(), f.dn)
 
 	assert.Equal(t, 1, f.issuers[0].calls)
-	assert.Len(t, f.agent.Commands(), 3)
+	// Pool a's rotation and the one question to pool b.
+	assert.Len(t, f.agent.Commands(), 4)
 	assert.Equal(t, staged.Data, f.secret(t, f.pools[0]).Data)
 }
 
-func TestAutoRotatePoolsNoneDueLeavesAgentAlone(t *testing.T) {
+func TestAutoRotatePoolsNoneDueOnlyAsksForKeyState(t *testing.T) {
 	t.Parallel()
 	f := newPoolRotateFixture(t)
 	for _, p := range f.pools {
@@ -267,8 +269,10 @@ func TestAutoRotatePoolsNoneDueLeavesAgentAlone(t *testing.T) {
 
 	f.r.autoRotate(context.Background(), f.dn)
 
-	assert.Zero(t, f.agent.Connections())
-	assert.Empty(t, f.agent.Commands())
+	for _, p := range f.pools {
+		assert.Equal(t, []string{"info"}, f.commandsFor(p.profile))
+	}
+	assert.Len(t, f.agent.Commands(), len(f.pools))
 	assert.Nil(t, meta.FindStatusCondition(
 		f.dn.Status.Conditions, condOpCertIssued,
 	))
@@ -393,7 +397,8 @@ func TestAutoRotatePoolsAdoptsWhenNoLongerDue(t *testing.T) {
 	cmds := f.agent.Commands()[cmdsBefore:]
 	require.NotEmpty(t, cmds)
 	for _, c := range cmds {
-		assert.Equal(t, a.profile, c.Profile)
+		// Pool b is asked only whether its profile holds a key.
+		assert.Contains(t, []string{a.profile, b.profile}, c.Profile)
 		assert.Equal(t, "info", c.Command)
 	}
 	inSecret, _, err := opcert.Parse(f.secret(t, a).Data[keyFileOpCert])
@@ -933,4 +938,132 @@ func TestReconcilePoolKeysClearsRecordedInstall(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, keep)
 	assert.NotContains(t, observed.KeysPool, a.id)
+}
+
+// notDuePools gives both pools an opcert with most of its window left, as
+// the node reports it, so only the agent can show a pool needs a key.
+func (f *poolRotateFixture) notDuePools(t *testing.T) {
+	t.Helper()
+	f.dn.Spec.BlockProducer.MaxKESEvolutions = 62
+	for _, p := range f.pools {
+		data, err := p.keys.SecretData(3, 100)
+		require.NoError(t, err)
+		delete(data, keyFileKES)
+		s := f.secret(t, p)
+		s.Data = data
+		require.NoError(t, f.c.Update(context.Background(), s))
+		poolStatus(f.dn, p.id).KES = dingov1alpha1.KESStatus{
+			CurrentPeriod:    105,
+			OpCertKESPeriod:  100,
+			ExpiryPeriod:     162,
+			RemainingPeriods: 57,
+		}
+	}
+}
+
+func (f *poolRotateFixture) probeKey(p testPool) types.NamespacedName {
+	return types.NamespacedName{
+		Name: f.dn.Name + "/" + p.id, Namespace: f.dn.Namespace,
+	}
+}
+
+// A pool whose agent profile lost its key is re-keyed before it is due, and a
+// keyed sibling is only asked.
+func TestAutoRotatePoolsRekeysKeylessPool(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	f.notDuePools(t)
+	a, b := f.pools[0], f.pools[1]
+	f.agent.DropKey(a.profile)
+	beforeB := f.secret(t, b)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t,
+		[]string{"info", "info", "gen-staged-key", "install-key"},
+		f.commandsFor(a.profile),
+	)
+	assert.Equal(t, []string{"info"}, f.commandsFor(b.profile))
+	assert.Equal(t, 1, f.issuers[0].calls)
+	assert.Zero(t, f.issuers[1].calls)
+	key, issue := f.agent.Active(a.profile)
+	assert.NotEmpty(t, key)
+	assert.Equal(t, uint64(4), issue)
+	staged, _, err := opcert.Parse(f.secret(t, a).Data[keyFileOpCert])
+	require.NoError(t, err)
+	assert.Equal(t, key, staged.KesVkey)
+	assert.Equal(t, beforeB.Data, f.secret(t, b).Data)
+	cond := meta.FindStatusCondition(f.dn.Status.Conditions, condOpCertIssued)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status, cond.Message)
+	assert.Contains(t, cond.Message, a.id)
+	assert.NotContains(t, cond.Message, b.id)
+}
+
+// Each pool is asked at most once per keylessProbeInterval, on its own clock.
+func TestAutoRotatePoolsKeylessProbeIsThrottledPerPool(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	f.notDuePools(t)
+	a, b := f.pools[0], f.pools[1]
+
+	f.r.autoRotate(context.Background(), f.dn)
+	f.r.autoRotate(context.Background(), f.dn)
+	require.Equal(t, []string{"info"}, f.commandsFor(a.profile))
+	require.Equal(t, []string{"info"}, f.commandsFor(b.profile))
+
+	k := f.probeKey(a)
+	f.r.issueMu.Lock()
+	f.r.keylessProbes[k] = f.r.keylessProbes[k].Add(-keylessProbeInterval)
+	f.r.issueMu.Unlock()
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Equal(t, []string{"info", "info"}, f.commandsFor(a.profile))
+	assert.Equal(t, []string{"info"}, f.commandsFor(b.profile))
+}
+
+// A pool whose KES state the node did not report in this reconcile keeps
+// whatever status it last had, which is not a period to issue from.
+func TestAutoRotatePoolsKeylessNeedsObservedKES(t *testing.T) {
+	t.Parallel()
+	f := newPoolRotateFixture(t)
+	f.notDuePools(t)
+	a, b := f.pools[0], f.pools[1]
+	f.agent.DropKey(a.profile)
+	f.r.setKESObserved(
+		client.ObjectKeyFromObject(f.dn), map[string]bool{b.id: true},
+	)
+
+	f.r.autoRotate(context.Background(), f.dn)
+
+	assert.Empty(t, f.commandsFor(a.profile))
+	assert.Zero(t, f.issuers[0].calls)
+	assert.Equal(t, []string{"info"}, f.commandsFor(b.profile))
+}
+
+func TestForgetNodeIssueFailuresClearsPoolProbes(t *testing.T) {
+	t.Parallel()
+	r := &DingoNodeReconciler{}
+	node := types.NamespacedName{Name: "bp", Namespace: "ns"}
+	keys := []types.NamespacedName{
+		node,
+		{Name: "bp/pool-a", Namespace: "ns"},
+		{Name: "bp/pool-b", Namespace: "ns"},
+		{Name: "bp-2", Namespace: "ns"},
+		{Name: "bp-2/pool-a", Namespace: "ns"},
+		{Name: "bp", Namespace: "other"},
+		{Name: "bp/pool-a", Namespace: "other"},
+	}
+	for _, k := range keys {
+		require.True(t, r.probeDue(k), k.String())
+	}
+
+	r.forgetNodeIssueFailures(node)
+
+	for _, k := range keys[:3] {
+		assert.True(t, r.probeDue(k), "kept %s", k)
+	}
+	for _, k := range keys[3:] {
+		assert.False(t, r.probeDue(k), "cleared %s", k)
+	}
 }

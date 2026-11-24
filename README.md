@@ -114,9 +114,12 @@ operators.
   asks the agent's `info` about once a minute while the node is not due, and
   when the profile holds no key it issues one as above without waiting for the
   rotation to be due, once the on-chain counter is known and no failed attempt
-  is backing off. An `info` that fails is not taken as a missing key. This
-  applies to a single-pool node; a pool list asks the agent only about a pool
-  that is due. A step that fails before
+  is backing off. An `info` that fails is not taken as a missing key. A pool
+  list does the same per pool, with the pool's `agentProfile`, for each pool
+  whose KES state the node reported in that reconcile; the node loads its
+  credentials from the opcert, so a running pod reports a pool whether or not
+  the agent holds its key. The same check runs when rotation is due and the
+  staged opcert is still fresh. A step that fails before
   `install-key` leaves the previous key serving and the Secret unchanged, and
   retries after ten minutes as Auto does without an agent, reported in the
   `OpCertIssued` condition. A failure after `install-key`, such as a lost

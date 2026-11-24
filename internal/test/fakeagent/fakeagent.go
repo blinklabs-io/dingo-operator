@@ -184,6 +184,15 @@ func (a *Agent) SetInfoError(name, msg string) {
 	a.profile(name).InfoError = msg
 }
 
+// DropKey makes a profile keyless, as an agent restart without a shared key
+// store does.
+func (a *Agent) DropKey(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p := a.profile(name)
+	p.ActiveVKey, p.ActiveIssue, p.ActiveOpCert = nil, 0, nil
+}
+
 // SetActiveOpCert makes a profile serve opCert, as an install-key run outside
 // the operator would. Its issue number becomes the active one.
 func (a *Agent) SetActiveOpCert(name string, issue uint64, opCert []byte) {
