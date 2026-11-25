@@ -1516,3 +1516,49 @@ func TestBuildStatefulSetSetsExplicitZeroPartition(t *testing.T) {
 	require.NotNil(t, sts.Spec.UpdateStrategy.RollingUpdate.Partition)
 	assert.Equal(t, int32(0), *sts.Spec.UpdateStrategy.RollingUpdate.Partition)
 }
+
+func TestStartupProbeBudget(t *testing.T) {
+	t.Parallel()
+
+	for name, set := range map[string]func(*dingov1alpha1.DingoNode){
+		"health listener": func(dn *dingov1alpha1.DingoNode) {
+			dn.Spec.Image.Tag = "0.70.13"
+		},
+		"tcp fallback": func(dn *dingov1alpha1.DingoNode) {
+			dn.Spec.Image.Tag = "0.70.12"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			budget := func(dn *dingov1alpha1.DingoNode) int32 {
+				p := startupProbe(dn)
+				return p.FailureThreshold * p.PeriodSeconds
+			}
+
+			dn := relayNode()
+			set(dn)
+			assert.EqualValues(t, 300, budget(dn),
+				"an unset budget keeps the 30x10s default")
+
+			for secs, want := range map[int64]int32{
+				1800: 1800,
+				305:  310,
+				5:    10,
+			} {
+				dn := relayNode()
+				set(dn)
+				dn.Spec.StartupTimeoutSeconds = new(secs)
+				assert.EqualValues(t, want, budget(dn), "secs=%d", secs)
+			}
+
+			dn = relayNode()
+			set(dn)
+			dn.Spec.StartupTimeoutSeconds = new(int64(1800))
+			sts := BuildStatefulSet(dn, RenderOptions{Replicas: 1})
+			got := sts.Spec.Template.Spec.Containers[0].StartupProbe
+			require.NotNil(t, got)
+			assert.EqualValues(t, 180, got.FailureThreshold)
+		})
+	}
+}

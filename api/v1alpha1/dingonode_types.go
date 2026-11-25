@@ -835,6 +835,19 @@ type DingoNodeSpec struct {
 	// +kubebuilder:validation:Minimum=15
 	// +optional
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+	// StartupTimeoutSeconds is how long kubelet waits for the node to pass its
+	// startup probe before it restarts the container. Liveness and readiness
+	// probing do not begin until the startup probe passes.
+	//
+	// Dingo migrates its metadata schema when it opens a database written by
+	// an earlier release and does not answer its health endpoint until that
+	// finishes. The duration grows with the size of the metadata database, and
+	// a migration that outlasts this budget is restarted into the same
+	// migration. Raise it for a large database. The value is rounded up to a
+	// multiple of the 10s probe period. When unset the budget is 300s.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	StartupTimeoutSeconds *int64 `json:"startupTimeoutSeconds,omitempty"`
 	// DrainDelaySeconds is how long the Dingo container sleeps in a preStop hook
 	// before it receives SIGTERM. Kubernetes starts removing a terminating pod
 	// from Service endpoints at the same moment it begins termination, and

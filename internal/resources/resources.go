@@ -21,6 +21,7 @@ package resources
 import (
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -931,11 +932,31 @@ func containerPorts(dn *dingov1alpha1.DingoNode) []corev1.ContainerPort {
 	return ports
 }
 
-func startupProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
-	if supportsHealthProbes(dn) {
-		return httpProbe(portHealth, "/healthz", 30, 10)
+const (
+	startupProbePeriodSeconds      int32 = 10
+	defaultStartupFailureThreshold int32 = 30
+)
+
+// startupFailureThreshold converts spec.startupTimeoutSeconds into a failure
+// count, rounding up so the budget is never shorter than requested.
+func startupFailureThreshold(dn *dingov1alpha1.DingoNode) int32 {
+	v := dn.Spec.StartupTimeoutSeconds
+	if v == nil || *v <= 0 {
+		return defaultStartupFailureThreshold
 	}
-	return tcpProbe(portMetrics, 30, 10)
+	periods := (*v + int64(startupProbePeriodSeconds) - 1) /
+		int64(startupProbePeriodSeconds)
+	return int32(min(periods, math.MaxInt32)) //nolint:gosec // bounded above
+}
+
+func startupProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
+	threshold := startupFailureThreshold(dn)
+	if supportsHealthProbes(dn) {
+		return httpProbe(
+			portHealth, "/healthz", threshold, startupProbePeriodSeconds,
+		)
+	}
+	return tcpProbe(portMetrics, threshold, startupProbePeriodSeconds)
 }
 
 func livenessProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
