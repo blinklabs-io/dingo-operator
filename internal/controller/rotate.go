@@ -51,6 +51,12 @@ const condOpCertIssued = "OpCertIssued"
 // cost nothing.
 const issueRetryInterval = 10 * time.Minute
 
+// keylessProbeInterval is the least time between two questions to the signing
+// agent about whether its profile holds a key. A producer without a key cannot
+// forge, so this is much shorter than issueRetryInterval; one short session a
+// minute is cheap.
+const keylessProbeInterval = time.Minute
+
 type issueFailure struct {
 	at              time.Time
 	reason, message string
@@ -111,6 +117,9 @@ type rotationTarget struct {
 	// signerFor is the node the cold signer is built for. A pool list sets
 	// the cold key hash to the pool's own.
 	signerFor *dingov1alpha1.DingoNode
+	// rekey is set when the signing agent holds no key for the profile: a
+	// valid opcert in the keys Secret then does not make the rotation wait.
+	rekey bool
 	// recordInstall, when set, durably records the counter of the opcert
 	// the agent is about to serve, before the agent is changed.
 	recordInstall func(counter int64) error
@@ -128,6 +137,9 @@ type rotationTarget struct {
 // RotationDue comes from the running pod, which keeps reporting its old opcert
 // until it rolls and is scraped again. The bundle staged in the Secret is
 // therefore checked first, and a rotation already staged is left to finish.
+//
+// A node signing through an agent is also rotated when it is not due but the
+// agent holds no key for its profile (see agentKeyless).
 func (r *DingoNodeReconciler) autoRotate(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -168,7 +180,14 @@ func (r *DingoNodeReconciler) autoRotate(
 		}
 	}
 	if !meta.IsStatusConditionTrue(dn.Status.Conditions, condRotationDue) {
-		return
+		// Only a scrape that carried KES data sets RotationDue False; any
+		// other reconcile leaves status.kes as an earlier one had it, and
+		// a new opcert starts at that period.
+		if !meta.IsStatusConditionFalse(dn.Status.Conditions, condRotationDue) ||
+			!r.agentKeyless(ctx, dn, t) {
+			return
+		}
+		t.rekey = true
 	}
 	o := r.rotateKey(ctx, dn, t)
 	if o == nil {
@@ -178,14 +197,84 @@ func (r *DingoNodeReconciler) autoRotate(
 	setIssueCondition(dn, outcomeStatus(o), o.reason, o.message)
 }
 
+// agentKeyless reports whether the signing agent holds no key for t's profile.
+// An agent that keeps keys in memory only loses them on restart, and Bursa
+// refuses sign sessions on a keyless profile, so the producer cannot forge
+// until a key is issued; the node's KES state does not show it. The agent is
+// asked at most once per keylessProbeInterval, and not while a failed attempt
+// is backing off, or when the node's KES period or the on-chain counter is
+// unknown, since a new opcert starts at the former and follows the latter and
+// the agent's info carries neither. A failed info is not a keyless profile.
+func (r *DingoNodeReconciler) agentKeyless(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+	t rotationTarget,
+) bool {
+	if dn.Spec.BlockProducer.SigningAgent == nil || !t.chainKnown ||
+		t.kes.CurrentPeriod <= 0 || t.kes.ExpiryPeriod <= t.kes.OpCertKESPeriod {
+		return false
+	}
+	if last, ok := r.lastIssueFailure(t.failKey); ok &&
+		time.Since(last.at) < issueRetryInterval {
+		return false
+	}
+	if !r.probeDue(t.failKey) {
+		return false
+	}
+	logger := log.FromContext(ctx)
+	cfg, problem, err := r.agentControlConfig(ctx, dn, t.profile)
+	if err == nil && problem != "" {
+		err = errors.New(problem)
+	}
+	if err != nil {
+		logger.V(1).Info(
+			"cannot ask the signing agent for its key", "error", err,
+		)
+		return false
+	}
+	state, err := kesagent.KeyState(ctx, cfg)
+	if err != nil {
+		logger.V(1).Info("signing agent key state unavailable", "error", err)
+		return false
+	}
+	return state.Active == nil
+}
+
+// markProbed records that key's agent holds a key it was just given, so it is
+// not asked again within keylessProbeInterval.
+func (r *DingoNodeReconciler) markProbed(key types.NamespacedName) {
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+	if r.keylessProbes == nil {
+		r.keylessProbes = make(map[types.NamespacedName]time.Time)
+	}
+	r.keylessProbes[key] = time.Now()
+}
+
+// probeDue reports whether key's agent may be asked now, and records that it
+// is.
+func (r *DingoNodeReconciler) probeDue(key types.NamespacedName) bool {
+	r.issueMu.Lock()
+	defer r.issueMu.Unlock()
+	if at, ok := r.keylessProbes[key]; ok &&
+		time.Since(at) < keylessProbeInterval {
+		return false
+	}
+	if r.keylessProbes == nil {
+		r.keylessProbes = make(map[types.NamespacedName]time.Time)
+	}
+	r.keylessProbes[key] = time.Now()
+	return true
+}
+
 // autoRotatePools rotates each pool of spec.blockProducer.pools that is due on
 // its own KES state, through the signing agent with the pool's agentProfile,
-// writing only that pool's keys Secret. A pool that is not due is not rotated;
-// its Secret is only read to find a lost write, and the agent is asked only
-// about a pool that is due or whose node loaded a later opcert than its Secret
-// holds. One pool's refusal does not hold back another. The outcome of every
-// attempted pool is reported in the OpCertIssued condition and as an Event
-// naming the pool.
+// writing only that pool's keys Secret. A pool that is not due is rotated only
+// when the agent holds no key for its profile (see agentKeyless), and only
+// while the node reports its KES state; otherwise its Secret is only read to
+// find a lost write. One pool's refusal does not hold back another. The
+// outcome of every attempted pool is reported in the OpCertIssued condition
+// and as an Event naming the pool.
 func (r *DingoNodeReconciler) autoRotatePools(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -242,10 +331,19 @@ func (r *DingoNodeReconciler) autoRotatePools(
 		// so it is not followed by a rotation attempt.
 		o := r.adoptPendingInstall(ctx, dn, t, ps.LoadedCounter)
 		if o == nil {
-			if !r.kesObservedFor(node, id) ||
-				ps.KES.CurrentPeriod <= 0 || renewBefore <= 0 ||
-				ps.KES.RemainingPeriods > renewBefore {
+			// A pool the node did not report this reconcile has only the
+			// KES status it last had, which is neither rotated from nor
+			// used to issue a first key. The node loads its credentials
+			// from the opcert, not from the agent's key, so a running pod
+			// reports every pool whether or not its profile holds a key.
+			if !r.kesObservedFor(node, id) || ps.KES.CurrentPeriod <= 0 {
 				continue
+			}
+			if renewBefore <= 0 || ps.KES.RemainingPeriods > renewBefore {
+				if !r.agentKeyless(ctx, dn, t) {
+					continue
+				}
+				t.rekey = true
 			}
 			o = r.rotateKey(ctx, dn, t)
 		}
@@ -418,9 +516,10 @@ func (r *DingoNodeReconciler) reportIssue(
 	}
 }
 
-// rotateKey issues a new opcert for one key when it is due and nothing is
-// staged for it, and writes the keys Secret. It returns nil when there was
-// nothing to report: a rotation already staged is left to finish.
+// rotateKey issues a new opcert for one key when it is due, or t.rekey is set,
+// and nothing is staged for it, and writes the keys Secret. It returns nil
+// when there was nothing to report: a rotation already staged is left to
+// finish.
 func (r *DingoNodeReconciler) rotateKey(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
@@ -478,9 +577,14 @@ func (r *DingoNodeReconciler) rotateKey(
 	}
 	// A staged bundle that does not validate can never be rolled out, so it
 	// is replaced rather than waited on.
-	if _, verr := t.validate(secret); verr == nil &&
+	// An agent that restarted after install-key holds no key for the staged
+	// opcert, so it is asked before the rotation is left to finish.
+	if _, verr := t.validate(secret); verr == nil && !t.rekey &&
 		stagedStart+maxEvolutions-st.CurrentPeriod > renewBefore {
-		return nil
+		if !r.agentKeyless(ctx, dn, t) {
+			return nil
+		}
+		t.rekey = true
 	}
 
 	if last, ok := r.lastIssueFailure(t.failKey); ok &&
@@ -587,6 +691,7 @@ func (r *DingoNodeReconciler) rotateKey(
 	}
 
 	r.forgetIssueFailure(t.failKey)
+	r.markProbed(t.failKey)
 	return &issueOutcome{
 		issued: true,
 		reason: "OpCertIssued",
@@ -756,15 +861,17 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	if err != nil {
 		return nil, nil, "AgentInfoFailed", err
 	}
-	adopted, err := r.adoptServedOpCert(
-		state.Active, secret, certFile, chainCounter,
-		kesPeriod, maxEvolutions, renewBefore,
-	)
-	if err != nil {
-		return nil, nil, "AgentInfoFailed", err
-	}
-	if adopted != nil {
-		return adopted, nil, "", nil
+	if state.Active != nil {
+		adopted, err := r.adoptServedOpCert(
+			state.Active, secret, certFile, chainCounter,
+			kesPeriod, maxEvolutions, renewBefore,
+		)
+		if err != nil {
+			return nil, nil, "AgentInfoFailed", err
+		}
+		if adopted != nil {
+			return adopted, nil, "", nil
+		}
 	}
 	bursa := dn.Spec.BlockProducer.Rotation.ColdSigner.Type ==
 		dingov1alpha1.ColdSignerBursa
@@ -1177,10 +1284,16 @@ func (r *DingoNodeReconciler) forgetNodeIssueFailures(
 	r.issueMu.Lock()
 	defer r.issueMu.Unlock()
 	delete(r.issueFailures, node)
+	delete(r.keylessProbes, node)
 	prefix := node.Name + "/"
 	for k := range r.issueFailures {
 		if k.Namespace == node.Namespace && strings.HasPrefix(k.Name, prefix) {
 			delete(r.issueFailures, k)
+		}
+	}
+	for k := range r.keylessProbes {
+		if k.Namespace == node.Namespace && strings.HasPrefix(k.Name, prefix) {
+			delete(r.keylessProbes, k)
 		}
 	}
 }

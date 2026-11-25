@@ -192,11 +192,14 @@ type Active struct {
 
 // State is the active key and any key already staged for the next rotation.
 type State struct {
+	// Active is nil when the profile holds no key, as after an agent restart
+	// without a shared key store.
 	Active        *Active
 	StagedKESVKey []byte
 }
 
-// KeyState returns the key state reported by the profile. A staged key is
+// KeyState returns the key state reported by the profile. A profile with no
+// installed key is not an error: Active is nil. A staged key is
 // retained by Bursa until it is installed or explicitly replaced, so callers
 // can retry an exact-key authorization without generating a different key.
 func KeyState(ctx context.Context, cfg Config) (*State, error) {
@@ -204,8 +207,8 @@ func KeyState(ctx context.Context, cfg Config) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.Info == nil || !r.Info.HasActiveKey {
-		return nil, errors.New("agent reports no active key")
+	if r.Info == nil {
+		return nil, errors.New("agent returned no info")
 	}
 	if len(r.Info.StagedKESVKey) != 0 &&
 		len(r.Info.StagedKESVKey) != kesVKeySize {
@@ -213,6 +216,9 @@ func KeyState(ctx context.Context, cfg Config) (*State, error) {
 			"agent returned a %d-byte staged kes vkey, want %d",
 			len(r.Info.StagedKESVKey), kesVKeySize,
 		)
+	}
+	if !r.Info.HasActiveKey {
+		return &State{StagedKESVKey: r.Info.StagedKESVKey}, nil
 	}
 	return &State{
 		Active: &Active{
@@ -231,6 +237,9 @@ func ActiveKey(ctx context.Context, cfg Config) (*Active, error) {
 	state, err := KeyState(ctx, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if state.Active == nil {
+		return nil, errors.New("agent reports no active key")
 	}
 	return state.Active, nil
 }

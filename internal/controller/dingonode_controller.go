@@ -138,6 +138,9 @@ type DingoNodeReconciler struct {
 	// a signing round trip (and a timeout, for an unreachable signer) each
 	// time. In-memory for the same reasons as onChainAttempts.
 	issueFailures map[types.NamespacedName]issueFailure
+	// keylessProbes holds, per node, when the signing agent was last asked
+	// whether its profile holds a key. Guarded by issueMu.
+	keylessProbes map[types.NamespacedName]time.Time
 
 	// stagedMu guards stagedAttestations.
 	stagedMu sync.Mutex

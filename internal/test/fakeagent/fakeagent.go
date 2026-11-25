@@ -37,6 +37,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -50,7 +51,6 @@ import (
 // Error texts of the agent, from bursa's attested.go and attested_control.go.
 const (
 	ErrRoleNotPermitted = "kesagent: client is not permitted the requested role"
-	errNoActiveKey      = "kesagent: no active KES key installed"
 	errDropKey          = "kesagent: drop-key is not served on a remote control session"
 )
 
@@ -62,7 +62,9 @@ type Profile struct {
 	// ControlSPKI lists the client key fingerprints allowed to control it, as
 	// ClientCert returns them.
 	ControlSPKI [][sha256.Size]byte
-	// ActiveVKey and ActiveIssue are the key the profile serves at start.
+	// ActiveVKey and ActiveIssue are the key the profile serves at start. An
+	// empty ActiveVKey is a keyless profile, as after an agent restart: control
+	// sessions are admitted and info reports no active key.
 	ActiveVKey  []byte
 	ActiveIssue uint64
 	// ActiveOpCert is the CBOR opcert of the active key, as info reports it.
@@ -187,6 +189,15 @@ func (a *Agent) SetInfoError(name, msg string) {
 	a.profile(name).InfoError = msg
 }
 
+// DropKey makes a profile keyless, as an agent restart without a shared key
+// store does.
+func (a *Agent) DropKey(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p := a.profile(name)
+	p.ActiveVKey, p.ActiveIssue, p.ActiveOpCert = nil, 0, nil
+}
+
 // SetActiveOpCert makes a profile serve opCert, as an install-key run outside
 // the operator would. Its issue number becomes the active one.
 func (a *Agent) SetActiveOpCert(name string, issue uint64, opCert []byte) {
@@ -286,29 +297,17 @@ func (a *Agent) serve(conn *tls.Conn) {
 		refuse(ErrRoleNotPermitted)
 		return
 	}
-	var bound *profile
 	switch {
 	case req.Profile != "":
-		for _, p := range permitted {
-			if p.Name == req.Profile {
-				bound = p
-			}
-		}
-		if bound == nil {
+		if !slices.ContainsFunc(permitted, func(p *profile) bool {
+			return p.Name == req.Profile
+		}) {
 			refuse(ErrRoleNotPermitted)
 			return
 		}
 	case len(permitted) == 1:
-		bound = permitted[0]
 	default:
 		refuse("kesagent: request does not select exactly one profile")
-		return
-	}
-	a.mu.Lock()
-	active := len(bound.ActiveVKey) > 0
-	a.mu.Unlock()
-	if !active {
-		refuse(errNoActiveKey)
 		return
 	}
 	resp["role"] = "control"

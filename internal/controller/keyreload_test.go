@@ -979,6 +979,59 @@ func TestDecideKeysRolloutAgentAdoptedCounter(t *testing.T) {
 	}
 }
 
+// After an in-place 3-to-4 rotation the template still records counter 3 and
+// the status records the applied bundle at counter 4. A keyless recovery that
+// issues different material at counter 4 is not the opcert the node loaded,
+// and Dingo does not reload a changed certificate at the loaded counter, so
+// the pod rolls.
+func TestDecideKeysRolloutRecoveryAtLoadedCounterRolls(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	live := liveKeys{
+		exists: true, checksum: "old", static: "static", pool: "pool",
+		counter: new(int64(3)), agent: true,
+	}
+	applied := func(counter int64) *dingov1alpha1.InPlaceReloadStatus {
+		return &dingov1alpha1.InPlaceReloadStatus{
+			Checksum: "rotated", Counter: counter, Applied: true,
+			RequestedAt: metav1.NewTime(now),
+		}
+	}
+	tests := []struct {
+		name      string
+		prev      *dingov1alpha1.InPlaceReloadStatus
+		wantRolls bool
+	}{
+		{
+			name:      "different material at the applied counter rolls",
+			prev:      applied(4),
+			wantRolls: true,
+		},
+		{
+			name: "an applied bundle at an earlier counter is staged",
+			prev: applied(3),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := decideKeysRollout(
+				true, live, "recovered", "static", "pool", 4, new(int64(4)),
+				nil, tc.prev, now,
+			)
+			if tc.wantRolls {
+				assert.Equal(t, "recovered", got.checksum, "the pod rolls")
+				assert.False(t, got.approve)
+				assert.Nil(t, got.pending)
+				return
+			}
+			assert.Equal(t, "old", got.checksum, "the pod keeps running")
+			require.NotNil(t, got.pending)
+			assert.True(t, got.pending.Applied)
+		})
+	}
+}
+
 // scrapeTextFetcher serves a Prometheus text exposition through the real
 // forgestatus parser, standing in for a Dingo /metrics scrape.
 type scrapeTextFetcher struct{ body string }

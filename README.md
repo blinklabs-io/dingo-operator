@@ -108,8 +108,18 @@ operators.
   is pinned in `control_client_spki_sha256` on that profile, so Auto needs
   `controlClientCertSecretRef` (a Secret with `tls.crt` and `tls.key`, read by
   the operator and never mounted into the node), TLS and `serverSpkiSha256`,
-  which pins the control connection too. The agent must hold an active key for
-  the profile before the operator can control it. A step that fails before
+  which pins the control connection too. An agent that keeps keys in memory
+  only loses them on restart and then reports no active key for the profile,
+  refusing sign sessions, so the producer cannot forge. Under Auto the operator
+  asks the agent's `info` about once a minute while the node is not due, and
+  when the profile holds no key it issues one as above without waiting for the
+  rotation to be due, once the on-chain counter is known and no failed attempt
+  is backing off. An `info` that fails is not taken as a missing key. A pool
+  list does the same per pool, with the pool's `agentProfile`, for each pool
+  whose KES state the node reported in that reconcile; the node loads its
+  credentials from the opcert, so a running pod reports a pool whether or not
+  the agent holds its key. The same check runs when rotation is due and the
+  staged opcert is still fresh. A step that fails before
   `install-key` leaves the previous key serving and the Secret unchanged, and
   retries after ten minutes as Auto does without an agent, reported in the
   `OpCertIssued` condition. A failure after `install-key`, such as a lost

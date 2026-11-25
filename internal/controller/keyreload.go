@@ -195,8 +195,14 @@ func decideKeysLoad(
 	}
 	pending := prev
 	if pending == nil || pending.Checksum != full {
+		// A different bundle at a counter the status already records for
+		// an earlier one (a recovery that reissued after an in-place
+		// rotation) is not what the node loaded, and Dingo does not reload
+		// a changed opcert at the loaded counter.
+		reissued := prev != nil && prev.Counter == counter &&
+			prev.Checksum != full
 		if loaded != nil && *loaded == counter && live.agent &&
-			live.counter != nil && counter > *live.counter {
+			live.counter != nil && counter > *live.counter && !reissued {
 			// The agent already serves this opcert and the node has taken
 			// it, so there is nothing to reload: only the opcert in the
 			// Secret differs, and the pod keeps the template it has.
