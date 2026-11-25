@@ -597,16 +597,17 @@ func (r *DingoNodeReconciler) rotateKey(
 	}
 }
 
-// issueOpCert has issuer sign an opcert for kesVkey and verifies it.
+// issueOpCert has issuer sign an opcert for kesVkey and verifies it. A
+// non-nil att is the agent's attestation of kesVkey, sent when the issuer's
+// signer takes one.
 func issueOpCert(
 	ctx context.Context,
 	issuer coldsigner.Issuer,
 	kesVkey []byte,
 	chainCounter, kesPeriod uint64,
+	att *kesagent.StagedKeyAttestation,
 ) (*ledger.OpCert, []byte, error) {
-	res, err := issuer.SignOpCertFromChain(
-		ctx, kesVkey, chainCounter, kesPeriod,
-	)
+	res, err := signOpCert(ctx, issuer, kesVkey, chainCounter, kesPeriod, att)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
 			"sign opcert for KES verification key %x: %w", kesVkey, err,
@@ -622,6 +623,37 @@ func issueOpCert(
 		return nil, nil, fmt.Errorf("verify issued opcert: %w", err)
 	}
 	return oc, res.ColdVkey, nil
+}
+
+// signOpCert has issuer sign kesVkey, with att when the issuer's signer takes
+// one. The signer decides an attested request on the attestation alone, and
+// an attesting agent attests every key, so a grant that lists only the KES
+// key refuses it: the same key is then offered once more without the
+// attestation. If that is refused too, both reasons are kept, since a
+// misconfigured agent pin would otherwise read as a KES key that is not
+// granted.
+func signOpCert(
+	ctx context.Context,
+	issuer coldsigner.Issuer,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+	att *kesagent.StagedKeyAttestation,
+) (*coldsigner.OpCertResult, error) {
+	ai, ok := issuer.(coldsigner.AttestedIssuer)
+	if !ok || att == nil {
+		return issuer.SignOpCertFromChain(ctx, kesVkey, chainCounter, kesPeriod)
+	}
+	res, attErr := ai.SignOpCertWithAttestation(
+		ctx, kesVkey, chainCounter, kesPeriod, att,
+	)
+	if !errors.Is(attErr, coldsigner.ErrAttestationRefused) {
+		return res, attErr
+	}
+	res, err := issuer.SignOpCertFromChain(ctx, kesVkey, chainCounter, kesPeriod)
+	if err != nil {
+		return nil, fmt.Errorf("%w; without it: %w", attErr, err)
+	}
+	return res, nil
 }
 
 // generateKESKey returns a new KES signing-key envelope and its verification
@@ -678,7 +710,7 @@ func issueBundle(
 	chainCounter, kesPeriod uint64,
 ) ([]byte, error) {
 	oc, coldVkey, err := issueOpCert(
-		ctx, issuer, vkey, chainCounter, kesPeriod,
+		ctx, issuer, vkey, chainCounter, kesPeriod, nil,
 	)
 	if err != nil {
 		return nil, err
@@ -734,18 +766,35 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 	if adopted != nil {
 		return adopted, nil, "", nil
 	}
-	var vkey []byte
-	if dn.Spec.BlockProducer.Rotation.ColdSigner.Type ==
-		dingov1alpha1.ColdSignerBursa {
-		vkey = state.StagedKESVKey
+	bursa := dn.Spec.BlockProducer.Rotation.ColdSigner.Type ==
+		dingov1alpha1.ColdSignerBursa
+	slot := stagedKeyID{node: client.ObjectKeyFromObject(dn), profile: profile}
+	var (
+		vkey []byte
+		att  *kesagent.StagedKeyAttestation
+	)
+	if bursa {
+		// The staged key is reused so a retry offers the exact key a
+		// per-key grant names. Info does not report its attestation, so it
+		// is reused only with the one kept from staging it: offering it bare
+		// would be refused by a signer that trusts the agent instead of the
+		// key.
+		vkey, att = r.keptStagedAttestation(slot, state.StagedKESVKey)
 	}
 	if len(vkey) == 0 {
-		vkey, err = kesagent.GenStagedKey(ctx, cfg)
+		vkey, att, err = kesagent.GenStagedKey(ctx, cfg)
 		if err != nil {
 			return nil, nil, "AgentGenStagedKeyFailed", err
 		}
+		if bursa {
+			r.keepStagedAttestation(slot, vkey, att)
+		} else {
+			att = nil
+		}
 	}
-	oc, coldVkey, err := issueOpCert(ctx, issuer, vkey, chainCounter, kesPeriod)
+	oc, coldVkey, err := issueOpCert(
+		ctx, issuer, vkey, chainCounter, kesPeriod, att,
+	)
 	if err != nil {
 		return nil, nil, "IssueFailed", err
 	}
@@ -763,7 +812,11 @@ func (r *DingoNodeReconciler) issueThroughAgent(
 		candidate.Data[keyFileNodeCert] = envelope
 	}
 	install = func() error {
-		return kesagent.InstallKey(ctx, cfg, raw, vkey, oc.IssueNumber)
+		err := kesagent.InstallKey(ctx, cfg, raw, vkey, oc.IssueNumber)
+		if err == nil {
+			r.dropStagedAttestation(slot)
+		}
+		return err
 	}
 	return candidate, install, "", nil
 }
@@ -1032,6 +1085,52 @@ func setIssueCondition(
 	})
 }
 
+// stagedKeyID names the staged key slot of one agent profile of one node.
+type stagedKeyID struct {
+	node    types.NamespacedName
+	profile string
+}
+
+type stagedAttestation struct {
+	vkey []byte
+	att  *kesagent.StagedKeyAttestation
+}
+
+// keptStagedAttestation returns staged and its attestation when staged is the
+// key the operator had the profile's agent generate. Any other staged key, or
+// none, returns nil: its attestation is unknown.
+func (r *DingoNodeReconciler) keptStagedAttestation(
+	slot stagedKeyID,
+	staged []byte,
+) ([]byte, *kesagent.StagedKeyAttestation) {
+	r.stagedMu.Lock()
+	defer r.stagedMu.Unlock()
+	kept, ok := r.stagedAttestations[slot]
+	if !ok || len(staged) == 0 || !bytes.Equal(kept.vkey, staged) {
+		return nil, nil
+	}
+	return staged, kept.att
+}
+
+func (r *DingoNodeReconciler) keepStagedAttestation(
+	slot stagedKeyID,
+	vkey []byte,
+	att *kesagent.StagedKeyAttestation,
+) {
+	r.stagedMu.Lock()
+	defer r.stagedMu.Unlock()
+	if r.stagedAttestations == nil {
+		r.stagedAttestations = make(map[stagedKeyID]stagedAttestation)
+	}
+	r.stagedAttestations[slot] = stagedAttestation{vkey: vkey, att: att}
+}
+
+func (r *DingoNodeReconciler) dropStagedAttestation(slot stagedKeyID) {
+	r.stagedMu.Lock()
+	defer r.stagedMu.Unlock()
+	delete(r.stagedAttestations, slot)
+}
+
 func (r *DingoNodeReconciler) lastIssueFailure(
 	key types.NamespacedName,
 ) (issueFailure, bool) {
@@ -1063,10 +1162,18 @@ func (r *DingoNodeReconciler) forgetIssueFailure(key types.NamespacedName) {
 
 // forgetNodeIssueFailures drops the remembered failure of a node and of each
 // of its pools, which are keyed "<node>/<pool id>": no object name holds a
-// slash, so no other node's key matches.
+// slash, so no other node's key matches. It drops the node's kept staged-key
+// attestations too.
 func (r *DingoNodeReconciler) forgetNodeIssueFailures(
 	node types.NamespacedName,
 ) {
+	r.stagedMu.Lock()
+	for k := range r.stagedAttestations {
+		if k.node == node {
+			delete(r.stagedAttestations, k)
+		}
+	}
+	r.stagedMu.Unlock()
 	r.issueMu.Lock()
 	defer r.issueMu.Unlock()
 	delete(r.issueFailures, node)

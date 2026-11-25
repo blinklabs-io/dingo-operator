@@ -44,6 +44,7 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/opcert"
 	"github.com/blinklabs-io/gouroboros/kes"
 	"github.com/blinklabs-io/gouroboros/ledger"
+	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 )
 
 // Error texts of the agent, from bursa's attested.go and attested_control.go.
@@ -70,6 +71,10 @@ type Profile struct {
 	InstallError string
 	// InfoError, when set, makes info refuse with this text.
 	InfoError string
+	// Attest makes gen-staged-key return a staged-key attestation, as an
+	// agent with an attestation identity key does. Its signature is opaque:
+	// the fake agent has no identity key.
+	Attest bool
 }
 
 // Command is a control command the agent received.
@@ -214,6 +219,26 @@ type wireReply struct {
 	KESVKey  []byte     `json:"kes_vkey,omitempty"`
 	Info     *wireInfo  `json:"info,omitempty"`
 	Profiles []wireInfo `json:"profiles,omitempty"`
+	// StagedKeyAttestation is set by gen-staged-key on an attesting profile.
+	StagedKeyAttestation *wireAttestation `json:"staged_key_attestation,omitempty"`
+}
+
+type wireAttestation struct {
+	Profile     string `json:"profile"`
+	KESVKey     []byte `json:"kes_vkey"`
+	ColdKeyHash []byte `json:"cold_key_hash"`
+	SPKI        []byte `json:"spki"`
+	Signature   []byte `json:"signature"`
+}
+
+// AttestationSPKI is the SPKI every fake attestation carries.
+var AttestationSPKI = []byte("fake-agent-spki")
+
+// AttestationSignature returns the signature the fake agent puts on the
+// attestation of vkey.
+func AttestationSignature(vkey []byte) []byte {
+	sum := sha256.Sum256(vkey)
+	return sum[:]
 }
 
 type wireInfo struct {
@@ -376,7 +401,15 @@ func (a *Agent) dispatch(
 			return fail(err.Error())
 		}
 		p.staged = vkey
-		return wireReply{Ok: true, KESVKey: vkey, Info: info()}
+		reply := wireReply{Ok: true, KESVKey: vkey, Info: info()}
+		if p.Attest {
+			hash := lcommon.Blake2b224Hash(p.ColdVKey)
+			reply.StagedKeyAttestation = &wireAttestation{
+				Profile: p.Name, KESVKey: vkey, ColdKeyHash: hash[:],
+				SPKI: AttestationSPKI, Signature: AttestationSignature(vkey),
+			}
+		}
+		return reply
 	case "install-key":
 		if p.InstallError != "" {
 			return fail(p.InstallError)

@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 )
 
@@ -64,6 +65,21 @@ type Issuer interface {
 		ctx context.Context,
 		kesVkey []byte,
 		chainCounter, kesPeriod uint64,
+	) (*OpCertResult, error)
+}
+
+// AttestedIssuer is an Issuer whose signer can check the agent's attestation
+// of the staged KES key it is asked to certify. SecretSigner is not one: it
+// holds the cold key and authorizes nothing.
+type AttestedIssuer interface {
+	Issuer
+	// SignOpCertWithAttestation is SignOpCertFromChain with att sent as the
+	// staged-key attestation. A nil att sends none.
+	SignOpCertWithAttestation(
+		ctx context.Context,
+		kesVkey []byte,
+		chainCounter, kesPeriod uint64,
+		att *kesagent.StagedKeyAttestation,
 	) (*OpCertResult, error)
 }
 
@@ -181,6 +197,27 @@ const (
 // because it is below one already reported for the cold key.
 var ErrCounterConflict = errors.New("opcert counter conflict")
 
+// ErrAttestationRefused is returned when the signer refused a request that
+// carried a staged-key attestation. The signer decides such a request on the
+// attestation alone, so the same key may still be granted without one.
+var ErrAttestationRefused = errors.New("opcert attestation refused")
+
+// attestationRefusedPrefix starts the signer's error text for a refused
+// attestation; a key that is not granted has different text.
+const attestationRefusedPrefix = "opcert attestation refused:"
+
+// signerMessage returns the error text of a signer response body, which is
+// {"error": text} or plain text.
+func signerMessage(body []byte) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Error != "" {
+		return e.Error
+	}
+	return string(bytes.TrimSpace(body))
+}
+
 // OpCertResult is an operational certificate issued by the signer.
 type OpCertResult struct {
 	// IssueCounter is the issue number the signer chose (chain counter + 1).
@@ -198,6 +235,9 @@ type bursaOpCertRequest struct {
 	ChainCounter uint64 `json:"chain_counter"`
 	KesPeriod    uint64 `json:"kes_period"`
 	Profile      string `json:"profile,omitempty"`
+	// Attestation is the agent's staged-key attestation; the signer treats
+	// a request without one as authorized by its per-key grants alone.
+	Attestation *kesagent.StagedKeyAttestation `json:"attestation,omitempty"`
 }
 
 type bursaOpCertResponse struct {
@@ -277,6 +317,19 @@ func (b *BursaSigner) SignOpCertFromChain(
 	kesVkey []byte,
 	chainCounter, kesPeriod uint64,
 ) (*OpCertResult, error) {
+	return b.SignOpCertWithAttestation(ctx, kesVkey, chainCounter, kesPeriod, nil)
+}
+
+// SignOpCertWithAttestation is SignOpCertFromChain carrying the agent's
+// attestation of kesVkey. The signer decides the request on a present
+// attestation alone, refusing one that does not verify, and without one on
+// its per-key grants.
+func (b *BursaSigner) SignOpCertWithAttestation(
+	ctx context.Context,
+	kesVkey []byte,
+	chainCounter, kesPeriod uint64,
+	att *kesagent.StagedKeyAttestation,
+) (*OpCertResult, error) {
 	if err := checkOpCertInput(kesVkey, chainCounter); err != nil {
 		return nil, err
 	}
@@ -287,6 +340,7 @@ func (b *BursaSigner) SignOpCertFromChain(
 		ChainCounter: chainCounter,
 		KesPeriod:    kesPeriod,
 		Profile:      b.cfg.Profile,
+		Attestation:  att,
 	})
 	if err != nil {
 		return nil, err
@@ -315,6 +369,14 @@ func (b *BursaSigner) SignOpCertFromChain(
 		return nil, fmt.Errorf(
 			"%w: %s", ErrCounterConflict, errorText(body),
 		)
+	case res.StatusCode == http.StatusForbidden &&
+		strings.HasPrefix(signerMessage(body), attestationRefusedPrefix):
+		return nil, fmt.Errorf(
+			"%w: %s", ErrAttestationRefused,
+			boundText(strings.TrimPrefix(
+				signerMessage(body), attestationRefusedPrefix,
+			)),
+		)
 	case res.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf(
 			"bursa signer: %s: %s", res.Status, errorText(body),
@@ -329,11 +391,16 @@ func (b *BursaSigner) SignOpCertFromChain(
 
 // errorText returns the start of a signer error body for an error message.
 func errorText(body []byte) string {
-	body = bytes.TrimSpace(body)
-	if len(body) <= bursaMaxErrorText {
-		return string(body)
+	return boundText(string(body))
+}
+
+// boundText trims s and cuts it to bursaMaxErrorText bytes.
+func boundText(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= bursaMaxErrorText {
+		return s
 	}
-	return strings.ToValidUTF8(string(body[:bursaMaxErrorText]), "") + "..."
+	return strings.ToValidUTF8(s[:bursaMaxErrorText], "") + "..."
 }
 
 func (b *BursaSigner) verify(

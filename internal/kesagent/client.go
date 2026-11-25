@@ -96,6 +96,20 @@ type reply struct {
 	Error   string     `json:"error,omitempty"`
 	KESVKey []byte     `json:"kes_vkey,omitempty"`
 	Info    *agentInfo `json:"info,omitempty"`
+	// StagedKeyAttestation accompanies gen-staged-key from an agent that has
+	// an attestation identity key.
+	StagedKeyAttestation *StagedKeyAttestation `json:"staged_key_attestation,omitempty"`
+}
+
+// StagedKeyAttestation is the agent's signed statement that it generated a
+// staged KES key for a profile, as the Bursa signer verifies it in an opcert
+// request. The operator forwards it untouched and does not verify it.
+type StagedKeyAttestation struct {
+	Profile     string `json:"profile"`
+	KESVKey     []byte `json:"kes_vkey"`
+	ColdKeyHash []byte `json:"cold_key_hash"`
+	SPKI        []byte `json:"spki"`
+	Signature   []byte `json:"signature"`
 }
 
 // Config addresses one profile of an agent's attested listener.
@@ -114,22 +128,28 @@ type Config struct {
 }
 
 // GenStagedKey has the agent generate a staged KES key for the profile and
-// returns its verification key. The agent never reveals the signing key.
-func GenStagedKey(ctx context.Context, cfg Config) ([]byte, error) {
+// returns its verification key and the agent's attestation of it, which is nil
+// when the agent has no attestation identity. The agent never reveals the
+// signing key. Info does not report the attestation, so a caller that wants
+// to offer it again for the same staged key must keep it.
+func GenStagedKey(
+	ctx context.Context,
+	cfg Config,
+) ([]byte, *StagedKeyAttestation, error) {
 	r, err := cfg.do(
 		ctx,
 		command{Command: cmdGenStagedKey, Profile: cfg.Profile},
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(r.KESVKey) != kesVKeySize {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"agent returned a %d-byte staged kes vkey, want %d",
 			len(r.KESVKey), kesVKeySize,
 		)
 	}
-	return r.KESVKey, nil
+	return r.KESVKey, r.StagedKeyAttestation, nil
 }
 
 // InstallKey installs opcert, the CBOR operational certificate issued for the

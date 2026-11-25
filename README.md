@@ -128,14 +128,30 @@ operators.
   `OpCertRejected`) and the pod keeps running on what it loaded. While the
   agent does not answer, a new bundle is held with reason `OpCertUnverified`.
 
-  Bursa requires each caller's operational-certificate grant to list the
-  exact KES verification keys it may certify. When that grant refuses a new
+  Bursa authorizes an operational certificate through the caller's grant,
+  which lists the exact KES verification keys it may certify
+  (`opcerts[].kes_vkeys`), trusts the agent that staged the key
+  (`opcerts[].kes_agents`, below), or both. When that grant refuses a new
   key, `status.conditions[OpCertIssued].message` includes the verification key
   in hex. Grant that key in the Bursa caller's `opcerts[].kes_vkeys`; the next
   retry offers the same key. For a local KES key, the operator retains it as
   `kes.pending.skey` in the keys Secret, promotes it to `kes.skey` after
   issuance, and removes the pending entry. For a signing agent, the operator
   reuses the agent's staged key. The pending key does not trigger a rollout.
+
+  When the agent returns a `staged_key_attestation` with the staged key, the
+  operator sends it to Bursa as `attestation` in the opcert request. Bursa
+  decides such a request on the attestation alone, so it is accepted when the
+  caller's grant trusts the agent through `opcerts[].kes_agents`. An agent
+  with an attestation identity attests every key. A grant that lists only
+  `kes_vkeys` therefore refuses the attested request, and the operator offers
+  the same key again in that attempt without the attestation, which that grant
+  accepts. If both are refused, the message names the key in hex to grant
+  and keeps the reason the attestation was refused.
+  Info does not report the attestation, so the operator reuses a staged key
+  only while it still holds the attestation it received with that key (it is
+  held in memory). After an operator restart the agent stages a new key
+  instead.
 
   ```yaml
   blockProducer:

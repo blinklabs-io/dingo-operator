@@ -15,6 +15,7 @@
 package coldsigner
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -23,9 +24,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blinklabs-io/dingo-operator/internal/kesagent"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -284,4 +288,118 @@ func TestBursaRequestProfile(t *testing.T) {
 			assert.Equal(t, tc.profile, f.got["profile"])
 		})
 	}
+}
+
+func TestBursaSendsStagedKeyAttestation(t *testing.T) {
+	t.Parallel()
+	f := newFakeBursa(t)
+	_, s := startBursa(t, f)
+	kes := bytes.Repeat([]byte{7}, 32)
+	att := &kesagent.StagedKeyAttestation{
+		Profile:     "pool-a",
+		KESVKey:     kes,
+		ColdKeyHash: bytes.Repeat([]byte{1}, 28),
+		SPKI:        []byte("spki-der"),
+		Signature:   []byte("sig"),
+	}
+
+	_, err := s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, att)
+	require.NoError(t, err)
+
+	// Bytes marshal as base64, the encoding of Bursa's wire type.
+	assert.Equal(t, map[string]any{
+		"profile":       "pool-a",
+		"kes_vkey":      base64.StdEncoding.EncodeToString(kes),
+		"cold_key_hash": base64.StdEncoding.EncodeToString(att.ColdKeyHash),
+		"spki":          base64.StdEncoding.EncodeToString(att.SPKI),
+		"signature":     base64.StdEncoding.EncodeToString(att.Signature),
+	}, f.got["attestation"], "the opcert request must carry the attestation")
+}
+
+func TestBursaOmitsAttestationWhenAbsent(t *testing.T) {
+	t.Parallel()
+	f := newFakeBursa(t)
+	_, s := startBursa(t, f)
+	kes := bytes.Repeat([]byte{7}, 32)
+
+	_, err := s.SignOpCertFromChain(context.Background(), kes, 4, 900)
+	require.NoError(t, err)
+	assert.NotContains(t, f.got, "attestation")
+
+	_, err = s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, f.got, "attestation")
+}
+
+func TestBursaClassifiesAttestationRefusal(t *testing.T) {
+	t.Parallel()
+	kes := bytes.Repeat([]byte{7}, 32)
+	att := &kesagent.StagedKeyAttestation{Profile: "pool-a", KESVKey: kes}
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		want   bool
+	}{
+		"attestation refused": {
+			http.StatusForbidden,
+			`{"error":"opcert attestation refused: attestation signer is not a trusted KES agent for this cold key"}`,
+			true,
+		},
+		"key not granted": {
+			http.StatusForbidden,
+			`{"error":"caller is not authorized for this opcert"}`, false,
+		},
+		"other status": {
+			http.StatusBadRequest,
+			`{"error":"opcert attestation refused: x"}`, false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewTLSServer(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				}))
+			t.Cleanup(srv.Close)
+			s, err := NewBursaSigner(BursaConfig{
+				Endpoint: srv.URL, ColdKeyHash: "00", CACert: caPEM(srv),
+			})
+			require.NoError(t, err)
+			_, err = s.SignOpCertWithAttestation(
+				context.Background(), kes, 4, 900, att,
+			)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, errors.Is(err, ErrAttestationRefused))
+		})
+	}
+}
+
+// The refusal text ends up in a status condition, so it is bounded like every
+// other signer error; the sentinel still matches.
+func TestBursaBoundsAttestationRefusalText(t *testing.T) {
+	t.Parallel()
+	kes := bytes.Repeat([]byte{7}, 32)
+	att := &kesagent.StagedKeyAttestation{Profile: "pool-a", KESVKey: kes}
+	long, err := json.Marshal(map[string]string{
+		"error": "opcert attestation refused: " + strings.Repeat("x", 40000),
+	})
+	require.NoError(t, err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(long)
+		}))
+	t.Cleanup(srv.Close)
+	s, err := NewBursaSigner(BursaConfig{
+		Endpoint: srv.URL, ColdKeyHash: "00", CACert: caPEM(srv),
+	})
+	require.NoError(t, err)
+
+	_, err = s.SignOpCertWithAttestation(context.Background(), kes, 4, 900, att)
+	require.ErrorIs(t, err, ErrAttestationRefused)
+	assert.LessOrEqual(t, len(err.Error()),
+		len(ErrAttestationRefused.Error())+len(": ...")+bursaMaxErrorText)
 }
