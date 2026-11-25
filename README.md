@@ -778,7 +778,12 @@ default grace period gets 35 seconds instead of 50, and the CRD rejects a value
 less than 10 seconds below the grace period. On Kubernetes 1.30 or newer,
 upgrading the operator rolls relays once to add the hook.
 
-## Startup probe budget
+The sleep action needs Kubernetes 1.30 or newer. An older API server drops it
+and keeps an empty `preStop` handler that every new pod fails validation on, so
+the operator reads the server version at startup and, below 1.30, renders no
+hook and ignores `drainDelaySeconds`.
+
+### Startup probe budget
 
 The startup probe allows 300 seconds by default (30 attempts, 10 seconds
 apart), and liveness and readiness probing begin only after it passes. Dingo
@@ -787,11 +792,6 @@ release and does not answer its health endpoint until that finishes, so a
 large database can outlast the default and be restarted into the same
 migration. `spec.startupTimeoutSeconds` raises the budget; it is rounded up to
 a multiple of the 10 second probe period.
-
-The sleep action needs Kubernetes 1.30 or newer. An older API server drops it
-and keeps an empty `preStop` handler that every new pod fails validation on, so
-the operator reads the server version at startup and, below 1.30, renders no
-hook and ignores `drainDelaySeconds`.
 
 ## API and Service exposure
 
