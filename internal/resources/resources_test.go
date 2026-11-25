@@ -15,6 +15,7 @@
 package resources
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1560,5 +1561,17 @@ func TestStartupProbeBudget(t *testing.T) {
 			require.NotNil(t, got)
 			assert.EqualValues(t, 180, got.FailureThreshold)
 		})
+	}
+}
+
+func TestStartupProbeBudgetSaturates(t *testing.T) {
+	t.Parallel()
+
+	for _, secs := range []int64{math.MaxInt64, math.MaxInt64 - 5} {
+		dn := relayNode()
+		dn.Spec.StartupTimeoutSeconds = new(secs)
+		p := startupProbe(dn)
+		assert.Equal(t, int32(math.MaxInt32), p.FailureThreshold,
+			"secs=%d", secs)
 	}
 }

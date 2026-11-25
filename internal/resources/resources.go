@@ -944,9 +944,13 @@ func startupFailureThreshold(dn *dingov1alpha1.DingoNode) int32 {
 	if v == nil || *v <= 0 {
 		return defaultStartupFailureThreshold
 	}
-	periods := (*v + int64(startupProbePeriodSeconds) - 1) /
-		int64(startupProbePeriodSeconds)
-	return int32(min(periods, math.MaxInt32)) //nolint:gosec // bounded above
+	// Divide before rounding: adding period-1 first overflows near MaxInt64.
+	period := int64(startupProbePeriodSeconds)
+	periods := *v / period
+	if *v%period != 0 {
+		periods++
+	}
+	return int32(min(periods, math.MaxInt32)) //nolint:gosec // in [1, MaxInt32]
 }
 
 func startupProbe(dn *dingov1alpha1.DingoNode) *corev1.Probe {
