@@ -213,7 +213,7 @@ func TestKeyStateKeylessProfile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no active key")
 
-	vkey, err := GenStagedKey(t.Context(), r.cfg)
+	vkey, _, err := GenStagedKey(t.Context(), r.cfg)
 	require.NoError(t, err)
 	require.NoError(
 		t,
