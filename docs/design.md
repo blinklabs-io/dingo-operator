@@ -118,11 +118,10 @@ name so the topology is never emptied. Unknown refs stay on the headless name.
   visible to the tip or the gauges: the node keeps applying blocks, on the
   wrong chain. Dingo counts each such refusal in
   `dingo_forge_stale_tip_skip_total{reason=...}`, only at the node's own leader
-  slots. The reasons `primary_tip_hash_diverged` and
+  slots. The reasons `peer_height_gap`, `primary_tip_hash_diverged` and
   `applied_tip_not_primary_ancestor` mean divergence; the others (unapplied gap,
-  peer height gap, stale applied tip, shared KES signer without upstream, ...)
-  do not and are not read. When either of them rises against an in-memory
-  per-node baseline the
+  stale applied tip, shared KES signer without upstream, ...) do not and are not
+  read. When any of them rises against an in-memory per-node baseline the
   condition turns False with reason `ChainDiverged` and `Degraded` is set. The
   first observation after an operator start, and a counter that decreased (the
   pod restarted), only set the baseline; nothing is added to status or the CRD.

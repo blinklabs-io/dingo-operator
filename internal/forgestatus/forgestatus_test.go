@@ -223,10 +223,10 @@ dingo_forge_opcert_counter_loaded{network="preview"} 5
 
 func TestParseChainDivergence(t *testing.T) {
 	t.Parallel()
-	// All reasons are exported, 0 while healthy; only two mean divergence.
+	// All reasons are exported, 0 while healthy; only three mean divergence.
 	const body = `# TYPE dingo_forge_stale_tip_skip_total counter
 dingo_forge_stale_tip_skip_total{reason="peer_height_gap"} 3
-dingo_forge_stale_tip_skip_total{reason="primary_tip_hash_diverged"} 1
+dingo_forge_stale_tip_skip_total{reason="primary_tip_hash_diverged"} 0
 dingo_forge_stale_tip_skip_total{reason="applied_tip_not_primary_ancestor"} 2
 dingo_forge_stale_tip_skip_total{reason="unapplied_block_gap"} 40
 dingo_forge_stale_tip_skip_total{reason="applied_tip_stale"} 7
@@ -237,7 +237,8 @@ dingo_forge_stale_tip_skip_total{reason="primary_tip_behind_applied"} 9
 
 	assert.True(t, got.HasChainDivergence)
 	assert.Equal(t, map[string]float64{
-		ReasonPrimaryTipHashDiverged:       1,
+		ReasonPeerHeightGap:                3,
+		ReasonPrimaryTipHashDiverged:       0,
 		ReasonAppliedTipNotPrimaryAncestor: 2,
 	}, got.ChainDivergence)
 	assert.Empty(t, got.Pools)
@@ -247,7 +248,6 @@ func TestParseChainDivergenceIgnoresOtherReasons(t *testing.T) {
 	t.Parallel()
 	const body = `dingo_forge_stale_tip_skip_total{reason="unapplied_block_gap"} 5
 dingo_forge_stale_tip_skip_total{reason="admitted_header_ahead"} 5
-dingo_forge_stale_tip_skip_total{reason="peer_height_gap"} 5
 dingo_forge_stale_tip_skip_total{reason="unapplied_rival_at_leader_slot"} 5
 `
 	got, err := Parse(strings.NewReader(body))
@@ -270,12 +270,12 @@ func TestParseChainDivergenceAbsent(t *testing.T) {
 
 func TestParseChainDivergenceKeepsOtherLabels(t *testing.T) {
 	t.Parallel()
-	const body = `dingo_forge_stale_tip_skip_total{network="mainnet",reason="primary_tip_hash_diverged"} 4
-dingo_forge_stale_tip_skip_total{reason="primary_tip_hash_diverged"} not-a-number
+	const body = `dingo_forge_stale_tip_skip_total{network="mainnet",reason="peer_height_gap"} 4
+dingo_forge_stale_tip_skip_total{reason="peer_height_gap"} not-a-number
 `
 	got, err := Parse(strings.NewReader(body))
 	require.NoError(t, err)
 
 	assert.True(t, got.HasChainDivergence)
-	assert.Equal(t, 4.0, got.ChainDivergence[ReasonPrimaryTipHashDiverged])
+	assert.Equal(t, 4.0, got.ChainDivergence[ReasonPeerHeightGap])
 }
