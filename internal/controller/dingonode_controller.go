@@ -1711,19 +1711,21 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 			))
 		return
 	}
-	addr := net.JoinHostPort(
-		fmt.Sprintf("%s.%s.svc.cluster.local", dn.Name, dn.Namespace),
-		strconv.Itoa(resources.PortNodeToClient),
-	)
 
 	// Record the attempt before making it, so a dial that fails — or a reconcile
 	// that errors out after it — is rate-limited exactly like a success.
 	attempt := onChainAttempt{at: time.Now()}
-	counter, err := r.OnChain.Fetch(ctx, onchain.Query{
-		Address:      addr,
-		NetworkMagic: magic,
-		PoolID:       parsed,
-	})
+	var counter onchain.Counter
+	for _, addr := range onChainAddresses(dn) {
+		counter, err = r.OnChain.Fetch(ctx, onchain.Query{
+			Address:      addr,
+			NetworkMagic: magic,
+			PoolID:       parsed,
+		})
+		if err == nil {
+			break
+		}
+	}
 	switch {
 	case err != nil:
 		logger.V(1).Info(
@@ -1749,6 +1751,23 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 	}
 	r.recordOnChainAttempt(key, attempt)
 	r.applyOnChainAttempt(dn, attempt, wantPool)
+}
+
+// onChainAddresses returns the node-to-client address of each pod, in ordinal
+// order, through the headless Service. The client Service publishes only ready
+// pods, and a block producer on a keyless signing agent is unready until its
+// first key is issued, which needs this very counter. The chain state is the
+// same on every pod, so the first that answers is enough.
+func onChainAddresses(dn *dingov1alpha1.DingoNode) []string {
+	replicas := max(desiredReplicas(dn), 1)
+	addrs := make([]string, 0, replicas)
+	for ordinal := range replicas {
+		addrs = append(addrs, net.JoinHostPort(
+			topology.InClusterPodAddress(dn.Name, ordinal, dn.Namespace),
+			strconv.Itoa(resources.PortNodeToClient),
+		))
+	}
+	return addrs
 }
 
 // onChainFailureReason classifies a failed read. A node whose Service does not

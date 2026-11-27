@@ -19,10 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -930,20 +928,24 @@ func (r *DingoNodeReconciler) refreshPoolOnChainCounters(
 		}
 		hashes = append(hashes, parsed)
 	}
-	addr := net.JoinHostPort(
-		fmt.Sprintf("%s.%s.svc.cluster.local", dn.Name, dn.Namespace),
-		strconv.Itoa(resources.PortNodeToClient),
-	)
 
 	attempt := onChainAttempt{at: time.Now(), poolID: listKey, list: true}
-	counters, err := fetcher.FetchPools(ctx, onchain.Query{
-		Address:      addr,
-		NetworkMagic: magic,
-	}, hashes)
-	found := make(map[string]int64, len(counters))
-	for _, h := range hashes {
-		if c, ok := counters[h]; ok && c.Found {
-			found[h.String()] = c.Value
+	var err error
+	found := map[string]int64{}
+	for _, addr := range onChainAddresses(dn) {
+		var counters map[common.Blake2b224]onchain.Counter
+		counters, err = fetcher.FetchPools(ctx, onchain.Query{
+			Address:      addr,
+			NetworkMagic: magic,
+		}, hashes)
+		clear(found)
+		for _, h := range hashes {
+			if c, ok := counters[h]; ok && c.Found {
+				found[h.String()] = c.Value
+			}
+		}
+		if err == nil || len(found) > 0 {
+			break
 		}
 	}
 	switch {
