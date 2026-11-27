@@ -1711,25 +1711,37 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 			))
 		return
 	}
-	addr := net.JoinHostPort(
-		fmt.Sprintf("%s.%s.svc.cluster.local", dn.Name, dn.Namespace),
-		strconv.Itoa(resources.PortNodeToClient),
-	)
 
 	// Record the attempt before making it, so a dial that fails — or a reconcile
 	// that errors out after it — is rate-limited exactly like a success.
 	attempt := onChainAttempt{at: time.Now()}
-	counter, err := r.OnChain.Fetch(ctx, onchain.Query{
-		Address:      addr,
-		NetworkMagic: magic,
-		PoolID:       parsed,
-	})
+	var counter onchain.Counter
+	var fetchErr error
+	answered := false
+	for _, addr := range onChainAddresses(dn) {
+		c, err := r.OnChain.Fetch(ctx, onchain.Query{
+			Address:      addr,
+			NetworkMagic: magic,
+			PoolID:       parsed,
+		})
+		if err != nil {
+			fetchErr = err
+			continue
+		}
+		answered = true
+		if c.Found && (!counter.Found || c.Value > counter.Value) {
+			counter = c
+		}
+	}
+	if answered {
+		fetchErr = nil
+	}
 	switch {
-	case err != nil:
+	case fetchErr != nil:
 		logger.V(1).Info(
-			"on-chain opcert counter unavailable", "error", err.Error(),
+			"on-chain opcert counter unavailable", "error", fetchErr.Error(),
 		)
-		attempt.reason, attempt.message = r.onChainFailureReason(ctx, dn, err)
+		attempt.reason, attempt.message = r.onChainFailureReason(ctx, dn, fetchErr)
 	case !counter.Found:
 		attempt.reason = "PoolNotOnChain"
 		attempt.message = fmt.Sprintf(
@@ -1749,6 +1761,24 @@ func (r *DingoNodeReconciler) refreshOnChainCounter(
 	}
 	r.recordOnChainAttempt(key, attempt)
 	r.applyOnChainAttempt(dn, attempt, wantPool)
+}
+
+// onChainAddresses returns the node-to-client address of each pod, in ordinal
+// order, through the headless Service. The client Service publishes only ready
+// pods, and a block producer on a keyless signing agent is unready until its
+// first key is issued, which needs this very counter. The chain state is the
+// same on every pod except that one still catching up reports an older counter,
+// so every pod is asked and the highest answer is kept.
+func onChainAddresses(dn *dingov1alpha1.DingoNode) []string {
+	replicas := max(desiredReplicas(dn), 1)
+	addrs := make([]string, 0, replicas)
+	for ordinal := range replicas {
+		addrs = append(addrs, net.JoinHostPort(
+			topology.InClusterPodAddress(dn.Name, ordinal, dn.Namespace),
+			strconv.Itoa(resources.PortNodeToClient),
+		))
+	}
+	return addrs
 }
 
 // onChainFailureReason classifies a failed read. A node whose Service does not
@@ -1805,9 +1835,18 @@ func (r *DingoNodeReconciler) applyOnChainAttempt(
 		return
 	}
 	if attempt.ok {
-		dn.Status.OpCert.OnChainCounter = attempt.counter
-		at := metav1.NewTime(attempt.observedAt)
-		dn.Status.OpCert.OnChainCounterAt = &at
+		oc := &dn.Status.OpCert
+		// Counters only increase, so a lower reading of the same pool is a stale
+		// one. The stored value stays, with its own timestamp: refreshing it would
+		// claim to have observed that value now.
+		keep := oc.OnChainCounterAt != nil &&
+			oc.OnChainCounterPoolID == attempt.poolID &&
+			attempt.counter < oc.OnChainCounter
+		if !keep {
+			oc.OnChainCounter = attempt.counter
+			at := metav1.NewTime(attempt.observedAt)
+			oc.OnChainCounterAt = &at
+		}
 		dn.Status.OpCert.OnChainCounterPoolID = attempt.poolID
 		meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
 			Type:               condOnChainCounter,

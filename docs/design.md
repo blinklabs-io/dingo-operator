@@ -301,8 +301,9 @@ contract is:
   until the Secret returns. With no StatefulSet yet, it is still created as
   before, without a keys checksum.
 - The on-chain counter floor. `internal/onchain` dials the node's
-  node-to-client TCP listener and runs `GetOpCertCounters()`, publishing the
-  pool's counter as `status.opcert.onChainCounter` (with
+  node-to-client TCP listener, per pod through the headless Service (the
+  client Service has no endpoint for an unready pod), and runs
+  `GetOpCertCounters()`, publishing the pool's counter as `status.opcert.onChainCounter` (with
   `status.opcert.onChainCounterAt`). Validation then refuses a delivered opcert
   whose counter is below that value: the chain has already accepted a higher
   certificate, so nothing forged with this one can be adopted. A counter above

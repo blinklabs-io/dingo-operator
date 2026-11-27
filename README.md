@@ -288,6 +288,9 @@ operators.
   below it (the chain would reject blocks forged with it). It fails open: an
   unreachable or unsynced node falls back to the operator's own last accepted
   counter, and the `OnChainCounterAvailable` condition says which applies.
+  The operator dials the pods through the headless Service, in ordinal order,
+  so a pod that is not ready yet (a producer waiting for its first KES key) is
+  still read.
   Reaching the port also needs the label
   `dingo.blinklabs.io/node-to-client=allowed` on the client pod — see the
   NetworkPolicy note below.
