@@ -931,21 +931,24 @@ func (r *DingoNodeReconciler) refreshPoolOnChainCounters(
 
 	attempt := onChainAttempt{at: time.Now(), poolID: listKey, list: true}
 	var err error
+	answered := false
 	found := map[string]int64{}
 	for _, addr := range onChainAddresses(dn) {
-		var counters map[common.Blake2b224]onchain.Counter
-		counters, err = fetcher.FetchPools(ctx, onchain.Query{
+		counters, ferr := fetcher.FetchPools(ctx, onchain.Query{
 			Address:      addr,
 			NetworkMagic: magic,
 		}, hashes)
-		clear(found)
+		if ferr != nil {
+			err = ferr
+		} else {
+			answered = true
+		}
 		for _, h := range hashes {
 			if c, ok := counters[h]; ok && c.Found {
-				found[h.String()] = c.Value
+				if v, seen := found[h.String()]; !seen || c.Value > v {
+					found[h.String()] = c.Value
+				}
 			}
-		}
-		if err == nil || len(found) > 0 {
-			break
 		}
 	}
 	switch {
@@ -957,7 +960,7 @@ func (r *DingoNodeReconciler) refreshPoolOnChainCounters(
 		if err != nil {
 			attempt.message += "; " + err.Error()
 		}
-	case err != nil:
+	case err != nil && !answered:
 		log.FromContext(ctx).V(1).Info(
 			"on-chain opcert counters unavailable", "error", err.Error(),
 		)
@@ -1001,6 +1004,9 @@ func (r *DingoNodeReconciler) applyPoolCounterAttempt(
 	}
 	for id, v := range attempt.counters {
 		ps := poolStatus(dn, id)
+		if ps.OnChainCounterAt != nil && v < ps.OnChainCounter {
+			continue
+		}
 		ps.OnChainCounter = v
 		at := metav1.NewTime(attempt.observedAt)
 		ps.OnChainCounterAt = &at
