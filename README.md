@@ -762,7 +762,7 @@ network whose blocks can be more than that apart, raise or disable it.
 
 It is also False, with reason `ChainDiverged`, when a block producer's Dingo
 has refused to forge on a chain it judged diverged from the network's. The
-operator reads the `peer_height_gap`, `primary_tip_hash_diverged` and
+operator reads the `primary_tip_hash_diverged` and
 `applied_tip_not_primary_ancestor` reasons of
 `dingo_forge_stale_tip_skip_total`, which Dingo counts only at the node's own
 leader slots, and reports the condition for six hours after the last increase.

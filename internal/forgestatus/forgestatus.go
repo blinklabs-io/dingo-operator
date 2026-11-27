@@ -57,20 +57,19 @@ const (
 	metricStaleTipSkip = "dingo_forge_stale_tip_skip_total"
 )
 
-// Reasons of dingo_forge_stale_tip_skip_total that mean the node follows the
-// wrong chain. The counter has other reasons (an unapplied block gap, a stale
-// applied tip, a shared KES signer without upstream, ...): they describe a
-// node that is behind or cannot forge, not one on a diverged chain, and are
-// not read.
+// Reasons of dingo_forge_stale_tip_skip_total that prove the node follows the
+// wrong chain: a different block at the primary tip, or an applied tip that is
+// not its ancestor. The counter has other reasons (an unapplied block gap, a
+// peer height gap, a stale applied tip, a shared KES signer without upstream,
+// ...): they describe a node that is behind or cannot forge, possibly on the
+// right chain, and are not read.
 const (
-	ReasonPeerHeightGap                = "peer_height_gap"
 	ReasonPrimaryTipHashDiverged       = "primary_tip_hash_diverged"
 	ReasonAppliedTipNotPrimaryAncestor = "applied_tip_not_primary_ancestor"
 )
 
 // DivergenceReasons lists the divergence reasons in a stable order.
 var DivergenceReasons = []string{
-	ReasonPeerHeightGap,
 	ReasonPrimaryTipHashDiverged,
 	ReasonAppliedTipNotPrimaryAncestor,
 }

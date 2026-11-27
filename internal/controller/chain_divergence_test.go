@@ -30,11 +30,10 @@ import (
 	"github.com/blinklabs-io/dingo-operator/internal/forgestatus"
 )
 
-func divergenceStatus(gap, hash, ancestor float64) *forgestatus.Status {
+func divergenceStatus(hash, ancestor float64) *forgestatus.Status {
 	st := tipStatus(1000)
 	st.HasChainDivergence = true
 	st.ChainDivergence = map[string]float64{
-		forgestatus.ReasonPeerHeightGap:                gap,
 		forgestatus.ReasonPrimaryTipHashDiverged:       hash,
 		forgestatus.ReasonAppliedTipNotPrimaryAncestor: ancestor,
 	}
@@ -59,7 +58,7 @@ func newDivergenceFixture(
 
 func TestChainDivergedFirstObservationOnlySetsBaseline(t *testing.T) {
 	t.Parallel()
-	r, _, _, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, _, _, dn := newDivergenceFixture(divergenceStatus(5, 0))
 
 	r.refreshForgeStatus(context.Background(), dn)
 
@@ -70,17 +69,17 @@ func TestChainDivergedFirstObservationOnlySetsBaseline(t *testing.T) {
 
 func TestChainDivergedOnCounterIncrease(t *testing.T) {
 	t.Parallel()
-	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0, 1))
+	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 1))
 	r.refreshForgeStatus(context.Background(), dn)
 
 	clock.now = clock.now.Add(time.Minute)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 1), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 1), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 
 	cond := pipelineCond(t, dn)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "ChainDiverged", cond.Reason)
-	assert.Contains(t, cond.Message, forgestatus.ReasonPeerHeightGap)
+	assert.Contains(t, cond.Message, forgestatus.ReasonPrimaryTipHashDiverged)
 	assert.Contains(t, cond.Message, "refused to forge")
 	assert.NotContains(
 		t,
@@ -96,10 +95,10 @@ func TestChainDivergedOnCounterIncrease(t *testing.T) {
 
 func TestChainDivergedNamesEveryIncreasedReason(t *testing.T) {
 	t.Parallel()
-	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(0, 0, 0))
+	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(0, 0))
 	r.refreshForgeStatus(context.Background(), dn)
 
-	fetcher.st = advancingTip(divergenceStatus(0, 1, 3), 1001)
+	fetcher.st = advancingTip(divergenceStatus(1, 3), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 
 	cond := pipelineCond(t, dn)
@@ -110,23 +109,22 @@ func TestChainDivergedNamesEveryIncreasedReason(t *testing.T) {
 		cond.Message,
 		forgestatus.ReasonAppliedTipNotPrimaryAncestor,
 	)
-	assert.NotContains(t, cond.Message, forgestatus.ReasonPeerHeightGap)
 }
 
 // Status is written every reconcile and each write triggers another one, so
 // the report must not change while the counters do not.
 func TestChainDivergedMessageIsStableWhileFlat(t *testing.T) {
 	t.Parallel()
-	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	first := *pipelineCond(t, dn)
 	require.Equal(t, "ChainDiverged", first.Reason)
 
 	for i := range 3 {
 		clock.now = clock.now.Add(10 * time.Minute)
-		fetcher.st = advancingTip(divergenceStatus(6, 0, 0), int64(1002+i))
+		fetcher.st = advancingTip(divergenceStatus(6, 0), int64(1002+i))
 		r.refreshForgeStatus(context.Background(), dn)
 		assert.Equal(t, first.Reason, pipelineCond(t, dn).Reason)
 		assert.Equal(t, first.Message, pipelineCond(t, dn).Message)
@@ -135,20 +133,20 @@ func TestChainDivergedMessageIsStableWhileFlat(t *testing.T) {
 
 func TestChainDivergedClearsAfterHoldWithoutIncrease(t *testing.T) {
 	t.Parallel()
-	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 
 	// Exactly at the hold is still reported; beyond it the report clears.
 	clock.now = clock.now.Add(defaultChainDivergedHold)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1002)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1002)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 
 	clock.now = clock.now.Add(time.Second)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1003)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1003)
 	r.refreshForgeStatus(context.Background(), dn)
 	cond := pipelineCond(t, dn)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -157,36 +155,36 @@ func TestChainDivergedClearsAfterHoldWithoutIncrease(t *testing.T) {
 
 func TestChainDivergedIncreaseExtendsTheHold(t *testing.T) {
 	t.Parallel()
-	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
-	r.refreshForgeStatus(context.Background(), dn)
-
-	clock.now = clock.now.Add(defaultChainDivergedHold - time.Minute)
-	fetcher.st = advancingTip(divergenceStatus(7, 0, 0), 1002)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 
 	clock.now = clock.now.Add(defaultChainDivergedHold - time.Minute)
-	fetcher.st = advancingTip(divergenceStatus(7, 0, 0), 1003)
+	fetcher.st = advancingTip(divergenceStatus(7, 0), 1002)
+	r.refreshForgeStatus(context.Background(), dn)
+
+	clock.now = clock.now.Add(defaultChainDivergedHold - time.Minute)
+	fetcher.st = advancingTip(divergenceStatus(7, 0), 1003)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 }
 
 func TestChainDivergedCounterDecreaseRebaselines(t *testing.T) {
 	t.Parallel()
-	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(50, 0, 0))
+	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(50, 0))
 	r.refreshForgeStatus(context.Background(), dn)
 
 	// The pod restarted: the counter starts again from zero.
-	fetcher.st = advancingTip(divergenceStatus(1, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(1, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
 
-	fetcher.st = advancingTip(divergenceStatus(1, 0, 0), 1002)
+	fetcher.st = advancingTip(divergenceStatus(1, 0), 1002)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
 
-	fetcher.st = advancingTip(divergenceStatus(2, 0, 0), 1003)
+	fetcher.st = advancingTip(divergenceStatus(2, 0), 1003)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 }
@@ -195,15 +193,15 @@ func TestChainDivergedCounterDecreaseRebaselines(t *testing.T) {
 // it started are not reported.
 func TestChainDivergedOperatorRestartRebaselines(t *testing.T) {
 	t.Parallel()
-	r1, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r1, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r1.refreshForgeStatus(context.Background(), dn)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r1.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 
 	r2, _ := newTipReconciler(nil, clock)
 	r2.ForgeStatus = &statusFetcher{
-		st: advancingTip(divergenceStatus(6, 0, 0), 1002),
+		st: advancingTip(divergenceStatus(6, 0), 1002),
 	}
 	r2.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
@@ -211,15 +209,17 @@ func TestChainDivergedOperatorRestartRebaselines(t *testing.T) {
 
 func TestChainDivergedIgnoresOtherStaleTipSkipReasons(t *testing.T) {
 	t.Parallel()
-	parse := func(gap, other int) *forgestatus.Status {
+	parse := func(hash, other int) *forgestatus.Status {
 		body := strings.Join([]string{
-			"cardano_node_metrics_slotNum_int " + strconv.Itoa(1000+gap+other),
+			"cardano_node_metrics_slotNum_int " + strconv.Itoa(1000+hash+other),
 			"dingo_ledger_pipeline_stuck 0",
 			"dingo_ledger_pipeline_halted 0",
 			`dingo_forge_stale_tip_skip_total{reason="peer_height_gap"} ` + strconv.Itoa(
-				gap,
+				other,
 			),
-			`dingo_forge_stale_tip_skip_total{reason="primary_tip_hash_diverged"} 0`,
+			`dingo_forge_stale_tip_skip_total{reason="primary_tip_hash_diverged"} ` + strconv.Itoa(
+				hash,
+			),
 			`dingo_forge_stale_tip_skip_total{reason="applied_tip_not_primary_ancestor"} 0`,
 			`dingo_forge_stale_tip_skip_total{reason="unapplied_block_gap"} ` + strconv.Itoa(
 				other,
@@ -269,9 +269,9 @@ func TestChainDivergedAbsentSeriesChangesNothing(t *testing.T) {
 // chain from state read while it was present.
 func TestChainDivergedSeriesDisappearingClearsTheReport(t *testing.T) {
 	t.Parallel()
-	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 
@@ -299,12 +299,12 @@ func TestChainDivergedRanking(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			r, fetcher, clock, dn := newDivergenceFixture(
-				divergenceStatus(5, 0, 0),
+				divergenceStatus(5, 0),
 			)
 			r.refreshForgeStatus(context.Background(), dn)
 			// The tip also stays frozen beyond the stall threshold.
 			clock.now = clock.now.Add(tipThreshold + time.Minute)
-			st := divergenceStatus(6, 0, 0)
+			st := divergenceStatus(6, 0)
 			tc.mut(st)
 			fetcher.st = st
 			r.refreshForgeStatus(context.Background(), dn)
@@ -316,23 +316,23 @@ func TestChainDivergedRanking(t *testing.T) {
 
 func TestChainDivergedOutranksTipStall(t *testing.T) {
 	t.Parallel()
-	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, clock, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
 	clock.now = clock.now.Add(tipThreshold + time.Minute)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "TipNotAdvancing", pipelineCond(t, dn).Reason)
 
-	fetcher.st = divergenceStatus(6, 0, 0)
+	fetcher.st = divergenceStatus(6, 0)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 }
 
 func TestChainDivergedKeepsPipelineUnknownWithoutGauges(t *testing.T) {
 	t.Parallel()
-	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
 
-	st := advancingTip(divergenceStatus(6, 0, 0), 1001)
+	st := advancingTip(divergenceStatus(6, 0), 1001)
 	st.HasPipelineStuckMetric = false
 	fetcher.st = st
 	r.refreshForgeStatus(context.Background(), dn)
@@ -343,32 +343,32 @@ func TestChainDivergedKeepsPipelineUnknownWithoutGauges(t *testing.T) {
 func TestChainDivergedEventFiresOnce(t *testing.T) {
 	t.Parallel()
 	clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
-	fetcher := &statusFetcher{st: divergenceStatus(5, 0, 0)}
+	fetcher := &statusFetcher{st: divergenceStatus(5, 0)}
 	r, rec := newTipReconciler(nil, clock)
 	r.ForgeStatus = fetcher
 	dn := relayNodeForStatus("bp", "ns")
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Empty(t, rec.Events)
 
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Len(t, rec.Events, 1)
 	assert.Contains(t, <-rec.Events, "ChainDiverged")
 
-	fetcher.st = advancingTip(divergenceStatus(7, 0, 0), 1002)
+	fetcher.st = advancingTip(divergenceStatus(7, 0), 1002)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Empty(t, rec.Events)
 }
 
 func TestChainDivergedBaselinesAreKeptPerNode(t *testing.T) {
 	t.Parallel()
-	r, fetcher, _, dnA := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, _, dnA := newDivergenceFixture(divergenceStatus(5, 0))
 	dnB := relayNodeForStatus("other", "ns")
 	r.refreshForgeStatus(context.Background(), dnA)
 
 	// The other node's first observation reads 9; it is not judged against
 	// the first node's 5.
-	fetcher.st = advancingTip(divergenceStatus(9, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(9, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dnB)
 	assert.Equal(t, "Following", pipelineCond(t, dnB).Reason)
 }
@@ -407,14 +407,14 @@ func newDivergencePodFixture(
 func TestChainDivergedPodRestartDoesNotMaskAnotherPodsRise(t *testing.T) {
 	t.Parallel()
 	r, fetcher, dn := newDivergencePodFixture(map[string]*forgestatus.Status{
-		"bp-0": divergenceStatus(5, 0, 0),
-		"bp-1": divergenceStatus(5, 0, 0),
+		"bp-0": divergenceStatus(5, 0),
+		"bp-1": divergenceStatus(5, 0),
 	})
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "Following", pipelineCond(t, dn).Reason)
 
-	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(0, 0, 0), 1001)
-	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(0, 0), 1001)
+	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
@@ -423,17 +423,17 @@ func TestChainDivergedPodRestartDoesNotMaskAnotherPodsRise(t *testing.T) {
 func TestChainDivergedNewPodOnlySetsItsBaseline(t *testing.T) {
 	t.Parallel()
 	r, fetcher, dn := newDivergencePodFixture(map[string]*forgestatus.Status{
-		"bp-0": divergenceStatus(5, 0, 0),
+		"bp-0": divergenceStatus(5, 0),
 	})
 	r.refreshForgeStatus(context.Background(), dn)
 
 	dn.Spec.Replicas = new(int32(2))
-	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(5, 0, 0), 1001)
-	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(9, 0, 0), 1001)
+	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(5, 0), 1001)
+	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(9, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
 
-	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(10, 0, 0), 1002)
+	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(10, 0), 1002)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 }
@@ -441,21 +441,21 @@ func TestChainDivergedNewPodOnlySetsItsBaseline(t *testing.T) {
 func TestChainDivergedRemovedPodBaselineIsForgotten(t *testing.T) {
 	t.Parallel()
 	r, fetcher, dn := newDivergencePodFixture(map[string]*forgestatus.Status{
-		"bp-0": divergenceStatus(5, 0, 0),
-		"bp-1": divergenceStatus(5, 0, 0),
+		"bp-0": divergenceStatus(5, 0),
+		"bp-1": divergenceStatus(5, 0),
 	})
 	r.refreshForgeStatus(context.Background(), dn)
 
 	dn.Spec.Replicas = new(int32(1))
 	delete(fetcher.pods, "bp-1")
-	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(5, 0, 0), 1001)
+	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(5, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "Following", pipelineCond(t, dn).Reason)
 
 	// A pod of the same name returns with a counter above the old baseline.
 	dn.Spec.Replicas = new(int32(2))
-	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(5, 0, 0), 1002)
-	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(9, 0, 0), 1002)
+	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(5, 0), 1002)
+	fetcher.pods["bp-1"] = advancingTip(divergenceStatus(9, 0), 1002)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
 }
@@ -463,18 +463,18 @@ func TestChainDivergedRemovedPodBaselineIsForgotten(t *testing.T) {
 func TestChainDivergedPodWithoutSeriesDoesNotHideAnother(t *testing.T) {
 	t.Parallel()
 	r, fetcher, dn := newDivergencePodFixture(map[string]*forgestatus.Status{
-		"bp-0": divergenceStatus(5, 0, 0),
+		"bp-0": divergenceStatus(5, 0),
 		"bp-1": tipStatus(1000),
 	})
 	r.refreshForgeStatus(context.Background(), dn)
 
-	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(6, 0), 1001)
 	fetcher.pods["bp-1"] = tipStatus(1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 
 	// The pod without the series must not clear the other pod's report.
-	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(6, 0, 0), 1002)
+	fetcher.pods["bp-0"] = advancingTip(divergenceStatus(6, 0), 1002)
 	fetcher.pods["bp-1"] = tipStatus(1002)
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
@@ -500,20 +500,20 @@ func TestPipelineEventFiresOnEntryFromExistingCondition(t *testing.T) {
 	t.Run("ChainDiverged", func(t *testing.T) {
 		t.Parallel()
 		clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
-		fetcher := &statusFetcher{st: divergenceStatus(5, 0, 0)}
+		fetcher := &statusFetcher{st: divergenceStatus(5, 0)}
 		r, rec := newTipReconciler(nil, clock)
 		r.ForgeStatus = fetcher
 		dn := relayNodeForStatus("bp", "ns")
 		r.refreshForgeStatus(context.Background(), dn)
 		seedHealthyPipeline(dn)
 
-		fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+		fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 		r.refreshForgeStatus(context.Background(), dn)
 		require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 		require.Len(t, rec.Events, 1)
 		assert.Contains(t, <-rec.Events, "ChainDiverged")
 
-		fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1002)
+		fetcher.st = advancingTip(divergenceStatus(6, 0), 1002)
 		r.refreshForgeStatus(context.Background(), dn)
 		assert.Empty(t, rec.Events)
 	})
@@ -539,9 +539,9 @@ func TestPipelineEventFiresOnEntryFromExistingCondition(t *testing.T) {
 
 func TestChainDivergedForgottenWhenScaledToZero(t *testing.T) {
 	t.Parallel()
-	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0))
 	r.refreshForgeStatus(context.Background(), dn)
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1001)
 	r.refreshForgeStatus(context.Background(), dn)
 	require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 
@@ -551,7 +551,7 @@ func TestChainDivergedForgottenWhenScaledToZero(t *testing.T) {
 
 	// Well inside the hold, with the counter flat on the new replica.
 	dn.Spec.Replicas = new(int32(1))
-	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1002)
+	fetcher.st = advancingTip(divergenceStatus(6, 0), 1002)
 	r.refreshForgeStatus(context.Background(), dn)
 
 	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
