@@ -62,7 +62,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -106,7 +106,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min(up{namespace=\"$operator_namespace\"} and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d]))",
           "instant": true,
@@ -117,7 +117,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(controller_runtime_reconcile_errors_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
           "instant": true,
@@ -128,7 +128,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(controller_runtime_reconcile_panics_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
           "instant": true,
@@ -139,7 +139,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "instant": true,
@@ -150,7 +150,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])))",
           "instant": true,
@@ -161,7 +161,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "1 - sum(rate(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[15m])) / sum(rate(workqueue_queue_duration_seconds_count{namespace=\"$operator_namespace\",name=~\"$controller\"}[15m]))",
           "instant": true,
@@ -172,7 +172,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count(((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "instant": true,
@@ -183,7 +183,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count(kube_pod_status_ready{condition=\"true\"} == 1 and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or (0 * count(kube_pod_status_ready{condition=\"true\"}))",
           "instant": true,
@@ -194,7 +194,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) unless on (namespace, pod) (kube_pod_status_ready{condition=\"true\"} == 1)",
           "instant": true,
@@ -205,7 +205,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
           "instant": true,
@@ -216,7 +216,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"$operator_namespace\",container=\"manager\"}[24h]))",
           "instant": true,
@@ -227,7 +227,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(rest_client_requests_total{namespace=\"$operator_namespace\",code!~\"2..\"}[$__range]) and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d])) or vector(0)",
           "instant": true,
@@ -244,7 +244,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Share of the worker capacity in use: the average number of active workers (sampled at each scrape, so a reconcile still running counts) divided by the configured maximum concurrent reconciles, over the last 15 minutes and the last hour. **Healthy: green, under 85%.** Amber from 85%, red from 95%: at that point DingoNodes become due faster than the worker clears them and the queue wait grows without bound. The trend is in Worker saturation beside it.",
       "fieldConfig": {
@@ -316,7 +316,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "instant": true,
@@ -327,7 +327,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1h])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "instant": true,
@@ -343,7 +343,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every reconcile over the dashboard range by how it ended. `requeue_after` is the normal outcome: the operator finished and scheduled its next periodic check. `success` means done with nothing scheduled, `requeue` an immediate retry, `error` a reconcile that failed. **Healthy: one solid green ring of requeue_after.** Any red slice is a DingoNode the operator could not bring to its desired state: read the operator log for that controller.",
       "fieldConfig": {
@@ -467,7 +467,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (result) (increase(controller_runtime_reconcile_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
           "instant": true,
@@ -483,7 +483,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every item the worker picked up over the dashboard range, by how long it had waited in the queue (`workqueue_queue_duration_seconds`; its buckets are decades, so these four bands are exact, where a quantile would be an interpolation). A wait of a few seconds is normal with one worker and a reconcile of about 5 s. **Healthy: mostly under 10 s and nothing over 100 s.** A growing 10 to 100 s slice means the worker is falling behind: see Worker Busy. The share over 10 s is also the Queued > 10 s figure in the header.",
       "fieldConfig": {
@@ -607,7 +607,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"1(\\\\.0)?\"}[$__range]))",
           "instant": true,
@@ -618,7 +618,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"1(\\\\.0)?\"}[$__range])), 0)",
           "instant": true,
@@ -629,7 +629,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"100(\\\\.0)?\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[$__range])), 0)",
           "instant": true,
@@ -640,7 +640,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=\"+Inf\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"100(\\\\.0)?\"}[$__range])), 0)",
           "instant": true,
@@ -656,7 +656,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every DingoNode pod: readiness now, restarts in total and over the dashboard range, and uptime. **Healthy: all ready, 0 restarts in range.** Restarts in range turn amber at 1 and red at 3; for a restarted pod read `kubectl logs --previous` and check whether it was OOM-killed. This is the closest thing to per-DingoNode status available as metrics. Pods come from the pod spec, so a pod that has not started (a claim that cannot bind) is listed as not ready; a removed DingoNode drops out at once.",
       "fieldConfig": {
@@ -784,7 +784,7 @@
                 "value": [
                   {
                     "title": "Open ${__value.text} in Forging Health",
-                    "url": "/d/dingo-forging?var-pod=${__value.raw}&${network:queryparam}&${__url_time_range}"
+                    "url": "/d/dingo-forging?var-pod=${__value.raw}&${datasource:queryparam}&${network:queryparam}&${__url_time_range}"
                   }
                 ]
               }
@@ -815,7 +815,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or ((((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0) and on () count(kube_pod_status_ready{condition=\"true\"}))",
           "format": "table",
@@ -826,7 +826,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (kube_pod_container_status_restarts_total and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -837,7 +837,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[$__range]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -848,7 +848,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "time() - max by (namespace, pod) (kube_pod_start_time and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -893,7 +893,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "The life of every KES key in one picture. One bar per producer runs from the KES period its operational certificate starts in to the period it expires in; grey is used up, the coloured part is what is left, the marker is now, and the hatched amber zone at the right is a reference window of the default `renewBeforePeriods` (8, 12 days). Only rotation mode Auto renews at the DingoNode's own `renewBeforePeriods`; MonitorOnly, the default, never renews, so read the mode and threshold on the DingoNode. Shortest life first. Under each bar: when the reference renewal point is reached, the opcert issue number the node has loaded against the highest it has seen on chain, the KES period range, and credential reloads over the dashboard range. The lower rows are the keys the KES agent holds for the producers that sign through it (per profile, from the bursa KES agent's `bursa_kesagent_*` metrics; their start period is not exported, so those bars use the longest producer certificate as their scale). **Healthy: every marker left of the hatched zone, opcert loaded equal to or one ahead of the chain, replicas agreeing.** A marker inside the zone means the key is at the reference renewal point: check the DingoNode's rotation mode, then the DingoNode's RotationDue and OpCertIssued conditions. A loaded opcert behind the chain means the node's blocks are rejected. With more keys than fit, the panel drops the detail line (hover a row for it) rather than scroll.",
       "fieldConfig": {
@@ -938,7 +938,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (cardano_node_metrics_operationalCertificateStartKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
@@ -949,7 +949,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (cardano_node_metrics_operationalCertificateExpiryKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
@@ -960,7 +960,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (cardano_node_metrics_currentKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
@@ -971,7 +971,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"})",
           "instant": true,
@@ -982,7 +982,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\"})",
           "instant": true,
@@ -993,7 +993,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\"})",
           "instant": true,
@@ -1004,7 +1004,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\",result=\"success\"}[$__range]))",
           "instant": true,
@@ -1015,7 +1015,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\",result=\"failure\"}[$__range]))",
           "instant": true,
@@ -1026,7 +1026,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (profile) (bursa_kesagent_last_period)",
           "instant": true,
@@ -1037,7 +1037,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (profile) (bursa_kesagent_current_period)",
           "instant": true,
@@ -1048,7 +1048,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (profile) (bursa_kesagent_opcert_issue_number)",
           "instant": true,
@@ -1059,7 +1059,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(max by (profile) (bursa_kesagent_last_period) != on (profile) min by (profile) (bursa_kesagent_last_period)) or (max by (profile) (bursa_kesagent_opcert_issue_number) != on (profile) min by (profile) (bursa_kesagent_opcert_issue_number))",
           "instant": true,
@@ -1075,7 +1075,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Readiness of each DingoNode pod over time. **Healthy: solid green.** A red stretch is a restart, a rollout or a failed readiness probe; several pods turning red at the same moment points at the host or the operator rolling a change, a single pod at the node itself.",
       "fieldConfig": {
@@ -1150,7 +1150,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or ((((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0) and on () count(kube_pod_status_ready{condition=\"true\"}))",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -1164,7 +1164,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "KES periods left per producer over time. It falls by one every 1.5 days and jumps back up when a rotation is applied, so the sawtooth is the rotation history. The amber band starts at 8, the default renewBeforePeriods (the red band starts at 4). Only rotation mode Auto renews, at the DingoNode's own renewBeforePeriods; MonitorOnly, the default, never renews. A line that keeps falling past the DingoNode's threshold under Auto means a rotation did not go through: check the DingoNode's RotationDue and OpCertIssued conditions. **Healthy: every line above the amber band, or dipping into it only briefly before it jumps back up.**",
       "fieldConfig": {
@@ -1259,7 +1259,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -1273,7 +1273,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Block producer credential reloads per hour, by trigger (signal, file change, agent push) and result (success, unchanged, failure). Series at zero are hidden, so **a flat baseline is normal** between rotations. A success after a KES rotation is what you want to see; a failure means the new key or certificate was rejected and the producer is still on the old one - read the node log before the old key expires. **Healthy: a success after each rotation and never a failure.**",
       "fieldConfig": {
@@ -1363,7 +1363,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, trigger, result) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\"}[$__interval])) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{trigger}} {{result}}",
@@ -1377,7 +1377,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Reconciles per minute by result. `requeue_after` is the normal outcome and should be the only non-zero line: the operator finished and scheduled its next periodic check. `success` (done, nothing scheduled) and `requeue` (immediate retry) stay at 0 in this operator; `error` should be 0. If the `requeue_after` line drops to 0 while the operator is UP, the worker is hung - see In-Flight and Longest-Running Reconcile. **Healthy: one steady green band.**",
       "fieldConfig": {
@@ -1525,7 +1525,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (controller, result) (rate(controller_runtime_reconcile_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[5m])) * 60",
           "legendFormat": "{{controller}} {{result}}",
@@ -1539,7 +1539,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "How long each reconcile took, as a heatmap of `controller_runtime_reconcile_time_seconds`: time runs left to right, the duration bucket bottom to top, and a darker cell means more reconciles landed in that bucket in that 5-minute step. Most of a reconcile is reading the node's metrics endpoint and writing status, so a slow or unreachable node lifts the band toward the timeout. **Healthy: one tight band around 5 s** (today: nearly everything between 1 and 10 s). A second band higher up, or a band that drifts upward, is a node that answers slowly; with a single worker every extra second adds directly to Worker saturation.",
       "fieldConfig": {
@@ -1611,7 +1611,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__interval]))",
           "format": "heatmap",
@@ -1627,7 +1627,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Share of worker capacity in use: the average number of active workers (sampled at each scrape, so a reconcile still running counts) divided by the configured maximum concurrent reconciles (1). The 5-minute line shows bursts, the 1-hour line the trend. The amber and red bands start at 85% and 95%: sustained above them, DingoNodes become due faster than the worker clears them and queue wait grows without bound. Remedies are a cheaper or less frequent reconcile, or more workers. **Healthy: both lines below the amber band.**",
       "fieldConfig": {
@@ -1722,7 +1722,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[5m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "legendFormat": "busy (5m)",
@@ -1731,7 +1731,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1h])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "legendFormat": "busy (1h)",
@@ -1745,7 +1745,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "DingoNodes waiting for the worker, per priority lane of controller-runtime's priority queue. **Priority 0** is the normal lane: watch events and the periodic requeues. **Priority -100** is the low-priority lane controller-runtime uses for bulk re-list work - items queued when the operator starts or its cache resyncs without the object having changed - so that a restart cannot delay a real change; higher priority is served first. Depth is a count only: there is no per-DingoNode label, and each DingoNode is queued at most once, so the ceiling is the number of DingoNodes. **Healthy: brief spikes that drain to 0** (7-day maximum: 7 in lane 0, 1 in lane -100). A lane that stays above 0 for minutes means the worker is saturated or hung.",
       "fieldConfig": {
@@ -1836,7 +1836,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(workqueue_depth{namespace=\"$operator_namespace\",name=~\"$controller\",priority=\"0\"})",
           "legendFormat": "normal lane (priority 0)",
@@ -1845,7 +1845,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(workqueue_depth{namespace=\"$operator_namespace\",name=~\"$controller\",priority=\"-100\"})",
           "legendFormat": "low-priority lane (-100)",
@@ -1859,7 +1859,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "`workqueue_unfinished_work_seconds`: seconds of work currently in progress and not yet finished. `workqueue_longest_running_processor_seconds`: age of the oldest reconcile still running. With one worker the two are the same reconcile. **Healthy: a sawtooth that resets every few seconds**. A line that keeps climbing past a minute is a hung reconcile: nothing else is processed until it returns. Restarting the operator pod clears it; capture the log first.",
       "fieldConfig": {
@@ -1953,7 +1953,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(workqueue_unfinished_work_seconds{namespace=\"$operator_namespace\",name=~\"$controller\"})",
           "legendFormat": "unfinished work",
@@ -1962,7 +1962,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max(workqueue_longest_running_processor_seconds{namespace=\"$operator_namespace\",name=~\"$controller\"})",
           "legendFormat": "longest running",
@@ -1976,7 +1976,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Operator resident memory as the process reports it, the container working set the kubelet uses for OOM decisions, and the container memory limit. **Healthy: flat, well under the limit** (about 80 MiB RSS against a 256 MiB limit today). A steady climb is a leak and ends in an OOM kill, visible as a restart.",
       "fieldConfig": {
@@ -2092,7 +2092,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (process_resident_memory_bytes{namespace=\"$operator_namespace\"} and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d]))",
           "legendFormat": "{{namespace}}/{{pod}} rss",
@@ -2101,7 +2101,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (container_memory_working_set_bytes{namespace=\"$operator_namespace\",container=\"manager\"})",
           "legendFormat": "{{namespace}}/{{pod}} working set",
@@ -2110,7 +2110,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (kube_pod_container_resource_limits{namespace=\"$operator_namespace\",resource=\"memory\",container=\"manager\"})",
           "legendFormat": "{{namespace}}/{{pod}} limit",
@@ -2124,7 +2124,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Requests per second from the operator to the Kubernetes API, by HTTP method and status code. **Healthy: only 2xx** - today roughly 1.6 GET, 1.0 PUT and a trickle of POST per second, about 7 PUTs per reconcile. 409 is an update conflict, 403 missing RBAC, 429 client- or server-side throttling, 5xx an API server problem. The PUT volume follows the reconcile rate, so it halves if the doubled reconcile rate is fixed. Any series that is not 2xx is drawn red.",
       "fieldConfig": {
@@ -2226,7 +2226,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (method, code) (rate(rest_client_requests_total{namespace=\"$operator_namespace\"}[5m]) and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d]))",
           "legendFormat": "{{method}} {{code}}",
@@ -2249,6 +2249,17 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "allValue": ".+",
         "allowCustomValue": true,
         "current": {
@@ -2261,7 +2272,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
         "hide": 0,
@@ -2290,7 +2301,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(controller_runtime_reconcile_total{controller=\"dingonode\"}, namespace)",
         "hide": 0,
@@ -2320,7 +2331,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(controller_runtime_reconcile_total{namespace=\"$operator_namespace\"}, controller)",
         "hide": 0,

@@ -62,7 +62,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Good: every Dingo up and within 300 slots of tip, blocks heard in well under 1 s, more than 8 KES periods left on every producer, and more than 30 days of disk runway. No data while any Dingo has no measured disk runway yet.",
       "fieldConfig": {
@@ -107,7 +107,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (up{cardano_network=~\"$network\"})",
           "instant": true,
@@ -118,7 +118,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"})",
           "instant": true,
@@ -129,7 +129,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_ledger_pipeline_stuck{cardano_network=~\"$network\"} + dingo_ledger_pipeline_halted{cardano_network=~\"$network\"}) > 0",
           "instant": true,
@@ -140,7 +140,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "1000 * histogram_quantile(0.5, sum by (le) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[1h])))",
           "instant": true,
@@ -151,7 +151,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
           "instant": true,
@@ -162,7 +162,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))",
           "instant": true,
@@ -173,7 +173,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max((kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "instant": true,
@@ -184,7 +184,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (cardano_node_metrics_peerSelection_hot{cardano_network=~\"$network\"}) < 5",
           "instant": true,
@@ -195,7 +195,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count by (version) (dingo_build_info{cardano_network=~\"$network\"})",
           "instant": true,
@@ -206,7 +206,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{container=\"dingo\"}[24h]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "instant": true,
@@ -222,7 +222,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One row per Dingo. **Healthy: every row up, Tip lag green, Arrival p50 under 1 s, 10 or more hot peers.** **Tip lag**: slots behind the wall clock (blue over 600 = syncing; now${syncing:csv}). **Arrival p50**: median time from a block's slot to the first copy of its header reaching this node over 6 h (`dingo_chainsync_header_arrival_delay_seconds`) - the pack's own block-propagation measure; pack-wide it is ${arrival_p50} ms. A syncing node hears no current blocks, so the column reads *syncing* for it. **Role** is producer for nodes that load forging credentials (now${producers:csv}). **Node disk** is the host filesystem, since local-path volumes report it. CPU is cores. **Next slot**: time until a producer's next scheduled leader slot (`dingo_leader_next_slot`, 1 s slots), *none scheduled* when the schedules it holds contain no further slot; the column appears once a producer runs a newer Dingo, and Forging Health has the schedule behind it.",
       "fieldConfig": {
@@ -330,7 +330,7 @@
                 "value": [
                   {
                     "title": "Open ${__data.fields.Pod} in Forging Health (producers)",
-                    "url": "/d/dingo-forging?var-pod=${__data.fields.Pod}&${network:queryparam}&${__url_time_range}"
+                    "url": "/d/dingo-forging?var-pod=${__data.fields.Pod}&${datasource:queryparam}&${network:queryparam}&${__url_time_range}"
                   }
                 ]
               }
@@ -754,7 +754,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (up{cardano_network=~\"$network\"})",
           "format": "table",
@@ -766,7 +766,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"})",
           "format": "table",
@@ -778,7 +778,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, version) (dingo_build_info{cardano_network=~\"$network\"})",
           "format": "table",
@@ -790,7 +790,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"})",
           "format": "table",
@@ -802,7 +802,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600) * 0 - 1 or (histogram_quantile(0.5, sum by (le, namespace, pod) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h]))) >= 0)",
           "format": "table",
@@ -814,7 +814,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (cardano_node_metrics_peerSelection_hot{cardano_network=~\"$network\"})",
           "format": "table",
@@ -826,7 +826,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{container=\"dingo\"}[24h]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -838,7 +838,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (time() - process_start_time_seconds{cardano_network=~\"$network\"})",
           "format": "table",
@@ -936,7 +936,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One lane per Dingo, grouped by network, for the last hour before the end of the time range. Each bar is one block at its slot time; height is the delay after the slot (linear to 1 s, log above; the dashed line is 1 s). Grey is the wait for the first copy of the header, colour is header to ledger adoption as the new tip. On a network with more than one Dingo, a yellow dot marks the Dingo that heard that block first, and the right-hand gutter gives each Dingo's share of firsts and its median lag when it was not first. Hover a bar for the numbers and the same block on its sibling Dingos. A syncing node (now:${syncing:csv}) gets a blue labelled lane instead of bars, so it does not read as slow. **Healthy: short green bars, no gaps, firsts shared between siblings.** Built from the `dingo_chainsync_recent_header_*` and `dingo_ledger_recent_adoption_*` rings (16 blocks per node, sampled every scrape).",
       "fieldConfig": {
@@ -981,7 +981,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "dingo_chainsync_recent_header_block_number{cardano_network=~\"$network\"}[1h]",
           "instant": true,
@@ -992,7 +992,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "dingo_chainsync_recent_header_delay_seconds{cardano_network=~\"$network\"}[1h]",
           "instant": true,
@@ -1003,7 +1003,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "dingo_chainsync_recent_header_block_slot{cardano_network=~\"$network\"}[1h]",
           "instant": true,
@@ -1014,7 +1014,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "dingo_ledger_recent_adoption_block_number{cardano_network=~\"$network\"}[1h]",
           "instant": true,
@@ -1025,7 +1025,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "dingo_ledger_recent_adoption_delay_seconds{cardano_network=~\"$network\"}[1h]",
           "instant": true,
@@ -1036,7 +1036,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (up{cardano_network=~\"$network\"})",
           "instant": true,
@@ -1047,7 +1047,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"})",
           "instant": true,
@@ -1058,7 +1058,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"})",
           "instant": true,
@@ -1069,7 +1069,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (cardano_network) ((timestamp(dingo_tip_gap_slots{cardano_network=~\"$network\"}) - cardano_node_metrics_slotNum_int{cardano_network=~\"$network\"} - dingo_tip_gap_slots{cardano_network=~\"$network\"}) and dingo_tip_gap_slots{cardano_network=~\"$network\"} <= 600)",
           "instant": true,
@@ -1085,7 +1085,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One row per Dingo. **Healthy: every row up, Tip lag green, Arrival p50 under 1 s, 10 or more hot peers.** **Tip lag**: slots behind the wall clock (blue over 600 = syncing; now${syncing:csv}). **Arrival p50**: median time from a block's slot to the first copy of its header reaching this node over 6 h (`dingo_chainsync_header_arrival_delay_seconds`) - the pack's own block-propagation measure; pack-wide it is ${arrival_p50} ms. A syncing node hears no current blocks, so the column reads *syncing* for it. **Role** is producer for nodes that load forging credentials (now${producers:csv}). **Node disk** is the host filesystem, since local-path volumes report it. CPU is cores. **Next slot**: time until a producer's next scheduled leader slot (`dingo_leader_next_slot`, 1 s slots), *none scheduled* when the schedules it holds contain no further slot; the column appears once a producer runs a newer Dingo, and Forging Health has the schedule behind it.",
       "fieldConfig": {
@@ -1541,7 +1541,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (up{cardano_network=~\"$network\"})",
           "format": "table",
@@ -1553,7 +1553,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_database_size_bytes{cardano_network=~\"$network\"})",
           "format": "table",
@@ -1565,7 +1565,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (label_replace(((kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))",
           "format": "table",
@@ -1577,7 +1577,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (container_memory_working_set_bytes{container=\"dingo\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -1589,7 +1589,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container=\"dingo\"}[5m]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -1687,7 +1687,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One row per Dingo, one cell per time bucket (30 min or more), coloured by the worst state the node was in during that bucket. In order of severity: **down** (not scraped), **pipeline stuck** (ledger pipeline stuck or halted), **syncing** (over 600 slots behind; blue, not red, because a bootstrap is expected to take a while - now:${syncing:csv}), **lagging** (300 to 600 slots behind), **thin on peers** (under 5 hot peers), **healthy**. A gap means the target did not exist. **Healthy: a solid green grid.** A column of the same colour across nodes points at the cluster or the network; one bad row points at that node.",
       "fieldConfig": {
@@ -1783,7 +1783,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min_over_time(((max by (namespace, pod) (up{cardano_network=~\"$network\"}) == 0) or (max by (namespace, pod) (dingo_ledger_pipeline_stuck{cardano_network=~\"$network\"} + dingo_ledger_pipeline_halted{cardano_network=~\"$network\"}) > 0) * 0 + 1 or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600) * 0 + 2 or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 300) * 0 + 3 or (max by (namespace, pod) (cardano_node_metrics_peerSelection_hot{cardano_network=~\"$network\"}) < 5) * 0 + 4 or max by (namespace, pod) (up{cardano_network=~\"$network\"}) * 0 + 5)[$__interval:1m])",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -1797,7 +1797,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One row per Dingo and version, coloured by how long the process had been running at that moment. Every amber block is a restart (the process was under 30 minutes old); it fades to green after 6 hours. A row that ends while a new row for the same Dingo starts is a version change, so a rollout reads as a staircase across the pack. Running now:${versions:csv}. **Healthy: long green bars**; amber blocks that repeat on one row are a crash loop.",
       "fieldConfig": {
@@ -1879,7 +1879,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(max by (namespace, pod, ver) (label_replace(dingo_build_info{cardano_network=~\"$network\"}, \"ver\", \"$1\", \"version\", \"(v[^ ]+).*\") * on (namespace, pod) group_left () max by (namespace, pod) (time() - process_start_time_seconds{cardano_network=~\"$network\"})) >= bool 1800) + (max by (namespace, pod, ver) (label_replace(dingo_build_info{cardano_network=~\"$network\"}, \"ver\", \"$1\", \"version\", \"(v[^ ]+).*\") * on (namespace, pod) group_left () max by (namespace, pod) (time() - process_start_time_seconds{cardano_network=~\"$network\"})) >= bool 21600)",
           "legendFormat": "{{namespace}}/{{pod}} {{ver}}",
@@ -1893,7 +1893,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Three medians per Dingo over the dashboard time range, each measured from the block's slot: **header heard** (first copy of the header, `dingo_chainsync_header_arrival_delay_seconds`), **body fetched** (`dingo_blockfetch_block_delay_seconds`) and **adopted as tip** (`dingo_ledger_block_adoption_delay_seconds`, including validation). Sorted by header heard, fastest first, so the top row is the Dingo that hears blocks soonest. Compare Dingos on the same network; different networks have different producers and block sizes. Syncing nodes record none of these and are absent (now:${syncing:csv}), as is a Dingo that no longer exists. **Healthy: every bar under 1 s**, with adoption close behind the fetch.",
       "fieldConfig": {
@@ -2018,7 +2018,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (increase(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[$__range]))) > 0) and on (namespace, pod) max by (namespace, pod) (up{cardano_network=~\"$network\"})",
           "format": "table",
@@ -2030,7 +2030,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (increase(dingo_blockfetch_block_delay_seconds_bucket{cardano_network=~\"$network\"}[$__range]))) > 0) and on (namespace, pod) max by (namespace, pod) (up{cardano_network=~\"$network\"})",
           "format": "table",
@@ -2042,7 +2042,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(histogram_quantile(0.5, sum by (le, namespace, pod) (increase(dingo_ledger_block_adoption_delay_seconds_bucket{cardano_network=~\"$network\"}[$__range]))) > 0) and on (namespace, pod) max by (namespace, pod) (up{cardano_network=~\"$network\"})",
           "format": "table",
@@ -2091,7 +2091,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every block header the pack heard, as a heatmap: time runs left to right, the delay from the block's slot to the first copy of its header bottom to top (`dingo_chainsync_header_arrival_delay_seconds` buckets, all Dingos together), and a darker cell means more headers landed in that delay bucket in that 10-minute step. Over a day it shows the hours when blocks arrive late. **Healthy: one dark band in the 0.1 to 0.5 s rows and almost nothing above 1 s** (pack median now: ${arrival_p50} ms). A band that lifts for a while at the same hours every day is network congestion at those hours; a smear above 3 s at one moment is a slow producer or a short fork, and the per-Dingo p95 below says whether one node or all of them saw it.",
       "fieldConfig": {
@@ -2163,7 +2163,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (le) (increase(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[$__interval]))",
           "format": "heatmap",
@@ -2179,7 +2179,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "95th percentile delay from a block's slot to the first copy of its header reaching each Dingo, over 30-minute windows: the slow blocks, per node. The medians are on the leaderboard above and the whole distribution in the heatmap. A rise on one node points at its peers or its link; a rise on every node points at the network or at whoever produced the blocks. The shaded bands start at 2 s (amber) and 5 s (red). **Healthy: every line under the amber band.**",
       "fieldConfig": {
@@ -2273,7 +2273,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "histogram_quantile(0.95, sum by (le, namespace, pod) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[30m])))",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -2287,7 +2287,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Slots between the wall clock and each Dingo's chain tip, log scale so a syncing node and the at-tip nodes fit on one chart. At tip is a few slots to a few tens; over 600 (the red line) counts as syncing (now:${syncing:csv}). **Healthy: every line far below the red line.** A node at tip whose line climbs has stopped following the chain.",
       "fieldConfig": {
@@ -2377,7 +2377,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) + 1",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -2391,7 +2391,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "The hot (active) peers of each Dingo right now, stacked by how the node found them (`dingo_metrics_peerSelection_peers_by_source`): **ledger** peers are stake pool relays taken from the chain, **gossip** peers come from peer sharing, **local roots** are the peers pinned in the topology (for a producer, its own relays), **public roots and bootstrap** come from the topology's public lists, and the last group is inbound or unclassified. The whole bar is the node's hot peer count. **Healthy: at least 5 hot peers per Dingo (the header warns below that), relays with a healthy mix of ledger and gossip peers, producers on their local roots.** A relay whose bar is only local roots has stopped discovering peers; a short bar hears blocks late.",
       "fieldConfig": {
@@ -2546,7 +2546,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"ledger\"})",
           "format": "table",
@@ -2558,7 +2558,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"gossip\"})",
           "format": "table",
@@ -2570,7 +2570,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"topology-local-root\"})",
           "format": "table",
@@ -2582,7 +2582,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"topology-public-root|topology-bootstrap\"})",
           "format": "table",
@@ -2594,7 +2594,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_metrics_peerSelection_peers_by_source{cardano_network=~\"$network\",state=\"hot\",source=~\"inbound|unknown\"})",
           "format": "table",
@@ -2634,7 +2634,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "A fuel gauge per producer: days of KES validity left on its operational certificate (remaining KES periods times the period length, `cardano_node_metrics_remainingKESPeriods_int` x `dingo_forge_slots_per_kes_period`, 1 s slots, so 1.5 days a period). Emptiest first; a dial is full at 93 days (62 periods, a fresh key). Lowest now: ${kes_min} periods on ${kes_min_pod}. Amber starts at 8 periods (12 days), the default renewBeforePeriods; only rotation mode Auto renews, at the DingoNode's own renewBeforePeriods, and MonitorOnly, the default, never renews. **Healthy: green, 12 days or more**; amber under 12 days means the key is at the default renewal point, red under 6 that it is close to expiry, and the producer stops forging when the dial is empty.",
       "fieldConfig": {
@@ -2706,7 +2706,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sort(max by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"} * dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"}) / 86400)",
           "instant": true,
@@ -2722,7 +2722,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Days until each Dingo data volume (`dingo-data-<pod>`) is full, at the last 24 hours' fill rate (available bytes divided by the `deriv` of `kubelet_volume_stats_available_bytes`; volumes that share one filesystem report the same figure and move together). Shortest now: ${runway_min} days on ${runway_pod}. A sync or Mithril bootstrap fills fast and then stops, so a short bar while a node is syncing (now:${syncing:csv}) is a prompt to check, not a countdown. Capped at one year, which is also shown when nothing is filling. **Healthy: 30 days or more**; under 7 days act now.",
       "fieldConfig": {
@@ -2802,7 +2802,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sort(max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\")))",
           "instant": true,
@@ -2818,7 +2818,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "How much each Dingo's own database grew per day over the last 24 hours, summed over its stores (dingo_database_size_bytes). Negative means compaction freed more than new blocks added. Volume stats are not used here: on local-path storage every volume on a node reports that node's whole disk. **Healthy: a few MB a day at tip; a syncing Dingo grows fastest.**",
       "fieldConfig": {
@@ -2877,7 +2877,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "refId": "A",
           "instant": true,
@@ -2893,7 +2893,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Working-set memory of each Dingo container (cAdvisor). **Healthy: flat between restarts.** Watch for steady growth on one node: that is a leak, and it ends in an OOM kill, which shows as an amber block in Restarts and Versions.",
       "fieldConfig": {
@@ -2979,7 +2979,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (container_memory_working_set_bytes{container=\"dingo\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -2993,7 +2993,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "CPU each Dingo container uses, in cores (cAdvisor). Syncing and epoch boundaries spike. **Healthy: a node at tip sits low, well under one core.** A node at tip that stays high is replaying, stuck in a loop, or being hammered by a peer.",
       "fieldConfig": {
@@ -3080,7 +3080,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container=\"dingo\"}[5m]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -3094,7 +3094,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "On-disk size of each Dingo's database now, largest first, split into its two stores (`dingo_database_size_bytes`): the **blob store** holds the blocks, the **metadata** database the ledger state and indexes. This is what each node takes from its data volume, so read it with Disk Runway above when a volume is filling. Mainnet is far larger than the test networks. **Healthy: sizes that match the network the node follows**; two Dingos on the same network should be close, and one that is much larger than its sibling is carrying data it could shed.",
       "fieldConfig": {
@@ -3204,7 +3204,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_database_size_bytes{cardano_network=~\"$network\",store=\"blob\"})",
           "format": "table",
@@ -3216,7 +3216,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_database_size_bytes{cardano_network=~\"$network\",store=\"metadata\"})",
           "format": "table",
@@ -3273,6 +3273,17 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "allValue": ".+",
         "allowCustomValue": true,
         "current": {
@@ -3285,7 +3296,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
         "hide": 0,
@@ -3318,7 +3329,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(label_replace(max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\"}) > 600, \"l\", \" $1\", \"pod\", \"(.+)\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
         "hide": 2,
@@ -3346,7 +3357,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(label_replace(max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"}), \"l\", \" $1\", \"pod\", \"(.+)\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
         "hide": 2,
@@ -3374,7 +3385,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(label_replace(count by (version) (dingo_build_info{cardano_network=~\"$network\"}), \"l\", \" $1\", \"version\", \"v?([^ ]+).*\") or on () label_replace(vector(0), \"l\", \" none\", \"\", \"\"))",
         "hide": 2,
@@ -3402,7 +3413,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(min(cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"}))",
         "hide": 2,
@@ -3430,7 +3441,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(bottomk(1, min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})))",
         "hide": 2,
@@ -3458,7 +3469,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(round(1000 * histogram_quantile(0.5, sum by (le) (rate(dingo_chainsync_header_arrival_delay_seconds_bucket{cardano_network=~\"$network\"}[6h])))))",
         "hide": 2,
@@ -3486,7 +3497,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(round(min(max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\")))))",
         "hide": 2,
@@ -3514,7 +3525,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "query_result(bottomk(1, max by (namespace, pod) (label_replace((clamp_max(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} / ((-deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h])) > 0) / 86400, 365) or ((kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"} * 0 + 365) and (deriv(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~\"dingo-data-.*\"}[24h]) >= 0))) and on (namespace, persistentvolumeclaim) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"} unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})), \"pod\", \"$1\", \"persistentvolumeclaim\", \"dingo-data-(.*)\"))))",
         "hide": 2,
