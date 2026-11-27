@@ -19,9 +19,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +72,12 @@ const (
 	// reasonTipNotAdvancing marks a node whose tip slot has been unchanged for
 	// longer than the stall threshold while its own pipeline gauges are clear.
 	reasonTipNotAdvancing = "TipNotAdvancing"
+	// reasonChainDiverged marks a node whose Dingo refused to forge because it
+	// judged its chain diverged from the network's.
+	reasonChainDiverged = "ChainDiverged"
+	// defaultChainDivergedHold is how long ChainDiverged stays reported after
+	// the divergence counters last increased.
+	defaultChainDivergedHold = 6 * time.Hour
 
 	metricsPort = 12798
 
@@ -128,6 +137,14 @@ type DingoNodeReconciler struct {
 	// each other: a running duplicate pair whose namespaces are both listed
 	// is resolved by stopping the newer producer, as within one namespace.
 	FenceNamespaces []string
+
+	// divergenceMu guards divergences.
+	divergenceMu sync.Mutex
+	// divergences holds, per node, what the operator has seen of Dingo's
+	// divergence refusal counters. In-memory and never persisted: a restarted
+	// operator only learns a new baseline, so refusals counted before it
+	// started are not reported.
+	divergences map[types.NamespacedName]*chainDivergenceState
 
 	// issueMu guards issueFailures.
 	issueMu sync.Mutex
@@ -251,6 +268,7 @@ func (r *DingoNodeReconciler) Reconcile(
 		if apierrors.IsNotFound(err) {
 			r.forgetOnChainAttempt(req.NamespacedName)
 			r.forgetNodeIssueFailures(req.NamespacedName)
+			r.forgetChainDivergence(req.NamespacedName)
 			r.setKESObserved(req.NamespacedName, nil)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -259,6 +277,7 @@ func (r *DingoNodeReconciler) Reconcile(
 		// Owner references handle garbage collection; nothing else to do.
 		r.forgetOnChainAttempt(req.NamespacedName)
 		r.forgetNodeIssueFailures(req.NamespacedName)
+		r.forgetChainDivergence(req.NamespacedName)
 		r.setKESObserved(req.NamespacedName, nil)
 		return ctrl.Result{}, nil
 	}
@@ -1235,6 +1254,11 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	bp := dn.Spec.BlockProducer
 	isBP := bp != nil
 	if desiredReplicas(dn) == 0 {
+		// No replica remains, so the removed replicas' divergence state no
+		// longer applies.
+		r.forgetChainDivergence(
+			types.NamespacedName{Namespace: dn.Namespace, Name: dn.Name},
+		)
 		// There is no running node whose pipeline can be observed. Drop an old
 		// result from before scale-down, then report the current state as unknown.
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condPipelineHealthy)
@@ -1360,16 +1384,27 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		aggregate.HasPipelineHaltedMetric =
 			aggregate.HasPipelineHaltedMetric && st.HasPipelineHaltedMetric
 	}
-	previous := meta.FindStatusCondition(dn.Status.Conditions, condPipelineHealthy)
-	wasStalled := previous != nil && previous.Reason == reasonTipNotAdvancing
+	previous := meta.FindStatusCondition(
+		dn.Status.Conditions,
+		condPipelineHealthy,
+	)
+	// Copied: setPipelineCondition updates the condition in place, which is
+	// the element previous points at.
+	var previousReason string
+	if previous != nil {
+		previousReason = previous.Reason
+	}
 	stall := r.observeTip(dn, aggregate)
-	setPipelineCondition(dn, aggregate, stall)
+	diverged := r.observeChainDivergence(dn, podNames, statuses)
+	setPipelineCondition(dn, aggregate, stall, diverged)
 	if cond := meta.FindStatusCondition(
 		dn.Status.Conditions, condPipelineHealthy,
-	); !wasStalled && r.Recorder != nil && cond != nil &&
-		cond.Reason == reasonTipNotAdvancing {
+	); r.Recorder != nil && cond != nil &&
+		previousReason != cond.Reason &&
+		(cond.Reason == reasonTipNotAdvancing ||
+			cond.Reason == reasonChainDiverged) {
 		r.Recorder.Eventf(
-			dn, nil, corev1.EventTypeWarning, reasonTipNotAdvancing,
+			dn, nil, corev1.EventTypeWarning, cond.Reason,
 			"ObserveTip", "%s", cond.Message,
 		)
 	}
@@ -1554,17 +1589,115 @@ func (r *DingoNodeReconciler) observeTip(
 	}
 }
 
+// chainDivergenceState is what the operator remembers of one node's divergence
+// counters.
+type chainDivergenceState struct {
+	// baseline holds each pod's last counters by reason. Per pod, so one pod
+	// restarting (its counters fall) cannot mask a rise on another.
+	baseline     map[string]map[string]float64
+	lastIncrease time.Time
+	// reasons are the divergence reasons whose counters rose since the report
+	// last cleared.
+	reasons map[string]struct{}
+}
+
+// chainDivergence is a diverged chain Dingo refused to forge on.
+type chainDivergence struct {
+	reasons []string
+}
+
+// observeChainDivergence reports the divergence reasons whose counters
+// dingo_forge_stale_tip_skip_total rose, and keeps reporting them until the
+// counters have stayed flat for defaultChainDivergedHold.
+//
+// Dingo counts a refusal only at the node's own leader slots, so a flat
+// counter is not evidence of recovery: a diverged node with no leader slot
+// coming is flat too. The hold is the bounded answer to that; it is long
+// against the time a resync takes and short against an epoch.
+//
+// A pod's first observation, and one that finds a counter lower than the
+// last (the pod restarted and the counter began again), only set that pod's
+// baseline. A pod without the series contributes nothing and does not clear
+// another pod's report; when no pod has it (a Dingo that predates it) the node
+// is forgotten, so the feature changes nothing for it. statuses are the
+// scrapes of podNames, index for index. Baselines of pods no longer present
+// are dropped.
+//
+// Status is written every reconcile and a status change triggers another one,
+// so the report is a function of the counters and of the clock against the
+// last increase only.
+func (r *DingoNodeReconciler) observeChainDivergence(
+	dn *dingov1alpha1.DingoNode,
+	podNames []string,
+	statuses []*forgestatus.Status,
+) *chainDivergence {
+	key := types.NamespacedName{Namespace: dn.Namespace, Name: dn.Name}
+	r.divergenceMu.Lock()
+	defer r.divergenceMu.Unlock()
+	if !slices.ContainsFunc(statuses, func(st *forgestatus.Status) bool {
+		return st.HasChainDivergence
+	}) {
+		delete(r.divergences, key)
+		return nil
+	}
+	now := r.now()
+	state := r.divergences[key]
+	if state == nil {
+		if r.divergences == nil {
+			r.divergences = make(map[types.NamespacedName]*chainDivergenceState)
+		}
+		state = &chainDivergenceState{
+			baseline: map[string]map[string]float64{},
+			reasons:  map[string]struct{}{},
+		}
+		r.divergences[key] = state
+	}
+	seen := make(map[string]map[string]float64, len(statuses))
+	for i, st := range statuses {
+		if !st.HasChainDivergence {
+			continue
+		}
+		pod := podNames[i]
+		for reason, v := range st.ChainDivergence {
+			if prev, ok := state.baseline[pod][reason]; ok && v > prev {
+				state.reasons[reason] = struct{}{}
+				state.lastIncrease = now
+			}
+		}
+		seen[pod] = maps.Clone(st.ChainDivergence)
+	}
+	state.baseline = seen
+	if len(state.reasons) == 0 {
+		return nil
+	}
+	if now.Sub(state.lastIncrease) > defaultChainDivergedHold {
+		clear(state.reasons)
+		return nil
+	}
+	return &chainDivergence{reasons: slices.Sorted(maps.Keys(state.reasons))}
+}
+
+// forgetChainDivergence drops a node's counters so the map does not grow with
+// deleted nodes.
+func (r *DingoNodeReconciler) forgetChainDivergence(key types.NamespacedName) {
+	r.divergenceMu.Lock()
+	defer r.divergenceMu.Unlock()
+	delete(r.divergences, key)
+}
+
 // setPipelineCondition reports whether the node is still following the chain.
 //
 // Both gauges mean the node keeps running while no longer applying blocks. A
 // block producer in that state goes on forging at its leader slots and nobody
 // adopts the result, so the condition is surfaced rather than folded into
 // Ready: the pod is genuinely ready, and the chain is genuinely not advancing.
-// Halted is terminal and ranks above stuck.
+// Halted is terminal and ranks above stuck; a diverged chain ranks above a
+// stalled tip, which it usually explains.
 func setPipelineCondition(
 	dn *dingov1alpha1.DingoNode,
 	st *forgestatus.Status,
 	stall *tipStall,
+	diverged *chainDivergence,
 ) {
 	cond := metav1.Condition{
 		Type: condPipelineHealthy, Status: metav1.ConditionTrue,
@@ -1590,6 +1723,15 @@ func setPipelineCondition(
 			"node metrics do not include ledger pipeline health gauges",
 		)
 		return
+	case diverged != nil:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = reasonChainDiverged
+		cond.Message = fmt.Sprintf(
+			"dingo refused to forge on a chain it judged diverged (%s); the "+
+				"node follows a different chain than its peers and requires "+
+				"operator intervention",
+			strings.Join(diverged.reasons, ", "),
+		)
 	case stall != nil:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = reasonTipNotAdvancing

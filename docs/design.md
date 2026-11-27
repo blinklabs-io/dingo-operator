@@ -114,6 +114,23 @@ name so the topology is never emptied. Unknown refs stay on the headless name.
   kept through an unreadable scrape: the condition turns `Unknown`. On a
   network whose blocks can be more than the threshold apart, raise the
   threshold or disable the check.
+- A block producer whose Dingo refuses to forge on a diverged chain is not
+  visible to the tip or the gauges: the node keeps applying blocks, on the
+  wrong chain. Dingo counts each such refusal in
+  `dingo_forge_stale_tip_skip_total{reason=...}`, only at the node's own leader
+  slots. The reasons `peer_height_gap`, `primary_tip_hash_diverged` and
+  `applied_tip_not_primary_ancestor` mean divergence; the others (unapplied gap,
+  stale applied tip, shared KES signer without upstream, ...) do not and are not
+  read. When any of them rises against an in-memory per-node baseline the
+  condition turns False with reason `ChainDiverged` and `Degraded` is set. The
+  first observation after an operator start, and a counter that decreased (the
+  pod restarted), only set the baseline; nothing is added to status or the CRD.
+  Because a flat counter does not show recovery (no leader slot may be due), the
+  report holds for six hours after the last increase and then clears. The
+  ranking is Halted, Stuck, `ChainDiverged`, then `TipNotAdvancing`. A scrape
+  without the series (an older Dingo image) changes nothing. Relays have no
+  forger and never report it. The message names the reasons and carries no
+  counts or times, so status does not change while the counters do not.
 - The metrics listener must be bound explicitly. Dingo defaults
   `metricsBindAddr` to loopback as of v0.81.0, so the operator sets
   `DINGO_METRICS_BIND_ADDR=0.0.0.0` on every node. Without it the PodMonitor and
