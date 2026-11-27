@@ -479,3 +479,60 @@ func TestChainDivergedPodWithoutSeriesDoesNotHideAnother(t *testing.T) {
 	r.refreshForgeStatus(context.Background(), dn)
 	assert.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
 }
+
+// seedHealthyPipeline gives the node the conditions a reconcile that found it
+// healthy leaves behind. Degraded is present too, so setting it later does not
+// grow the slice: the condition pointer read before the update is then the
+// element the update writes.
+func seedHealthyPipeline(dn *dingov1alpha1.DingoNode) {
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type: condPipelineHealthy, Status: metav1.ConditionTrue,
+		Reason: "Following", Message: "ledger pipeline is following the chain",
+	})
+	meta.SetStatusCondition(&dn.Status.Conditions, metav1.Condition{
+		Type: condDegraded, Status: metav1.ConditionFalse,
+		Reason: "Healthy", Message: "healthy",
+	})
+}
+
+func TestPipelineEventFiresOnEntryFromExistingCondition(t *testing.T) {
+	t.Parallel()
+	t.Run("ChainDiverged", func(t *testing.T) {
+		t.Parallel()
+		clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+		fetcher := &statusFetcher{st: divergenceStatus(5, 0, 0)}
+		r, rec := newTipReconciler(nil, clock)
+		r.ForgeStatus = fetcher
+		dn := relayNodeForStatus("bp", "ns")
+		r.refreshForgeStatus(context.Background(), dn)
+		seedHealthyPipeline(dn)
+
+		fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+		r.refreshForgeStatus(context.Background(), dn)
+		require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
+		require.Len(t, rec.Events, 1)
+		assert.Contains(t, <-rec.Events, "ChainDiverged")
+
+		fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1002)
+		r.refreshForgeStatus(context.Background(), dn)
+		assert.Empty(t, rec.Events)
+	})
+	t.Run("TipNotAdvancing", func(t *testing.T) {
+		t.Parallel()
+		clock := &tipClock{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+		r, rec := newTipReconciler(tipStatus(1000), clock)
+		dn := relayNodeForStatus("relay", "ns")
+		r.refreshForgeStatus(context.Background(), dn)
+		seedHealthyPipeline(dn)
+
+		clock.now = clock.now.Add(tipThreshold + time.Minute)
+		r.refreshForgeStatus(context.Background(), dn)
+		require.Equal(t, "TipNotAdvancing", pipelineCond(t, dn).Reason)
+		require.Len(t, rec.Events, 1)
+		assert.Contains(t, <-rec.Events, "TipNotAdvancing")
+
+		clock.now = clock.now.Add(time.Minute)
+		r.refreshForgeStatus(context.Background(), dn)
+		assert.Empty(t, rec.Events)
+	})
+}

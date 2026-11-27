@@ -1383,13 +1383,19 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 		dn.Status.Conditions,
 		condPipelineHealthy,
 	)
+	// Copied: setPipelineCondition updates the condition in place, which is
+	// the element previous points at.
+	var previousReason string
+	if previous != nil {
+		previousReason = previous.Reason
+	}
 	stall := r.observeTip(dn, aggregate)
 	diverged := r.observeChainDivergence(dn, podNames, statuses)
 	setPipelineCondition(dn, aggregate, stall, diverged)
 	if cond := meta.FindStatusCondition(
 		dn.Status.Conditions, condPipelineHealthy,
 	); r.Recorder != nil && cond != nil &&
-		(previous == nil || previous.Reason != cond.Reason) &&
+		previousReason != cond.Reason &&
 		(cond.Reason == reasonTipNotAdvancing ||
 			cond.Reason == reasonChainDiverged) {
 		r.Recorder.Eventf(
