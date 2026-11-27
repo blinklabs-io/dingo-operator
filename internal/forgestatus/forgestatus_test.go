@@ -74,8 +74,16 @@ cardano_node_metrics_Forge_forged_int{network="mainnet"} 42
 				assert.Equal(t, tc.want.HasKESData, got.HasKESData)
 			}
 			assert.Equal(t, tc.want.CurrentKESPeriod, got.CurrentKESPeriod)
-			assert.Equal(t, tc.want.RemainingKESPeriods, got.RemainingKESPeriods)
-			assert.Equal(t, tc.want.OpCertExpiryKESPeriod, got.OpCertExpiryKESPeriod)
+			assert.Equal(
+				t,
+				tc.want.RemainingKESPeriods,
+				got.RemainingKESPeriods,
+			)
+			assert.Equal(
+				t,
+				tc.want.OpCertExpiryKESPeriod,
+				got.OpCertExpiryKESPeriod,
+			)
 			assert.Equal(t, tc.want.ForgedBlocks, got.ForgedBlocks)
 		})
 	}
@@ -211,4 +219,63 @@ dingo_forge_opcert_counter_loaded{network="preview"} 5
 			assert.Equal(t, tc.wantHas, got.HasOpCertCounter)
 		})
 	}
+}
+
+func TestParseChainDivergence(t *testing.T) {
+	t.Parallel()
+	// All reasons are exported, 0 while healthy; only three mean divergence.
+	const body = `# TYPE dingo_forge_stale_tip_skip_total counter
+dingo_forge_stale_tip_skip_total{reason="peer_height_gap"} 3
+dingo_forge_stale_tip_skip_total{reason="primary_tip_hash_diverged"} 0
+dingo_forge_stale_tip_skip_total{reason="applied_tip_not_primary_ancestor"} 2
+dingo_forge_stale_tip_skip_total{reason="unapplied_block_gap"} 40
+dingo_forge_stale_tip_skip_total{reason="applied_tip_stale"} 7
+dingo_forge_stale_tip_skip_total{reason="primary_tip_behind_applied"} 9
+`
+	got, err := Parse(strings.NewReader(body))
+	require.NoError(t, err)
+
+	assert.True(t, got.HasChainDivergence)
+	assert.Equal(t, map[string]float64{
+		ReasonPeerHeightGap:                3,
+		ReasonPrimaryTipHashDiverged:       0,
+		ReasonAppliedTipNotPrimaryAncestor: 2,
+	}, got.ChainDivergence)
+	assert.Empty(t, got.Pools)
+}
+
+func TestParseChainDivergenceIgnoresOtherReasons(t *testing.T) {
+	t.Parallel()
+	const body = `dingo_forge_stale_tip_skip_total{reason="unapplied_block_gap"} 5
+dingo_forge_stale_tip_skip_total{reason="admitted_header_ahead"} 5
+dingo_forge_stale_tip_skip_total{reason="unapplied_rival_at_leader_slot"} 5
+`
+	got, err := Parse(strings.NewReader(body))
+	require.NoError(t, err)
+
+	assert.False(t, got.HasChainDivergence)
+	assert.Empty(t, got.ChainDivergence)
+}
+
+func TestParseChainDivergenceAbsent(t *testing.T) {
+	t.Parallel()
+	got, err := Parse(strings.NewReader(
+		"cardano_node_metrics_slotNum_int 10\n",
+	))
+	require.NoError(t, err)
+
+	assert.False(t, got.HasChainDivergence)
+	assert.Empty(t, got.ChainDivergence)
+}
+
+func TestParseChainDivergenceKeepsOtherLabels(t *testing.T) {
+	t.Parallel()
+	const body = `dingo_forge_stale_tip_skip_total{network="mainnet",reason="peer_height_gap"} 4
+dingo_forge_stale_tip_skip_total{reason="peer_height_gap"} not-a-number
+`
+	got, err := Parse(strings.NewReader(body))
+	require.NoError(t, err)
+
+	assert.True(t, got.HasChainDivergence)
+	assert.Equal(t, 4.0, got.ChainDivergence[ReasonPeerHeightGap])
 }

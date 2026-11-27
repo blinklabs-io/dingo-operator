@@ -26,6 +26,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +52,28 @@ const (
 	// for several. Dingo also exports dingo_forge_opcert_counter_onchain, the
 	// ledger's counter, which is a different value and is not read here.
 	metricOpCertCounter = "dingo_forge_opcert_counter_loaded"
+	// Dingo counts each forging attempt it refuses on a chain it judges
+	// unsafe, by reason. It counts only at the node's own leader slots.
+	metricStaleTipSkip = "dingo_forge_stale_tip_skip_total"
 )
+
+// Reasons of dingo_forge_stale_tip_skip_total that mean the node follows the
+// wrong chain. The counter has other reasons (an unapplied block gap, a stale
+// applied tip, a shared KES signer without upstream, ...): they describe a
+// node that is behind or cannot forge, not one on a diverged chain, and are
+// not read.
+const (
+	ReasonPeerHeightGap                = "peer_height_gap"
+	ReasonPrimaryTipHashDiverged       = "primary_tip_hash_diverged"
+	ReasonAppliedTipNotPrimaryAncestor = "applied_tip_not_primary_ancestor"
+)
+
+// DivergenceReasons lists the divergence reasons in a stable order.
+var DivergenceReasons = []string{
+	ReasonPeerHeightGap,
+	ReasonPrimaryTipHashDiverged,
+	ReasonAppliedTipNotPrimaryAncestor,
+}
 
 // Status is the observed forge/KES state of a node.
 type Status struct {
@@ -85,6 +107,12 @@ type Status struct {
 	// OpCertUnloaded is set when dingo_forge_opcert_counter_loaded is NaN: the
 	// node has no opcert loaded, and HasOpCertCounter stays false.
 	OpCertUnloaded bool
+	// ChainDivergence holds the value of each divergence reason of
+	// dingo_forge_stale_tip_skip_total that the scrape carried; HasChainDivergence
+	// reports whether any was present. Both are unset for a Dingo that predates
+	// the counter.
+	ChainDivergence    map[string]float64
+	HasChainDivergence bool
 	// Pools holds the series Dingo labels with pool_id, keyed by the label
 	// value (a bech32 pool ID). Dingo labels them only while it forges for
 	// more than one pool; it is nil for a node that forges for one.
@@ -171,6 +199,12 @@ func Parse(r io.Reader) (*Status, error) {
 		if err != nil {
 			continue
 		}
+		if name == metricStaleTipSkip {
+			if reason, ok := labelValue(line, "reason"); ok {
+				s.addStaleTipSkip(reason, v)
+			}
+			continue
+		}
 		if pool, ok := poolLabel(line); ok {
 			s.addPoolSample(pool, name, v)
 			continue
@@ -213,6 +247,19 @@ func Parse(r io.Reader) (*Status, error) {
 	return s, nil
 }
 
+// addStaleTipSkip records one reason of dingo_forge_stale_tip_skip_total when
+// it is a divergence reason.
+func (s *Status) addStaleTipSkip(reason string, v float64) {
+	if !slices.Contains(DivergenceReasons, reason) {
+		return
+	}
+	if s.ChainDivergence == nil {
+		s.ChainDivergence = make(map[string]float64)
+	}
+	s.ChainDivergence[reason] = v
+	s.HasChainDivergence = true
+}
+
 // addPoolSample records one pool_id-labelled sample. Series the operator does
 // not read per pool are ignored.
 func (s *Status) addPoolSample(pool, name string, v float64) {
@@ -253,13 +300,18 @@ func (s *Status) addPoolSample(pool, name string, v float64) {
 
 // poolLabel returns the pool_id label of a sample line.
 func poolLabel(line string) (string, bool) {
+	return labelValue(line, "pool_id")
+}
+
+// labelValue returns the non-empty value of the named label of a sample line.
+func labelValue(line, label string) (string, bool) {
 	open := strings.IndexByte(line, '{')
 	closeIdx := strings.IndexByte(line, '}')
 	if open < 0 || closeIdx < open {
 		return "", false
 	}
 	labels := line[open+1 : closeIdx]
-	const key = `pool_id="`
+	key := label + `="`
 	for rest := labels; ; {
 		i := strings.Index(rest, key)
 		if i < 0 {
