@@ -536,3 +536,23 @@ func TestPipelineEventFiresOnEntryFromExistingCondition(t *testing.T) {
 		assert.Empty(t, rec.Events)
 	})
 }
+
+func TestChainDivergedForgottenWhenScaledToZero(t *testing.T) {
+	t.Parallel()
+	r, fetcher, _, dn := newDivergenceFixture(divergenceStatus(5, 0, 0))
+	r.refreshForgeStatus(context.Background(), dn)
+	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1001)
+	r.refreshForgeStatus(context.Background(), dn)
+	require.Equal(t, "ChainDiverged", pipelineCond(t, dn).Reason)
+
+	dn.Spec.Replicas = new(int32(0))
+	r.refreshForgeStatus(context.Background(), dn)
+	require.Equal(t, "NoReplicas", pipelineCond(t, dn).Reason)
+
+	// Well inside the hold, with the counter flat on the new replica.
+	dn.Spec.Replicas = new(int32(1))
+	fetcher.st = advancingTip(divergenceStatus(6, 0, 0), 1002)
+	r.refreshForgeStatus(context.Background(), dn)
+
+	assert.Equal(t, "Following", pipelineCond(t, dn).Reason)
+}

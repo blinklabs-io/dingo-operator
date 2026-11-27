@@ -1254,6 +1254,11 @@ func (r *DingoNodeReconciler) refreshForgeStatus(
 	bp := dn.Spec.BlockProducer
 	isBP := bp != nil
 	if desiredReplicas(dn) == 0 {
+		// No replica remains, so the removed replicas' divergence state no
+		// longer applies.
+		r.forgetChainDivergence(
+			types.NamespacedName{Namespace: dn.Namespace, Name: dn.Name},
+		)
 		// There is no running node whose pipeline can be observed. Drop an old
 		// result from before scale-down, then report the current state as unknown.
 		meta.RemoveStatusCondition(&dn.Status.Conditions, condPipelineHealthy)
