@@ -28,11 +28,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -96,11 +100,9 @@ func TestStaticKeysChecksum(t *testing.T) {
 }
 
 // The digest must be what the staging container computes with
-// `cat kes.skey <cert> | sha256sum`, or `cat <cert> | sha256sum` on a node that
-// signs through a remote agent, which ignores a kes.skey left in the Secret.
+// `cat kes.skey <cert> | sha256sum`.
 func TestApprovedKeysDigest(t *testing.T) {
-	local := sha256.Sum256([]byte("kes" + "cert"))
-	agent := sha256.Sum256([]byte("cert"))
+	want := sha256.Sum256([]byte("kes" + "cert"))
 	for _, name := range []string{"opcert.cert", "node.cert"} {
 		data := map[string][]byte{
 			"vrf.skey": []byte("vrf"),
@@ -108,16 +110,7 @@ func TestApprovedKeysDigest(t *testing.T) {
 			name:       []byte("cert"),
 		}
 		assert.Equal(
-			t,
-			hex.EncodeToString(local[:]),
-			approvedKeysDigest(data, false),
-			name,
-		)
-		assert.Equal(
-			t,
-			hex.EncodeToString(agent[:]),
-			approvedKeysDigest(data, true),
-			name+" with a signing agent",
+			t, hex.EncodeToString(want[:]), approvedKeysDigest(data), name,
 		)
 	}
 }
@@ -1068,4 +1061,115 @@ cardano_node_metrics_remainingKESPeriods_int 55
 	require.NotNil(t, dn.Status.OpCert.LoadedCounter)
 	assert.Equal(t, int64(4), *dn.Status.OpCert.LoadedCounter)
 	assert.True(t, dn.Status.OpCert.InPlaceReload.Applied)
+}
+
+// A node that signs through an agent gets a new opcert from the agent, so the
+// operator keeps no approval ConfigMap for it and removes one left from before.
+// A node with a local KES key still approves the bundle it validated.
+func TestReconcileResourcesApprovesKeysOnlyForLocalKES(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		agent        bool
+		wantApproval bool
+	}{
+		{name: "local KES key", wantApproval: true},
+		{name: "signing agent", agent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pool := newTestPools(t, "a")[0]
+			secret := poolSecret(t, "ns", pool, 0)
+			dn := forgerNode("bp", "ns", pool.id, pool.secret, 0)
+			bp := dn.Spec.BlockProducer
+			bp.SlotsPerKESPeriod = 129600
+			bp.MaxKESEvolutions = 62
+			bp.Rotation.Mode = dingov1alpha1.RotationModeAssisted
+			bp.Rotation.ReloadInPlace = true
+			dn.Spec.Image.Tag = agentImageTag
+			objects := []client.Object{dn, secret}
+			if tc.agent {
+				bp.SigningAgent = &dingov1alpha1.SigningAgentSpec{
+					Address:          "kes-agent.signing.svc:7000",
+					ServerSPKISHA256: testSPKIPin,
+				}
+				objects = append(objects, &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      resources.KeysApprovalConfigMapName(dn),
+						Namespace: dn.Namespace,
+					},
+					Data: map[string]string{resources.KeysApprovalKey: "stale"},
+				})
+			} else {
+				data, err := pool.keys.SecretData(0, 0)
+				require.NoError(t, err)
+				secret.Data = data
+			}
+			c := conflictClient(t, objects...)
+
+			require.NoError(
+				t, reconcilerFor(c).reconcileResources(ctx, dn.DeepCopy()),
+			)
+
+			err := c.Get(ctx, types.NamespacedName{
+				Name:      resources.KeysApprovalConfigMapName(dn),
+				Namespace: dn.Namespace,
+			}, &corev1.ConfigMap{})
+			if tc.wantApproval {
+				require.NoError(t, err)
+			} else {
+				require.True(t, apierrors.IsNotFound(err), "approval: %v", err)
+			}
+			sts := &appsv1.StatefulSet{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dn), sts))
+			assert.NotEmpty(
+				t,
+				sts.Spec.Template.Annotations[resources.KeysChecksumAnnotation],
+			)
+		})
+	}
+}
+
+// MonitorOnly withdraws a staging approval for a replacement bundle; a node
+// that signs through an agent has no approval to withdraw, so its ConfigMap is
+// removed.
+func TestReconcileResourcesMonitorOnlyAgentKeepsNoApproval(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newTestPools(t, "a")[0]
+	dn := forgerNode("bp", "ns", pool.id, pool.secret, 0)
+	bp := dn.Spec.BlockProducer
+	bp.SlotsPerKESPeriod = 129600
+	bp.MaxKESEvolutions = 62
+	bp.Rotation.Mode = dingov1alpha1.RotationModeMonitorOnly
+	bp.Rotation.ReloadInPlace = true
+	bp.SigningAgent = &dingov1alpha1.SigningAgentSpec{
+		Address:          "kes-agent.signing.svc:7000",
+		ServerSPKISHA256: testSPKIPin,
+	}
+	dn.Spec.Image.Tag = agentImageTag
+	c := conflictClient(t, dn, poolSecret(t, "ns", pool, 0))
+	r := reconcilerFor(c)
+	require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+
+	key := types.NamespacedName{
+		Name:      resources.KeysApprovalConfigMapName(dn),
+		Namespace: dn.Namespace,
+	}
+	require.NoError(t, c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data:       map[string]string{resources.KeysApprovalKey: "stale"},
+	}))
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{
+		Name: pool.secret, Namespace: dn.Namespace,
+	}, secret))
+	secret.Data = poolSecret(t, "ns", pool, 1).Data
+	secret.Data["extra"] = []byte("changed static material")
+	require.NoError(t, c.Update(ctx, secret))
+
+	require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+	err := c.Get(ctx, key, &corev1.ConfigMap{})
+	require.True(t, apierrors.IsNotFound(err), "approval: %v", err)
 }

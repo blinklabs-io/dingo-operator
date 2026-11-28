@@ -749,9 +749,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 					if rollout.approve {
 						if err := r.upsertKeysApprovalConfigMap(
 							ctx, dn,
-							approvedKeysDigest(
-								secret.Data, resources.UsesSigningAgent(dn),
-							),
+							approvedKeysDigest(secret.Data),
 						); err != nil {
 							return fmt.Errorf("apply keys approval configmap: %w", err)
 						}
@@ -773,9 +771,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 					resources.ReloadsKeysInPlace(dn) {
 					if err := r.upsertKeysApprovalConfigMap(
 						ctx, dn,
-						approvedKeysDigest(
-							secret.Data, resources.UsesSigningAgent(dn),
-						),
+						approvedKeysDigest(secret.Data),
 					); err != nil {
 						return fmt.Errorf("apply keys approval configmap: %w", err)
 					}

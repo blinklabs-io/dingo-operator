@@ -518,7 +518,7 @@ func TestBlockProducerMonitorOnlyObservesKeysWithoutRollout(t *testing.T) {
 	}
 	approval := &corev1.ConfigMap{}
 	require.NoError(t, c.Get(ctx, approvalKey, approval))
-	approval.Data[resources.KeysApprovalKey] = approvedKeysDigest(rotated, false)
+	approval.Data[resources.KeysApprovalKey] = approvedKeysDigest(rotated)
 	require.NoError(t, c.Update(ctx, approval))
 
 	reconcile(t, ctx, r, dn.Name, dn.Namespace)

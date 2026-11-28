@@ -1129,7 +1129,7 @@ func volumes(dn *dingov1alpha1.DingoNode, opts RenderOptions) []corev1.Volume {
 			},
 		})
 	}
-	if reloadsKeysInPlace(dn, opts) {
+	if stagesKeys(dn, opts) {
 		vols = append(vols, keysApprovalVolume(dn))
 	}
 	if a := dn.Spec.APIs; a != nil && a.UTxORPCTLSSecretRef != "" {

@@ -160,27 +160,6 @@ func BuildPoolsConfigMap(
 	}
 }
 
-// BuildPoolKeysApprovalConfigMap constructs the approval ConfigMap of a
-// pool-list node: for each approved pool, keyed by pool ID, the hex SHA-256 of
-// the opcert the staging container may stage.
-func BuildPoolKeysApprovalConfigMap(
-	dn *dingov1alpha1.DingoNode,
-	digests map[string]string,
-) *corev1.ConfigMap {
-	data := make(map[string]string, len(digests))
-	for pool, digest := range digests {
-		data[pool] = digest
-	}
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      KeysApprovalConfigMapName(dn),
-			Namespace: dn.Namespace,
-			Labels:    Labels(dn),
-		},
-		Data: data,
-	}
-}
-
 // poolSourceVolume names the Secret volume of the i-th pool in rendering order.
 func poolSourceVolume(i int) string {
 	return keysSourceName + "-" + strconv.Itoa(i)
@@ -367,45 +346,5 @@ for source in "${source_dir}"/*/; do
     cp "${source}${vote}" "${destination}/vote.skey"
     chmod 0600 "${destination}/vote.skey"
   fi
-done
-`
-
-// syncPoolListKeysScript is syncSigningAgentKeysScript for each pool of a
-// pool-list node: it stages a pool's opcert into the pool's directory once
-// the operator has approved the digest of the Secret's opcert, so a new
-// opcert reaches Dingo without a roll. A pool with no approval is left alone.
-const syncPoolListKeysScript = `set -u
-trap 'exit 0' TERM INT
-source_dir="${DINGO_KEYS_SOURCE:-/var/run/dingo-keys-source}"
-destination_dir="${DINGO_KEYS_DESTINATION:-/keys}"
-approval_dir="${DINGO_KEYS_APPROVAL_DIR:-/var/run/dingo-keys-approval}"
-interval="${DINGO_KEYS_SYNC_INTERVAL:-5}"
-umask 077
-digest() {
-  cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1
-}
-while :; do
-  sleep "${interval}" &
-  wait "$!"
-  for source in "${source_dir}"/*/; do
-    pool="$(basename "${source}")"
-    approval="${approval_dir}/${pool}"
-    destination="${destination_dir}/${pool}"
-    [ -s "${approval}" ] || continue
-    want="$(cat "${approval}")"
-    cert=node.cert
-    if [ -s "${source}opcert.cert" ]; then
-      cert=opcert.cert
-    fi
-    [ "$(digest "${source}${cert}")" = "${want}" ] || continue
-    [ "$(digest "${destination}/opcert.cert")" = "${want}" ] && continue
-    rm -f "${destination}/.opcert.cert.new"
-    cp "${source}${cert}" "${destination}/.opcert.cert.new" &&
-      chmod 0600 "${destination}/.opcert.cert.new" || continue
-    [ "$(digest "${destination}/.opcert.cert.new")" = "${want}" ] ||
-      continue
-    mv -f "${destination}/.opcert.cert.new" "${destination}/opcert.cert" &&
-      echo "staged the approved opcert of pool ${pool}"
-  done
 done
 `

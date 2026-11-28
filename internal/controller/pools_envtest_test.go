@@ -98,14 +98,10 @@ func TestPoolListEnvtest(t *testing.T) {
 		assert.Equal(t, int64(1), ps.OnDiskCounter, ps.PoolID)
 	}
 
-	approval := func(p testPool) string {
-		return getCM(resources.KeysApprovalConfigMapName(dn)).Data[p.id]
-	}
-	beforeA, beforeB := approval(pools[0]), approval(pools[1])
-	require.NotEmpty(t, beforeA)
-	require.NotEmpty(t, beforeB)
+	// The agent delivers a new opcert, so there is no approval ConfigMap.
+	requireNoKeysApproval(t, c, dn)
 
-	// A new opcert for pool b: the template stays, the approval moves.
+	// A new opcert for pool b: the template stays.
 	before := podTemplate(t, ctx, c, "bp", ns)
 	generation := sts.Generation
 	update := &corev1.Secret{}
@@ -120,8 +116,7 @@ func TestPoolListEnvtest(t *testing.T) {
 		"a new opcert of one pool must not change the pod template")
 	require.NoError(t, c.Get(ctx, key, sts))
 	assert.Equal(t, generation, sts.Generation)
-	assert.NotEqual(t, beforeB, approval(pools[1]))
-	assert.Equal(t, beforeA, approval(pools[0]), "other pools are untouched")
+	requireNoKeysApproval(t, c, dn)
 	counters := map[string]int64{}
 	for _, ps := range getNode().Status.Pools {
 		counters[ps.PoolID] = ps.OnDiskCounter

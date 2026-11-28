@@ -238,34 +238,6 @@ func poolsKeysChecksum(accepted []*poolBundle) string {
 	return checksumData(data)
 }
 
-// approvedPoolDigests returns, by pool ID, the digest of each accepted pool's
-// opcert, which the staging container may stage into the running node.
-func approvedPoolDigests(accepted []*poolBundle) map[string]string {
-	digests := make(map[string]string, len(accepted))
-	for _, b := range accepted {
-		digests[b.id] = approvedKeysDigest(b.secret.Data, true)
-	}
-	return digests
-}
-
-// upsertPoolKeysApprovalConfigMap records the digests of the opcerts the
-// staging container may stage.
-func (r *DingoNodeReconciler) upsertPoolKeysApprovalConfigMap(
-	ctx context.Context,
-	dn *dingov1alpha1.DingoNode,
-	digests map[string]string,
-) error {
-	desired := resources.BuildPoolKeysApprovalConfigMap(dn, digests)
-	cm := &corev1.ConfigMap{
-		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
-	}
-	return createOrUpdateWithRetry(ctx, r.Client, cm, func() error {
-		cm.Labels = desired.Labels
-		cm.Data = desired.Data
-		return ctrl.SetControllerReference(dn, cm, r.Scheme)
-	})
-}
-
 // upsertPoolsConfigMap writes the rendered pool list.
 func (r *DingoNodeReconciler) upsertPoolsConfigMap(
 	ctx context.Context,
@@ -331,9 +303,6 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		dingov1alpha1.RotationModeMonitorOnly
 	liveHasKeys := live.exists && live.checksum != ""
 	if monitorOnly && liveHasKeys {
-		if err := r.clearKeysApprovalConfigMap(ctx, dn); err != nil {
-			return false, "", err
-		}
 		if opts.KeysChecksum != live.checksum {
 			// MonitorOnly reports replacement bundles but does not change the
 			// pool set or static key material the live pod stages.
@@ -372,17 +341,10 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		r.rejectSigningAgentCert(ctx, dn, problem)
 	}
 
-	// A fresh or keyless node needs its initial approval ConfigMap. Once it has
-	// live keys in MonitorOnly mode, every staging approval is withdrawn.
-	if !monitorOnly || !liveHasKeys {
-		if err := r.upsertPoolKeysApprovalConfigMap(
-			ctx, dn, approvedPoolDigests(accepted),
-		); err != nil {
-			return false, "", fmt.Errorf(
-				"apply keys approval configmap: %w",
-				err,
-			)
-		}
+	// A pool-list node signs through the agent, so it runs no staging
+	// container and keeps no approval ConfigMap.
+	if err := r.deleteKeysApprovalConfigMap(ctx, dn); err != nil {
+		return false, "", err
 	}
 	// The pool list is read at startup only, so a held template keeps the
 	// list its pod started with. So does a template fenced from moving to
