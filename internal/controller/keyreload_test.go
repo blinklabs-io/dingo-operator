@@ -1109,7 +1109,7 @@ func TestReconcileResourcesApprovesKeysOnlyForLocalKES(t *testing.T) {
 			c := conflictClient(t, objects...)
 
 			require.NoError(
-				t, reconcilerFor(c).reconcileResources(ctx, dn.DeepCopy()),
+				t, reconcilerFor(c).reconcileResources(ctx, copyNode(t, dn)),
 			)
 
 			err := c.Get(ctx, types.NamespacedName{
@@ -1151,7 +1151,7 @@ func TestReconcileResourcesMonitorOnlyAgentKeepsNoApproval(t *testing.T) {
 	dn.Spec.Image.Tag = agentImageTag
 	c := conflictClient(t, dn, poolSecret(t, "ns", pool, 0))
 	r := reconcilerFor(c)
-	require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+	require.NoError(t, r.reconcileResources(ctx, copyNode(t, dn)))
 
 	key := types.NamespacedName{
 		Name:      resources.KeysApprovalConfigMapName(dn),
@@ -1169,7 +1169,7 @@ func TestReconcileResourcesMonitorOnlyAgentKeepsNoApproval(t *testing.T) {
 	secret.Data["extra"] = []byte("changed static material")
 	require.NoError(t, c.Update(ctx, secret))
 
-	require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+	require.NoError(t, r.reconcileResources(ctx, copyNode(t, dn)))
 	err := c.Get(ctx, key, &corev1.ConfigMap{})
 	require.True(t, apierrors.IsNotFound(err), "approval: %v", err)
 }
@@ -1219,7 +1219,7 @@ func TestReconcileResourcesRemovesAgentApprovalOnEveryPath(t *testing.T) {
 			secret := poolSecret(t, "ns", pool, 0)
 			c := conflictClient(t, dn, secret)
 			r := reconcilerFor(c)
-			require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+			require.NoError(t, r.reconcileResources(ctx, copyNode(t, dn)))
 
 			key := types.NamespacedName{
 				Name:      resources.KeysApprovalConfigMapName(dn),
@@ -1240,9 +1240,23 @@ func TestReconcileResourcesRemovesAgentApprovalOnEveryPath(t *testing.T) {
 				require.NoError(t, c.Update(ctx, live))
 			}
 
-			require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+			require.NoError(t, r.reconcileResources(ctx, copyNode(t, dn)))
 			err := c.Get(ctx, key, &corev1.ConfigMap{})
 			require.True(t, apierrors.IsNotFound(err), "approval: %v", err)
 		})
 	}
+}
+
+// copyNode returns a deep copy of dn for one reconcile, so each pass starts
+// from the spec the test built rather than the status the last pass wrote.
+func copyNode(
+	t *testing.T,
+	dn *dingov1alpha1.DingoNode,
+) *dingov1alpha1.DingoNode {
+	t.Helper()
+	c := dn.DeepCopy()
+	if c == nil {
+		t.Fatal("DeepCopy returned nil")
+	}
+	return c
 }
