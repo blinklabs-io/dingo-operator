@@ -331,9 +331,6 @@ func (r *DingoNodeReconciler) clearKeysApprovalConfigMap(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 ) error {
-	if resources.UsesSigningAgent(dn) {
-		return r.deleteKeysApprovalConfigMap(ctx, dn)
-	}
 	key := types.NamespacedName{
 		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
 	}

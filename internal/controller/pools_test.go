@@ -1031,3 +1031,26 @@ func TestReconcilePoolKeysEnforcesEachPoolsOwnFloor(t *testing.T) {
 	assert.False(t, b.KeysValid)
 	assert.Contains(t, b.KeysMessage, "below the on-chain counter 17")
 }
+
+// A pool-list node whose every bundle is refused still keeps no approval
+// ConfigMap: it runs no staging container either way.
+func TestReconcilePoolKeysRefusedPoolsKeepNoApproval(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	dn := poolListNode("bp", "ns", 0, pools...)
+	c := conflictClient(t, dn, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resources.KeysApprovalConfigMapName(dn),
+			Namespace: dn.Namespace,
+		},
+		Data: map[string]string{pools[0].id: "stale"},
+	})
+	r := poolReconciler(c)
+
+	opts := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := r.reconcilePoolKeys(ctx, dn, &opts)
+	require.NoError(t, err)
+	require.True(t, keep, "every pool is refused, so the template is held")
+	requireNoKeysApproval(t, c, dn)
+}

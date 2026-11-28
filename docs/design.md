@@ -589,8 +589,8 @@ the opcert is loaded into the running node instead of rolling the pod
   counter that differs from the bundle's: confirmation is by counter, so a
   bundle reusing the loaded counter, or one approved while the counter is
   unobserved, cannot be confirmed and rolls. Anything else rolls, as does the first
-  render after enabling the setting, which adds the container, the approval
-  volume and Dingo's watch interval.
+  render after enabling the setting, which adds Dingo's watch interval and,
+  without a signing agent, the container and the approval volume.
 - After a roll. The scrape goes through the pod's stable DNS name, so until the
   new pod is scraped, `loadedCounter` may still be the outgoing pod's. Every
   render that changes the live `keys-checksum` (or creates the StatefulSet)

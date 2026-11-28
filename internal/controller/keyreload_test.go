@@ -1173,3 +1173,76 @@ func TestReconcileResourcesMonitorOnlyAgentKeepsNoApproval(t *testing.T) {
 	err := c.Get(ctx, key, &corev1.ConfigMap{})
 	require.True(t, apierrors.IsNotFound(err), "approval: %v", err)
 }
+
+// An agent-signed node runs no staging container, so an approval ConfigMap an
+// earlier render left is removed whatever the keys decision is: in a
+// MonitorOnly steady state, without reloadInPlace, and with a refused bundle.
+func TestReconcileResourcesRemovesAgentApprovalOnEveryPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mode   dingov1alpha1.RotationMode
+		reload bool
+		refuse bool
+	}{
+		{
+			name:   "MonitorOnly steady state",
+			mode:   dingov1alpha1.RotationModeMonitorOnly,
+			reload: true,
+		},
+		{
+			name: "no reload in place",
+			mode: dingov1alpha1.RotationModeAssisted,
+		},
+		{
+			name:   "refused bundle",
+			mode:   dingov1alpha1.RotationModeAssisted,
+			reload: true,
+			refuse: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pool := newTestPools(t, "a")[0]
+			dn := forgerNode("bp", "ns", pool.id, pool.secret, 0)
+			bp := dn.Spec.BlockProducer
+			bp.SlotsPerKESPeriod = 129600
+			bp.MaxKESEvolutions = 62
+			bp.Rotation.Mode = tc.mode
+			bp.Rotation.ReloadInPlace = tc.reload
+			bp.SigningAgent = &dingov1alpha1.SigningAgentSpec{
+				Address:          "kes-agent.signing.svc:7000",
+				ServerSPKISHA256: testSPKIPin,
+			}
+			dn.Spec.Image.Tag = agentImageTag
+			secret := poolSecret(t, "ns", pool, 0)
+			c := conflictClient(t, dn, secret)
+			r := reconcilerFor(c)
+			require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+
+			key := types.NamespacedName{
+				Name:      resources.KeysApprovalConfigMapName(dn),
+				Namespace: dn.Namespace,
+			}
+			require.NoError(t, c.Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: key.Name, Namespace: key.Namespace,
+				},
+				Data: map[string]string{resources.KeysApprovalKey: "stale"},
+			}))
+			if tc.refuse {
+				live := &corev1.Secret{}
+				require.NoError(
+					t, c.Get(ctx, client.ObjectKeyFromObject(secret), live),
+				)
+				delete(live.Data, keyFileOpCert)
+				require.NoError(t, c.Update(ctx, live))
+			}
+
+			require.NoError(t, r.reconcileResources(ctx, dn.DeepCopy()))
+			err := c.Get(ctx, key, &corev1.ConfigMap{})
+			require.True(t, apierrors.IsNotFound(err), "approval: %v", err)
+		})
+	}
+}

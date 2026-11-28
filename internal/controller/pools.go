@@ -257,9 +257,9 @@ func (r *DingoNodeReconciler) upsertPoolsConfigMap(
 
 // reconcilePoolKeys validates every pool's bundle and decides what the pod is
 // rendered with: the pools whose bundle is accepted, the checksum that rolls
-// the pod when any of their static key material or the pool list changes, and
-// the approval that lets a new opcert reach the running node without a roll.
-// A pool whose bundle is refused is left out of the pool list and reported in
+// the pod when any of their static key material or the pool list changes. A
+// new opcert reaches the running node from the agent, so no approval
+// ConfigMap is kept, and one an earlier render left is removed. A pool whose bundle is refused is left out of the pool list and reported in
 // status.pools, so the other pools keep forging; when every bundle is refused
 // the live pod template is kept, as for a refused single-pool bundle. In Auto
 // rotation the live template is also kept while a refused pool's Secret holds
@@ -272,6 +272,11 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 	opts *resources.RenderOptions,
 ) (keepTemplate bool, holdMessage string, err error) {
 	holdMessage = templateHeldMessage
+	// A pool-list node signs through the agent, so it runs no staging
+	// container and keeps no approval ConfigMap, whichever pools are refused.
+	if err := r.deleteKeysApprovalConfigMap(ctx, dn); err != nil {
+		return false, "", err
+	}
 	syncPoolStatuses(dn)
 	bundles, err := r.evaluatePools(ctx, dn)
 	if err != nil {
@@ -341,11 +346,6 @@ func (r *DingoNodeReconciler) reconcilePoolKeys(
 		r.rejectSigningAgentCert(ctx, dn, problem)
 	}
 
-	// A pool-list node signs through the agent, so it runs no staging
-	// container and keeps no approval ConfigMap.
-	if err := r.deleteKeysApprovalConfigMap(ctx, dn); err != nil {
-		return false, "", err
-	}
 	// The pool list is read at startup only, so a held template keeps the
 	// list its pod started with. So does a template fenced from moving to
 	// another agent: a pod restarted while several run would otherwise read
