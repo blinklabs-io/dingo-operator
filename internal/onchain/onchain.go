@@ -54,6 +54,10 @@ const (
 	// the only bound that covers the Ouroboros handshake, which the gouroboros
 	// API performs synchronously with no timeout of its own.
 	DefaultMaxDuration = 20 * time.Second
+
+	// connCloseTimeout bounds how long closing the query connection waits for
+	// its goroutines to finish.
+	connCloseTimeout = 10 * time.Second
 )
 
 // MaxPlausibleCounter is the largest opcert issue number this package will
@@ -224,7 +228,7 @@ func (f *NtCFetcher) fetchRaw(
 	// already given up on the context deadline below.
 	done := make(chan outcome, 1)
 	go func() {
-		c, err := f.query(conn, q)
+		c, err := f.query(ctx, conn, q)
 		done <- outcome{counters: c, err: err}
 	}()
 
@@ -246,6 +250,7 @@ func (f *NtCFetcher) fetchRaw(
 // query performs the handshake and the counter lookup on an established
 // connection. It always disposes of conn.
 func (f *NtCFetcher) query(
+	ctx context.Context,
 	conn net.Conn,
 	q Query,
 ) (map[common.Blake2b224]uint64, error) {
@@ -278,7 +283,17 @@ func (f *NtCFetcher) query(
 		for range oConn.ErrorChan() { //nolint:revive // drain and discard
 		}
 	}()
-	defer func() { _ = oConn.Close() }()
+	// No local-state-query callbacks are registered and no lock is held, so
+	// the close cannot wait on anything this goroutine owns. ctx is usually
+	// cancelled by the time the query ends, so only its values carry over.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			connCloseTimeout,
+		)
+		defer cancel()
+		_ = oConn.Close(closeCtx)
+	}()
 
 	lsq := oConn.LocalStateQuery()
 	if lsq == nil || lsq.Client == nil {
