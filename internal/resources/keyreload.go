@@ -100,53 +100,6 @@ while :; do
 done
 `
 
-// syncSigningAgentKeysScript is syncBlockProducerKeysScript for a block
-// producer that signs through a remote agent. The agent holds the KES key, so
-// only the opcert is staged, and the approval digest is the SHA-256 of the
-// opcert alone; a kes.skey left in the Secret is never read. It is a separate
-// script so the staging container of a node with a local KES key stays
-// byte-identical.
-const syncSigningAgentKeysScript = `set -u
-trap 'exit 0' TERM INT
-source_dir="${DINGO_KEYS_SOURCE:-/var/run/dingo-keys-source}"
-destination_dir="${DINGO_KEYS_DESTINATION:-/keys}"
-approval="${DINGO_KEYS_APPROVAL:-/var/run/dingo-keys-approval/approved}"
-interval="${DINGO_KEYS_SYNC_INTERVAL:-5}"
-umask 077
-digest() {
-  cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1
-}
-while :; do
-  sleep "${interval}" &
-  wait "$!"
-  [ -s "${approval}" ] || continue
-  want="$(cat "${approval}")"
-  cert=node.cert
-  if [ -s "${source_dir}/opcert.cert" ]; then
-    cert=opcert.cert
-  fi
-  [ "$(digest "${source_dir}/${cert}")" = "${want}" ] || continue
-  [ "$(digest "${destination_dir}/opcert.cert")" = "${want}" ] && continue
-  rm -f "${destination_dir}/.opcert.cert.new"
-  cp "${source_dir}/${cert}" "${destination_dir}/.opcert.cert.new" &&
-    chmod 0600 "${destination_dir}/.opcert.cert.new" || continue
-  [ "$(digest "${destination_dir}/.opcert.cert.new")" = "${want}" ] ||
-    continue
-  mv -f "${destination_dir}/.opcert.cert.new" "${destination_dir}/opcert.cert" &&
-    echo "staged the approved opcert"
-done
-`
-
-// syncKeysScript returns the staging script for dn, chosen by the spec as
-// keysScript chooses the init script: a node that signs through an agent never
-// stages a kes.skey.
-func syncKeysScript(dn *dingov1alpha1.DingoNode) string {
-	if UsesSigningAgent(dn) {
-		return syncSigningAgentKeysScript
-	}
-	return syncBlockProducerKeysScript
-}
-
 // ReloadsKeysInPlace reports whether a block producer loads a new KES key and
 // opcert into the running pod instead of rolling it.
 func ReloadsKeysInPlace(dn *dingov1alpha1.DingoNode) bool {
@@ -164,6 +117,14 @@ func reloadsKeysInPlace(dn *dingov1alpha1.DingoNode, opts RenderOptions) bool {
 		(ReloadsKeysInPlace(dn) || UsesPoolList(dn))
 }
 
+// stagesKeys reports whether this render runs the container that stages
+// approved keys. A node that signs through an agent does not: Dingo takes a
+// new opcert from the agent, so the staging container would only repeat it.
+// Pool-list nodes always sign through the agent.
+func stagesKeys(dn *dingov1alpha1.DingoNode, opts RenderOptions) bool {
+	return reloadsKeysInPlace(dn, opts) && !UsesSigningAgent(dn)
+}
+
 // KeysApprovalConfigMapName returns the ConfigMap holding the approved key
 // digest of a node that reloads keys in place.
 func KeysApprovalConfigMapName(dn *dingov1alpha1.DingoNode) string {
@@ -171,8 +132,7 @@ func KeysApprovalConfigMapName(dn *dingov1alpha1.DingoNode) string {
 }
 
 // BuildKeysApprovalConfigMap constructs the approval ConfigMap. digest is the
-// hex SHA-256 of the approved kes.skey followed by its opcert, or of the opcert
-// alone on a node that signs through a remote agent.
+// hex SHA-256 of the approved kes.skey followed by its opcert.
 func BuildKeysApprovalConfigMap(
 	dn *dingov1alpha1.DingoNode,
 	digest string,
@@ -203,32 +163,21 @@ var keysSyncResources = corev1.ResourceRequirements{
 }
 
 // keysSyncContainer stages approved key changes into the running pod.
-func keysSyncContainer(
-	dn *dingov1alpha1.DingoNode,
-	opts RenderOptions,
-) corev1.Container {
-	script := syncKeysScript(dn)
+func keysSyncContainer(dn *dingov1alpha1.DingoNode) corev1.Container {
 	mounts := []corev1.VolumeMount{
 		{Name: keysSourceName, MountPath: keysSourcePath, ReadOnly: true},
 		{Name: keysVolumeName, MountPath: keysMountPath},
+		{
+			Name:      keysApprovalVolumeName,
+			MountPath: keysApprovalPath,
+			ReadOnly:  true,
+		},
 	}
-	if rendersPools(dn, opts) {
-		script = syncPoolListKeysScript
-		mounts = append(
-			poolSourceMounts(opts),
-			corev1.VolumeMount{Name: keysVolumeName, MountPath: keysMountPath},
-		)
-	}
-	mounts = append(mounts, corev1.VolumeMount{
-		Name:      keysApprovalVolumeName,
-		MountPath: keysApprovalPath,
-		ReadOnly:  true,
-	})
 	return corev1.Container{
 		Name:            keysSyncName,
 		Image:           imageRef(dn),
 		ImagePullPolicy: pullPolicy(dn),
-		Command:         []string{"/bin/sh", "-c", script},
+		Command:         []string{"/bin/sh", "-c", syncBlockProducerKeysScript},
 		VolumeMounts:    mounts,
 		Resources:       *keysSyncResources.DeepCopy(),
 		SecurityContext: containerSecurityContext(),
@@ -258,8 +207,8 @@ func podContainers(
 	opts RenderOptions,
 	node corev1.Container,
 ) []corev1.Container {
-	if !reloadsKeysInPlace(dn, opts) {
+	if !stagesKeys(dn, opts) {
 		return []corev1.Container{node}
 	}
-	return []corev1.Container{node, keysSyncContainer(dn, opts)}
+	return []corev1.Container{node, keysSyncContainer(dn)}
 }

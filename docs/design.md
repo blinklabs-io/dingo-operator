@@ -564,6 +564,16 @@ the opcert is loaded into the running node instead of rolling the pod
   the Secret volume, which the pod's `fsGroup` makes group-readable. The
   kubelet refreshes the Secret volume in place, but nothing refreshes `/keys`.
   `sync-block-producer-keys` runs beside Dingo and does.
+- Agent-signed nodes. A node that signs through `signingAgent`, with one pool
+  or `blockProducer.pools`, renders no `sync-block-producer-keys` container,
+  approval volume or approval ConfigMap (`stagesKeys`), and the operator
+  deletes an approval ConfigMap an earlier render left. Dingo takes a new
+  opcert from the agent when it admits the remote client, which the readiness
+  probe and the metrics scrape do at least every 30 seconds, and the agent
+  holds only an opcert installed through its control role. The key checksum
+  annotations and Dingo's watch interval stay, so a new opcert in the keys
+  Secret still does not roll the pod. After a restart the init container
+  stages the Secret's opcert.
 - The operator's validation still gates every bundle. The container stages the
   Secret's `kes.skey` and certificate only when SHA-256 of the two equals the
   digest in the `<name>-keys-approval` ConfigMap, which the operator writes
@@ -579,8 +589,8 @@ the opcert is loaded into the running node instead of rolling the pod
   counter that differs from the bundle's: confirmation is by counter, so a
   bundle reusing the loaded counter, or one approved while the counter is
   unobserved, cannot be confirmed and rolls. Anything else rolls, as does the first
-  render after enabling the setting, which adds the container, the approval
-  volume and Dingo's watch interval.
+  render after enabling the setting, which adds Dingo's watch interval and,
+  without a signing agent, the container and the approval volume.
 - After a roll. The scrape goes through the pod's stable DNS name, so until the
   new pod is scraped, `loadedCounter` may still be the outgoing pod's. Every
   render that changes the live `keys-checksum` (or creates the StatefulSet)
@@ -654,7 +664,7 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   unobserved or dropped pool is still checked for expiry). A bundle that fails,
   a missing Secret
   or, with more than one pool, a vote key, drops that pool from the YAML, the
-  volumes, the approvals and `keys-pool`; the other pools keep forging after
+  volumes and `keys-pool`; the other pools keep forging after
   one pod roll, and the pool is reported in `status.pools` (`keysValid: false`,
   reason `PoolKeysRejected` or `KeysSecretMissing`) with the node `Degraded`.
   Only when every pool is dropped is the node refused as a whole: the live
@@ -674,14 +684,12 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
 - Template stability. `keys-checksum` is the checksum of each accepted pool's
   Secret without its opcert and KES key (`staticKeysChecksum`), keyed by pool
   ID, so it covers every Secret's static entries and the set of pools but not
-  a new opcert. A new opcert goes through the approval ConfigMap
-  (`<name>-keys-approval`, one key per pool ID holding the SHA-256 of that
-  pool's opcert) and the staging container (`syncPoolListKeysScript`), which
-  copies a pool's opcert into `/keys/<pool id>/` only when its digest is
-  approved. Dingo reloads it through `CARDANO_SHELLEY_KEY_WATCH_INTERVAL`,
-  which list mode always sets. So list mode is always in-place, with or
-  without `rotation.reloadInPlace`, and has none of the single-pool
-  counter-confirmation and timeout-roll machinery (`decideKeysRollout`): the
+  a new opcert. A new opcert reaches Dingo from the agent, so a list node has
+  no approval ConfigMap or staging container, and the operator deletes an
+  approval ConfigMap an earlier render left. Dingo's key watch interval
+  (`CARDANO_SHELLEY_KEY_WATCH_INTERVAL`) is still set in list mode. So list
+  mode is always in-place, with or without `rotation.reloadInPlace`, and has
+  none of the single-pool counter-confirmation and timeout-roll machinery (`decideKeysRollout`): the
   node-level `keys-static-checksum` and `keys-counter` annotations are not
   written. The agent client certificate checksum and its hold behave as for
   one pool.
@@ -704,10 +712,8 @@ everything below applies only when `pools` is set (`resources.UsesPoolList`).
   Auto-only), so a per-pool
   opcert is checked against its Secret and chain counters, never against what
   the agent serves; Dingo checks it against the agent when it loads it.
-  `Assisted` updates the approval ConfigMap so the staging container loads a
-  new opcert, and rolls on static key or pool-list changes. `MonitorOnly`
-  withdraws staging approval and leaves the live template unchanged while
-  reporting the replacement.
+  `Assisted` rolls on static key or pool-list changes. `MonitorOnly` leaves
+  the live template unchanged while reporting the replacement.
 - Status. `status.pools[]` (keyed by hex pool ID, cleared once the node no
   longer uses a pool list) holds `keysValid`,
   reason, message, `onDiskCounter`, `onChainCounter`/`At`, `loadedCounter`,

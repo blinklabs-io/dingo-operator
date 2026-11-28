@@ -15,13 +15,11 @@
 package resources
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
-	"time"
 
 	dingov1alpha1 "github.com/blinklabs-io/dingo-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
@@ -244,8 +242,8 @@ func TestPoolListPodStagesEachPoolSeparately(t *testing.T) {
 		t, []string{"keys-a", "keys-b", "keys-c"}, KeysSecretNames(pod),
 	)
 
-	// The init container and the staging container mount each pool's Secret
-	// under its own directory, and write into the shared /keys volume.
+	// The init container mounts each pool's Secret under its own directory,
+	// and writes into the shared /keys volume.
 	var initC, syncC, node *corev1.Container
 	for i := range pod.InitContainers {
 		if pod.InitContainers[i].Name == keysInitName {
@@ -261,17 +259,14 @@ func TestPoolListPodStagesEachPoolSeparately(t *testing.T) {
 		}
 	}
 	require.NotNil(t, initC)
-	require.NotNil(t, syncC, "pool lists always load a new opcert in place")
+	assert.Nil(t, syncC, "a pool list takes a new opcert from the agent")
 	require.NotNil(t, node)
 	assert.Equal(t, preparePoolListKeysScript, initC.Command[2])
-	assert.Equal(t, syncPoolListKeysScript, syncC.Command[2])
 	for i, pool := range []string{poolA, poolB, poolC} {
-		for _, c := range []*corev1.Container{initC, syncC} {
-			m := mountByPath(*c, "/var/run/dingo-keys-source/"+pool)
-			require.NotNil(t, m, "%s mounts pool %s", c.Name, pool)
-			assert.Equal(t, poolSourceVolume(i), m.Name)
-			assert.True(t, m.ReadOnly)
-		}
+		m := mountByPath(*initC, "/var/run/dingo-keys-source/"+pool)
+		require.NotNil(t, m, "%s mounts pool %s", initC.Name, pool)
+		assert.Equal(t, poolSourceVolume(i), m.Name)
+		assert.True(t, m.ReadOnly)
 	}
 	assert.Nil(t, mountByPath(*initC, keysSourcePath))
 
@@ -415,22 +410,6 @@ func TestSupportsPoolList(t *testing.T) {
 	assert.True(t, SupportsPoolList(custom))
 }
 
-func TestPoolKeysApprovalConfigMapIsKeyedByPool(t *testing.T) {
-	t.Parallel()
-	dn := poolListNode(
-		dingov1alpha1.SigningAgentSpec{Address: "kes-agent:7000"},
-	)
-	cm := BuildPoolKeysApprovalConfigMap(dn, map[string]string{
-		poolA: "digest-a", poolC: "digest-c",
-	})
-	assert.Equal(t, KeysApprovalConfigMapName(dn), cm.Name)
-	assert.Equal(
-		t,
-		map[string]string{poolA: "digest-a", poolC: "digest-c"},
-		cm.Data,
-	)
-}
-
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
@@ -489,58 +468,4 @@ func TestPreparePoolListKeysScript(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), f)
 	}
-}
-
-// The staging container stages one pool's approved opcert and leaves the other
-// pools alone: it is what lets one pool rotate without touching the rest.
-func TestSyncPoolListKeysScriptStagesOnlyApprovedPools(t *testing.T) {
-	t.Parallel()
-	src, dst, apr := t.TempDir(), t.TempDir(), t.TempDir()
-	for _, pool := range []string{poolA, poolB} {
-		writeFile(t, filepath.Join(src, pool, "opcert.cert"), "new-"+pool)
-		writeFile(t, filepath.Join(dst, pool, "opcert.cert"), "old-"+pool)
-	}
-	// Only pool A is approved. Pool B's approval is the digest of another
-	// opcert than the one its Secret holds now, as when the operator approved
-	// an earlier bundle and has refused this one.
-	writeFile(t, filepath.Join(apr, poolA), opCertDigest("new-"+poolA))
-	writeFile(t, filepath.Join(apr, poolB), opCertDigest("earlier-"+poolB))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", syncPoolListKeysScript)
-	cmd.Env = append(
-		os.Environ(),
-		"DINGO_KEYS_SOURCE="+src,
-		"DINGO_KEYS_DESTINATION="+dst,
-		"DINGO_KEYS_APPROVAL_DIR="+apr,
-		"DINGO_KEYS_SYNC_INTERVAL=0.05",
-	)
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		cancel()
-		_ = cmd.Wait()
-	})
-
-	opcertOf := func(pool string) string {
-		return readFile(filepath.Join(dst, pool, "opcert.cert"))
-	}
-	require.Eventually(t, func() bool {
-		return opcertOf(poolA) == "new-"+poolA
-	}, 5*time.Second, 20*time.Millisecond)
-	require.Never(t, func() bool {
-		return opcertOf(poolB) != "old-"+poolB
-	}, 500*time.Millisecond, 20*time.Millisecond,
-		"an unapproved pool is not staged")
-
-	info, err := os.Stat(filepath.Join(dst, poolA, "opcert.cert"))
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-
-	// Control: the loop is still running, and stages pool B once it is
-	// approved.
-	writeFile(t, filepath.Join(apr, poolB), opCertDigest("new-"+poolB))
-	require.Eventually(t, func() bool {
-		return opcertOf(poolB) == "new-"+poolB
-	}, 5*time.Second, 20*time.Millisecond)
-	assert.NoFileExists(t, filepath.Join(dst, poolA, "kes.skey"))
 }

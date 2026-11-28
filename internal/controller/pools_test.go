@@ -17,7 +17,6 @@ package controller
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"slices"
@@ -33,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -339,11 +339,6 @@ func poolReconciler(c client.Client) *DingoNodeReconciler {
 	return &DingoNodeReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 }
 
-func sha256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
-
 func TestReconcilePoolKeysRendersEveryAcceptedPool(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -391,8 +386,7 @@ func TestReconcilePoolKeysRendersEveryAcceptedPool(t *testing.T) {
 	require.NotNil(t, kv)
 	assert.Equal(t, metav1.ConditionTrue, kv.Status)
 
-	// The pool list the pod reads, and the digests the staging container
-	// matches against each Secret's opcert.
+	// The pool list the pod reads.
 	var pc corev1.ConfigMap
 	require.NoError(t, c.Get(ctx, types.NamespacedName{
 		Name: "bp-pools", Namespace: "ns",
@@ -402,15 +396,48 @@ func TestReconcilePoolKeysRendersEveryAcceptedPool(t *testing.T) {
 		resources.PoolsConfig(dn, opts.Pools),
 		pc.Data["dingo.yaml"],
 	)
-	var approval corev1.ConfigMap
-	require.NoError(t, c.Get(ctx, types.NamespacedName{
-		Name: resources.KeysApprovalConfigMapName(dn), Namespace: "ns",
-	}, &approval))
-	require.Len(t, approval.Data, 3)
-	for i, p := range pools {
-		cert := poolSecret(t, "ns", p, uint64(i+3)).Data[keyFileOpCert]
-		assert.Equal(t, sha256Hex(cert), approval.Data[p.id])
+	requireNoKeysApproval(t, c, dn)
+}
+
+// A pool-list node signs through the agent and runs no staging container, so
+// it keeps no approval ConfigMap, and one left from an earlier render is
+// removed.
+func TestReconcilePoolKeysRemovesTheApprovalConfigMap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	dn := poolListNode("bp", "ns", 0, pools...)
+	objects := []client.Object{dn, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resources.KeysApprovalConfigMapName(dn),
+			Namespace: dn.Namespace,
+		},
+		Data: map[string]string{pools[0].id: "stale"},
+	}}
+	for _, p := range pools {
+		objects = append(objects, poolSecret(t, "ns", p, 0))
 	}
+	c := conflictClient(t, objects...)
+	r := poolReconciler(c)
+
+	opts := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	_, _, err := r.reconcilePoolKeys(ctx, dn, &opts)
+	require.NoError(t, err)
+	requireNoKeysApproval(t, c, dn)
+}
+
+// requireNoKeysApproval fails when dn has an approval ConfigMap.
+func requireNoKeysApproval(
+	t *testing.T,
+	c client.Client,
+	dn *dingov1alpha1.DingoNode,
+) {
+	t.Helper()
+	err := c.Get(context.Background(), types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}, &corev1.ConfigMap{})
+	require.True(t, apierrors.IsNotFound(err),
+		"an agent-signed node keeps no keys approval ConfigMap: %v", err)
 }
 
 func TestReconcilePoolKeysMonitorOnlyKeepsLiveBundles(t *testing.T) {
@@ -432,12 +459,6 @@ func TestReconcilePoolKeysMonitorOnlyKeepsLiveBundles(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, keep)
 	require.NoError(t, c.Create(ctx, resources.BuildStatefulSet(dn, initial)))
-	approvalKey := types.NamespacedName{
-		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
-	}
-	approval := &corev1.ConfigMap{}
-	require.NoError(t, c.Get(ctx, approvalKey, approval))
-
 	secretKey := types.NamespacedName{
 		Name: pools[0].secret, Namespace: dn.Namespace,
 	}
@@ -446,8 +467,6 @@ func TestReconcilePoolKeysMonitorOnlyKeepsLiveBundles(t *testing.T) {
 	secret.Data = poolSecret(t, dn.Namespace, pools[0], 1).Data
 	secret.Data["extra"] = []byte("changed static material")
 	require.NoError(t, c.Update(ctx, secret))
-	approval.Data[pools[0].id] = approvedKeysDigest(secret.Data, true)
-	require.NoError(t, c.Update(ctx, approval))
 
 	observed := resources.RenderOptions{MountKeys: true, Replicas: 1}
 	keep, message, err := r.reconcilePoolKeys(ctx, dn, &observed)
@@ -455,9 +474,7 @@ func TestReconcilePoolKeysMonitorOnlyKeepsLiveBundles(t *testing.T) {
 	assert.True(t, keep)
 	assert.Equal(t, monitorOnlyHeldMessage, message)
 	assert.Equal(t, initial.KeysChecksum, observed.KeysChecksum)
-	require.NoError(t, c.Get(ctx, approvalKey, approval))
-	assert.Empty(t, approval.Data,
-		"MonitorOnly must withdraw pending pool approvals")
+	requireNoKeysApproval(t, c, dn)
 	assert.Equal(t, int64(1), poolStatus(dn, pools[0].id).OnDiskCounter)
 }
 
@@ -494,12 +511,7 @@ func TestReconcilePoolKeysMonitorOnlyClearsPendingOpCert(t *testing.T) {
 	assert.Equal(t, initial.KeysChecksum, pending.KeysChecksum,
 		"an opcert-only replacement does not change the rollout checksum")
 
-	approvalKey := types.NamespacedName{
-		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
-	}
-	approval := &corev1.ConfigMap{}
-	require.NoError(t, c.Get(ctx, approvalKey, approval))
-	require.NotEmpty(t, approval.Data[pools[0].id])
+	requireNoKeysApproval(t, c, dn)
 
 	dn.Spec.BlockProducer.Rotation.Mode =
 		dingov1alpha1.RotationModeMonitorOnly
@@ -507,9 +519,7 @@ func TestReconcilePoolKeysMonitorOnlyClearsPendingOpCert(t *testing.T) {
 	keep, _, err = r.reconcilePoolKeys(ctx, dn, &observed)
 	require.NoError(t, err)
 	assert.False(t, keep, "an opcert-only observation does not roll the pod")
-	require.NoError(t, c.Get(ctx, approvalKey, approval))
-	assert.Empty(t, approval.Data,
-		"switching to MonitorOnly must withdraw an Assisted approval")
+	requireNoKeysApproval(t, c, dn)
 }
 
 func TestReconcilePoolKeysMonitorOnlyInitializesKeylessTemplate(t *testing.T) {
@@ -536,11 +546,7 @@ func TestReconcilePoolKeysMonitorOnlyInitializesKeylessTemplate(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, keep)
 	assert.NotEmpty(t, initialized.KeysChecksum)
-	approval := &corev1.ConfigMap{}
-	require.NoError(t, c.Get(ctx, types.NamespacedName{
-		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
-	}, approval))
-	assert.Len(t, approval.Data, len(pools))
+	requireNoKeysApproval(t, c, dn)
 }
 
 // Each pool's opcert is bound to that pool's own poolId, not to the node's: a
@@ -604,7 +610,7 @@ func TestReconcilePoolKeysDropsABadPool(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, keep, "the other pools keep forging")
 
-			// Left out of the pod, the pool list and the approvals.
+			// Left out of the pod and the pool list.
 			require.Len(t, opts.Pools, 2)
 			for _, p := range opts.Pools {
 				assert.NotEqual(t, pools[1].id, p.PoolID)
@@ -617,12 +623,7 @@ func TestReconcilePoolKeysDropsABadPool(t *testing.T) {
 			assert.NotContains(t, pc.Data["dingo.yaml"], pools[1].id)
 			assert.Contains(t, pc.Data["dingo.yaml"], pools[0].id)
 			assert.Contains(t, pc.Data["dingo.yaml"], pools[2].id)
-			var approval corev1.ConfigMap
-			require.NoError(t, c.Get(ctx, types.NamespacedName{
-				Name: resources.KeysApprovalConfigMapName(dn), Namespace: "ns",
-			}, &approval))
-			assert.NotContains(t, approval.Data, pools[1].id)
-			assert.Len(t, approval.Data, 2)
+			requireNoKeysApproval(t, c, dn)
 
 			// Reported for that pool alone.
 			bad := poolStatus(dn, pools[1].id)
@@ -1029,4 +1030,27 @@ func TestReconcilePoolKeysEnforcesEachPoolsOwnFloor(t *testing.T) {
 	b := poolStatus(dn, pools[1].id)
 	assert.False(t, b.KeysValid)
 	assert.Contains(t, b.KeysMessage, "below the on-chain counter 17")
+}
+
+// A pool-list node whose every bundle is refused still keeps no approval
+// ConfigMap: it runs no staging container either way.
+func TestReconcilePoolKeysRefusedPoolsKeepNoApproval(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pools := newTestPools(t, "a", "b")
+	dn := poolListNode("bp", "ns", 0, pools...)
+	c := conflictClient(t, dn, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resources.KeysApprovalConfigMapName(dn),
+			Namespace: dn.Namespace,
+		},
+		Data: map[string]string{pools[0].id: "stale"},
+	})
+	r := poolReconciler(c)
+
+	opts := resources.RenderOptions{MountKeys: true, Replicas: 1}
+	keep, _, err := r.reconcilePoolKeys(ctx, dn, &opts)
+	require.NoError(t, err)
+	require.True(t, keep, "every pool is refused, so the template is held")
+	requireNoKeysApproval(t, c, dn)
 }

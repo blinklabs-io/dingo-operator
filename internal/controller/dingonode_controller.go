@@ -662,6 +662,14 @@ func (r *DingoNodeReconciler) reconcileResources(
 	}
 	if bp := dn.Spec.BlockProducer; resources.IsBlockProducer(dn) &&
 		!resources.UsesPoolList(dn) && r.APIReader != nil && bp != nil {
+		// A node that signs through an agent runs no staging container, so
+		// an approval ConfigMap an earlier render left is removed whatever
+		// becomes of its keys.
+		if resources.UsesSigningAgent(dn) {
+			if err := r.deleteKeysApprovalConfigMap(ctx, dn); err != nil {
+				return err
+			}
+		}
 		secret := &corev1.Secret{}
 		key := types.NamespacedName{
 			Name:      bp.Keys.SecretRef,
@@ -749,9 +757,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 					if rollout.approve {
 						if err := r.upsertKeysApprovalConfigMap(
 							ctx, dn,
-							approvedKeysDigest(
-								secret.Data, resources.UsesSigningAgent(dn),
-							),
+							approvedKeysDigest(secret.Data),
 						); err != nil {
 							return fmt.Errorf("apply keys approval configmap: %w", err)
 						}
@@ -773,9 +779,7 @@ func (r *DingoNodeReconciler) reconcileResources(
 					resources.ReloadsKeysInPlace(dn) {
 					if err := r.upsertKeysApprovalConfigMap(
 						ctx, dn,
-						approvedKeysDigest(
-							secret.Data, resources.UsesSigningAgent(dn),
-						),
+						approvedKeysDigest(secret.Data),
 					); err != nil {
 						return fmt.Errorf("apply keys approval configmap: %w", err)
 					}

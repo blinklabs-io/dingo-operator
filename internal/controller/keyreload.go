@@ -66,14 +66,11 @@ func staticKeysChecksum(data map[string][]byte) string {
 
 // approvedKeysDigest returns the hex SHA-256 of a bundle's kes.skey followed by
 // its opcert, the digest the staging container compares the Secret volume with
-// before it stages them. A node that signs through a remote agent stages only
-// the opcert, so agent leaves kes.skey out: one left in the Secret is ignored.
-func approvedKeysDigest(data map[string][]byte, agent bool) string {
+// before it stages them.
+func approvedKeysDigest(data map[string][]byte) string {
 	cert, _, _ := opCertFile(data)
 	h := sha256.New()
-	if !agent {
-		h.Write(data[keyFileKES])
-	}
+	h.Write(data[keyFileKES])
 	h.Write(cert)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -305,12 +302,16 @@ func (r *DingoNodeReconciler) liveKeysTemplate(
 }
 
 // upsertKeysApprovalConfigMap records the digest of the bundle the staging
-// container may stage.
+// container may stage. A node that signs through an agent has no staging
+// container, so it gets no approval ConfigMap.
 func (r *DingoNodeReconciler) upsertKeysApprovalConfigMap(
 	ctx context.Context,
 	dn *dingov1alpha1.DingoNode,
 	digest string,
 ) error {
+	if resources.UsesSigningAgent(dn) {
+		return r.deleteKeysApprovalConfigMap(ctx, dn)
+	}
 	desired := resources.BuildKeysApprovalConfigMap(dn, digest)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: objectMeta(desired.Name, desired.Namespace),
@@ -347,6 +348,28 @@ func (r *DingoNodeReconciler) clearKeysApprovalConfigMap(
 	})
 	if err != nil {
 		return fmt.Errorf("clear keys approval configmap: %w", err)
+	}
+	return nil
+}
+
+// deleteKeysApprovalConfigMap removes the approval ConfigMap a node left from
+// before it signed through an agent, if it exists.
+func (r *DingoNodeReconciler) deleteKeysApprovalConfigMap(
+	ctx context.Context,
+	dn *dingov1alpha1.DingoNode,
+) error {
+	key := types.NamespacedName{
+		Name: resources.KeysApprovalConfigMapName(dn), Namespace: dn.Namespace,
+	}
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, key, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("read keys approval configmap: %w", err)
+	}
+	if err := r.Delete(ctx, cm); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete keys approval configmap: %w", err)
 	}
 	return nil
 }

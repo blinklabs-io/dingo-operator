@@ -50,7 +50,10 @@ operators.
   instead of rolling the pod: after validating it, the operator records its
   digest in the `<name>-keys-approval` ConfigMap, a `sync-block-producer-keys`
   container stages it into `/keys`, and Dingo reloads it on its credential file
-  watch. The rotation completes when the node reports the new opcert counter
+  watch. A node that signs through `signingAgent` has no staging container,
+  approval ConfigMap or approval volume: Dingo takes a new opcert from the
+  agent, and a pod restart stages the keys Secret's current opcert. The
+  rotation completes when the node reports the new opcert counter
   (`status.opcert.loadedCounter`); if it does not within 10 minutes, the pod is
   rolled. A change to any other Secret entry (VRF key, vote key), a new pool,
   or an opcert that reuses the loaded counter (or one approved before the node
