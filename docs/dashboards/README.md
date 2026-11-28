@@ -11,8 +11,21 @@ manages, on Kubernetes with the Prometheus Operator.
 | **DingoNodes** | `dingonodes.json` | `dingonodes` | Fleet view: sync and tip, block arrival, peers, storage runway, resources |
 | **Forging Health** | `dingo-forging-health.json` | `dingo-forging` | Producer readiness, leader slots to adopted blocks, forge timing, remote signing agent |
 
-The three dashboards link to each other from the top bar. The links keep the
-time range and the template variables.
+Each dashboard has a **Dingo** menu in the top bar. It lists every loaded
+dashboard tagged `dingo`: these three, plus the Dingo node dashboards and the
+Bursa KES agent dashboard when they are installed. The menu keeps the time
+range and the template variables; a variable carries over only to a dashboard
+that defines one with the same name, such as `$datasource`.
+
+On DingoNodes, the **Forging** column of the Dingo Health table shows
+`open ›` for block producers and links to Forging Health for that pod and
+network; relays leave it blank. The KES Fuel per Producer gauges link to the
+same place.
+
+On the Operator dashboard, a producer that forges for several pools reports
+one series per `pool_id`. The KES Rotation Timeline, KES Periods Left over Time
+and Rotations Applied panels then show a row or series per pool, labelled with
+the pod and a shortened pool ID. A producer with one pool shows as before.
 
 The screenshots below were rendered from synthetic metrics for one network
 with two relays, an API node and a block producer.
@@ -62,10 +75,8 @@ unit tests.
   (`marcusolsson-dynamictext-panel`) for every dashboard header and several
   panels. They render with Grafana's default HTML sanitizing;
   `disable_sanitize_html` is not needed.
-- **A Prometheus datasource with uid `default`.** Every panel references
-  `{"type": "prometheus", "uid": "default"}`, as the Dingo dashboards do.
-  Provision the datasource with that uid, or replace `default` in the JSON
-  with your datasource's uid before importing.
+- **A Prometheus datasource.** Every panel queries the one selected by the
+  `$datasource` variable, which starts on the datasource marked default.
 
 Install the plugin on Kubernetes with the environment variable
 `GF_INSTALL_PLUGINS=marcusolsson-dynamictext-panel`, or through the Grafana
@@ -161,15 +172,16 @@ promtool test rules alerts_test.yaml
 
 ## Datasource
 
-All dashboards reference their Prometheus datasource with UID `default`,
-Grafana's built-in alias for the datasource currently marked as default. With
-one Prometheus datasource, or one marked default under **Connections, Data
-sources**, the dashboards resolve it without renaming a UID.
+All dashboards select their Prometheus datasource through the `$datasource`
+variable. It starts on whichever Prometheus datasource is marked default under
+**Connections, Data sources**; with more than one, pick another from the
+**Prometheus** dropdown. Links into Forging Health keep the selection.
 
 ## Template variables
 
 | Variable | Dashboards | Source | Purpose |
 |----------|-----------|--------|---------|
+| `$datasource` | all | Prometheus datasources | Selects the Prometheus datasource every panel and variable queries. Defaults to the datasource marked default. |
 | `$network` | all | `cardano_network` label: `label_values(up{cardano_service="dingo"}, cardano_network)` on Operator and DingoNodes, `dingo_forge_credentials_valid` on Forging Health | Selects the Cardano network. The operator's PodMonitor adds this label and `cardano_service` from the pod to every scraped series, including `up`, so a network is listed before its first successful scrape. Multi-select, default All. |
 | `operator_namespace` | Operator | `label_values(controller_runtime_reconcile_total{controller="dingonode"}, namespace)` | The namespace the operator runs in. Selects its controller-runtime series. |
 | `controller` | Operator | `label_values(controller_runtime_reconcile_total{namespace="$operator_namespace"}, controller)` | The controller shown in the reconcile panels. |
@@ -235,9 +247,9 @@ docs/dashboards/
 Install the Business Text plugin and restart Grafana.
 
 **Headers show static text and no pills or numbers**
-The panel's queries failed or its script did not run. Check that a datasource
-with uid `default` exists (see Prerequisites), then look for errors in the
-browser console.
+The panel's queries failed or its script did not run. Check that the
+**Prometheus** dropdown selects the datasource that scrapes the operator and
+nodes, then look for errors in the browser console.
 
 **Every panel shows "No data"**
 In Prometheus open **Status, Targets** and confirm the DingoNode PodMonitor
@@ -262,9 +274,9 @@ the volume alerts do not match.
 Panels group by `pod`. Check that the scraped series carry a `pod` label; a
 PodMonitor that relabels it away breaks them.
 
-**"datasource not found"**
-Mark your Prometheus datasource as default under **Connections, Data sources**,
-or replace `"uid": "default"` in the JSON files with your datasource UID.
+**Panels query the wrong Prometheus**
+Pick the right datasource from the **Prometheus** dropdown, or mark it default
+under **Connections, Data sources**.
 
 **Dashboards do not appear (sidecar)**
 Check that the ConfigMap carries `grafana_dashboard=1` and sits in a namespace

@@ -21,40 +21,18 @@
   "graphTooltip": 2,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
       "includeVars": true,
       "keepTime": true,
-      "tags": [],
+      "tags": [
+        "dingo"
+      ],
       "targetBlank": false,
-      "title": "Operator",
+      "title": "Dingo",
       "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-operator"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "DingoNodes",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingonodes"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "Forging Health",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-forging"
+      "type": "dashboards",
+      "url": ""
     }
   ],
   "liveNow": false,
@@ -62,7 +40,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Good: every producer has valid credentials, every leader slot became an adopted block, forges take a small share of the 1 s slot, and no producer is behind on its opcert or tip.",
       "fieldConfig": {
@@ -107,7 +85,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -118,7 +96,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -129,7 +107,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -140,7 +118,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_missed_leader_slots_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -151,7 +129,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) / (sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) > 0)",
           "instant": true,
@@ -162,7 +140,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_kes_agent_sign_success_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -173,7 +151,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_kes_agent_sign_failure_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -184,7 +162,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_kes_agent_reconnect_failures_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -195,7 +173,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod) (increase(dingo_forge_sync_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) + sum by (namespace, pod) (increase(dingo_forge_stale_tip_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) > 0",
           "instant": true,
@@ -206,7 +184,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -217,7 +195,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -228,7 +206,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\",pod=~\"$pod\"} < dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -239,7 +217,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) ((dingo_ledger_pipeline_stuck{cardano_network=~\"$network\",pod=~\"$pod\"} + dingo_ledger_pipeline_halted{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"}) > 0",
           "instant": true,
@@ -250,7 +228,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (((dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"} > 0) - on (namespace, pod) group_left () (cardano_node_metrics_slotNum_int{cardano_network=~\"$network\",pod=~\"$pod\"} + on (namespace, pod) dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"})) - (time() - timestamp(dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"}))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -261,7 +239,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(max by (namespace, pod) (dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"}) == 0) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -272,7 +250,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(round(sum by (namespace, pod) (increase(dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod, pool_id) (dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__range) and on (namespace, pod, pool_id) (dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__range) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))) - round(sum by (namespace, pod) (increase(dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod, pool_id) (dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__range) and on (namespace, pod, pool_id) (dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__range) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())))) > 0",
           "instant": true,
@@ -283,7 +261,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_remote_kes_signer_not_ready_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "instant": true,
@@ -294,7 +272,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_yielded_to_own_pool_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -310,7 +288,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One ring per producer: the time since its last adopted block, measured against its own typical gap between blocks (observed time divided by blocks adopted over the last 7 days, or since the producer appeared). The ring fills as the wait grows and is full at five typical gaps; the two ticks mark one and three. Leader slots are a lottery, so gaps vary a lot: a wait of three typical gaps happens about 5% of the time and five about 0.7%, which is what the last line under each ring works out for the current wait (hover a ring for the block count behind its typical gap). **Healthy: green rings, under three typical gaps.** Amber from three, red from five: that long without a block is unlikely to be luck, so check that the producer is at tip, its credentials are valid and its pool is still registered with stake. The typical gap comes from recent history, not from stake, because Dingo does not export the pool's stake; a producer with only a few blocks in 7 days has a rough estimate. The 7-day look-back is fixed and does not follow the dashboard range.",
       "fieldConfig": {
@@ -355,7 +333,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -366,7 +344,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (time() - max_over_time((timestamp(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}) and (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[4m]) > 0))[7d:2m])) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -377,7 +355,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[7d])) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -388,7 +366,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (count_over_time(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[7d:5m])) * 300 and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -404,7 +382,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every leader slot the selected producers won over the dashboard range, split by what became of it. **Adopted**: forged and adopted as the producer's own tip (`cardano_node_metrics_Forge_adopted_int`). **Forged, not adopted**: a block was made and then dropped (forged minus adopted). **No block**: the slot was won but nothing was forged (won minus forged minus yielded; the reason is in Forge problems). **Yielded to own pool**: another pool of the same node led the slot and its block was adopted, which is not a lost slot (`dingo_forge_yielded_to_own_pool_total`). **Healthy: one solid green ring.** Any amber or red slice is a block the pool did not get paid for.",
       "fieldConfig": {
@@ -528,7 +506,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum((increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())))",
           "instant": true,
@@ -539,7 +517,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum((increase(cardano_node_metrics_Forge_forged_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))) - sum((increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))), 0)",
           "instant": true,
@@ -550,7 +528,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum((increase(dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))) - sum((increase(cardano_node_metrics_Forge_forged_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))) - (sum((increase(dingo_forge_yielded_to_own_pool_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))) or vector(0)), 0)",
           "instant": true,
@@ -561,7 +539,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum((increase(dingo_forge_yielded_to_own_pool_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())))",
           "instant": true,
@@ -577,7 +555,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One line per producer. Creds: can it sign now. Agent: session open or idle (empty for producers that sign with a local key; idle is not a fault). KES left / KES days: periods and days until the operational certificate expires. Opcert against On-chain: loaded must never be lower. Forged, Adopted, Missed, Signs OK, Sign fail, Reconn fail and Skips are counts over the dashboard range. Tip lag is in slots. Pipeline: ok, STUCK or HALTED. **Healthy: valid, no red or amber cells, Forged equal to Adopted.** Relays are not listed. **Only producers that exist now are listed**: a row needs a current `dingo_forge_credentials_valid` sample, so a decommissioned node drops out as soon as its target is gone, even though its counters are still inside the time range. KES days is drawn as a fuel bar: full at 93 days, amber under 12, red under 6.",
       "fieldConfig": {
@@ -1130,7 +1108,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1141,7 +1119,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_kes_agent_connected{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1152,7 +1130,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1163,7 +1141,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\",pod=~\"$pod\"} * dingo_forge_slots_per_kes_period{cardano_network=~\"$network\",pod=~\"$pod\"} / 86400)",
           "format": "table",
@@ -1174,7 +1152,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1185,7 +1163,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1196,7 +1174,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(cardano_node_metrics_Forge_forged_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1207,7 +1185,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1218,7 +1196,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_forge_missed_leader_slots_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1229,7 +1207,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_kes_agent_sign_success_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1240,7 +1218,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_kes_agent_sign_failure_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1251,7 +1229,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_kes_agent_reconnect_failures_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1262,7 +1240,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_forge_sync_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) + sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_forge_stale_tip_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -1273,7 +1251,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1284,7 +1262,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) ((dingo_ledger_pipeline_stuck{cardano_network=~\"$network\",pod=~\"$pod\"} + 2 * dingo_ledger_pipeline_halted{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -1373,7 +1351,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Adopted blocks over the dashboard range, by producer. The producers sit on different networks with different stake, so the shares are not expected to be equal. **Healthy: every producer that should be making blocks has a slice.** A producer missing from the ring made no block in the range: check Block Drought beside it before worrying.",
       "fieldConfig": {
@@ -1436,7 +1414,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) ((increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))) > 0",
           "instant": true,
@@ -1452,7 +1430,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One line per producer. Creds: can it sign now. Agent: session open or idle (empty for producers that sign with a local key; idle is not a fault). KES left / KES days: periods and days until the operational certificate expires. Opcert against On-chain: loaded must never be lower. Forged, Adopted, Missed, Signs OK, Sign fail, Reconn fail and Skips are counts over the dashboard range. Tip lag is in slots. Pipeline: ok, STUCK or HALTED. **Healthy: valid, no red or amber cells, Forged equal to Adopted.** Relays are not listed. **Only producers that exist now are listed**: a row needs a current `dingo_forge_credentials_valid` sample, so a decommissioned node drops out as soon as its target is gone, even though its counters are still inside the time range. KES days is drawn as a fuel bar: full at 93 days, amber under 12, red under 6.",
       "fieldConfig": {
@@ -2005,7 +1983,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2016,7 +1994,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_kes_agent_connected{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2027,7 +2005,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2038,7 +2016,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\",pod=~\"$pod\"} * dingo_forge_slots_per_kes_period{cardano_network=~\"$network\",pod=~\"$pod\"} / 86400)",
           "format": "table",
@@ -2049,7 +2027,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2060,7 +2038,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2071,7 +2049,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(cardano_node_metrics_Forge_forged_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2082,7 +2060,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2093,7 +2071,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_forge_missed_leader_slots_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2104,7 +2082,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_kes_agent_sign_success_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2115,7 +2093,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_kes_agent_sign_failure_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2126,7 +2104,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_kes_agent_reconnect_failures_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2137,7 +2115,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_forge_sync_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) + sum by (namespace, pod, cardano_network, pool_id) (increase(dingo_forge_stale_tip_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "format": "table",
@@ -2148,7 +2126,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) (dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2159,7 +2137,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network, pool_id) ((dingo_ledger_pipeline_stuck{cardano_network=~\"$network\",pod=~\"$pod\"} + 2 * dingo_ledger_pipeline_halted{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "format": "table",
@@ -2248,7 +2226,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One row per producer, soonest next leader slot first. **Right**: time until the producer's next scheduled leader slot (`dingo_leader_next_slot` minus the wall-clock slot, at 1 s a slot) and the slot number; *next epoch* when it lies past the epoch boundary; *none* when the schedules the node holds (this epoch, and the next once it is computed) contain no further slot. **Bar**: the share of this epoch's scheduled leader slots (`dingo_leader_schedule_leader_slots`) that have already passed; the tick is how far the epoch itself has run, so a bar far from the tick is luck, not a fault. The line under it counts scheduled, passed and still to go. *Passed* is counted from `dingo_leader_scheduled_slots_elapsed_total` while the node ran, so after a restart or an upgrade inside the epoch it reads *at least* / *at most*. **Healthy: every producer shows a schedule for the current epoch.** A row saying the schedule is for an earlier epoch means the node has not computed this epoch's schedule and cannot lead. Use the countdown to time restarts and rollouts away from a leader slot. Needs a newer Dingo; until then the panel says it is waiting. Several pools in one node are added up.",
       "fieldConfig": {
@@ -2293,7 +2271,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -2304,7 +2282,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count by (namespace, pod, version) (dingo_build_info{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2315,7 +2293,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (((dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"} > 0) - on (namespace, pod) group_left () (cardano_node_metrics_slotNum_int{cardano_network=~\"$network\",pod=~\"$pod\"} + on (namespace, pod) dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"})) - (time() - timestamp(dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"}))) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2326,7 +2304,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"} > 0) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2337,7 +2315,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(max by (namespace, pod) (dingo_leader_next_slot{cardano_network=~\"$network\",pod=~\"$pod\"}) == 0) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2348,7 +2326,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_leader_schedule_leader_slots{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2359,7 +2337,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (dingo_leader_schedule_epoch{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2370,7 +2348,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) ((cardano_node_metrics_epoch_int{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2381,7 +2359,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) ((cardano_node_metrics_slotInEpoch_int{cardano_network=~\"$network\",pod=~\"$pod\"} / on (namespace, pod) group_left () dingo_epoch_length_slots{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2392,7 +2370,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase((dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod, pool_id) (dingo_leader_schedule_epoch{cardano_network=~\"$network\",pod=~\"$pod\"} == dingo_leader_schedule_epoch{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))[6d:2m])) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2403,7 +2381,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (count_over_time((dingo_leader_schedule_epoch{cardano_network=~\"$network\",pod=~\"$pod\"} == dingo_leader_schedule_epoch{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())[6d:2m]) * 120) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "instant": true,
@@ -2414,7 +2392,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) ((cardano_node_metrics_slotInEpoch_int{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2425,7 +2403,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (((cardano_node_metrics_slotNum_int{cardano_network=~\"$network\",pod=~\"$pod\"} - on (namespace, pod) cardano_node_metrics_slotInEpoch_int{cardano_network=~\"$network\",pod=~\"$pod\"}) + on (namespace, pod) group_left () dingo_epoch_length_slots{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2441,7 +2419,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One bar per producer for the dashboard range: every leader slot it was scheduled for, split by what became of it. **Green** adopted as its own tip. **Amber** forged, then not adopted. **Red** the leader check was won and no block was forged (the reason is in Forge Problems). **Dark red** a scheduled slot the slot clock passed that the forger never checked, because the node was syncing or on a stale tip at that moment (`dingo_leader_scheduled_slots_elapsed_total` minus leader checks won): this is the true missed-slot count, and it is invisible to every older counter. **Grey** yielded to another pool of the same node that led the same slot, which is not a loss. The line under the bar is the funnel in numbers, then the slot-battle record: battles settle a security parameter of blocks after they are detected, as *won* (the pool's block stayed on the chain) or *lost* (`dingo_forge_slot_battle_outcomes_total`). *Detected* also counts slots a rival took before this node forged, which never settle, so won plus lost can be lower. **Healthy: solid green bars.** Losing a slot battle is the lottery of two pools sharing a slot, not a fault, unless one producer loses most of them (then look at its block propagation). Counters start with the process: slots that passed while a node was down are in no counter, so compare *scheduled* in the panel beside this one with the blocks adopted in the epoch. Until a newer Dingo runs, the bars start at leader checks won and the panel says what is missing.",
       "fieldConfig": {
@@ -2486,7 +2464,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -2497,7 +2475,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count by (namespace, pod, version) (dingo_build_info{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2508,7 +2486,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2519,7 +2497,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2530,7 +2508,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(cardano_node_metrics_Forge_forged_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2541,7 +2519,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2552,7 +2530,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_yielded_to_own_pool_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2563,7 +2541,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_metrics_slotBattlesTotal_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2574,7 +2552,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_slot_battle_outcomes_total{cardano_network=~\"$network\",pod=~\"$pod\",result=\"won\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2585,7 +2563,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_slot_battle_outcomes_total{cardano_network=~\"$network\",pod=~\"$pod\",result=\"lost\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2596,7 +2574,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__range and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2607,7 +2585,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__range and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "instant": true,
@@ -2623,7 +2601,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One bar per producer: the mean time to forge a block over the dashboard range, drawn against the 1 s slot and split into its stages. **Blue** is everything the producer does itself around the signature (leader check, building the block, adopting it locally; for local-KES producers also the KES sign). For producers that sign through the KES agent the sign round trip (`dingo_kes_agent_sign_latency_seconds`) is split with the agent's own timings: **orange** network and TLS, **grey** the KES sign inside the agent, **purple** the slot-guard write that blocks double signing. **Green** is the producer's self-validation of the block. Total is `dingo_metrics_blockForgingLatency_seconds` (leader check to local adoption). The right-hand figure is the mean and its share of the slot; the line under the bar gives each stage and the latest forge. Means, not percentiles: a producer forges a few blocks a day. **Healthy: under 250 ms, a small fraction of the slot**; amber from 250 ms, red at 1 s, where the block is late for its own slot. A long purple segment is the slot guard's database, a long orange one the path to the agent. Only producers that exist now are drawn. With more producers than fit, the panel drops the stage line (hover a segment instead) rather than scroll.",
       "fieldConfig": {
@@ -2668,7 +2646,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod, cardano_network) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"})",
           "instant": true,
@@ -2679,7 +2657,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) / (sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) > 0)",
           "instant": true,
@@ -2690,7 +2668,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) / (sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) > 0)",
           "instant": true,
@@ -2701,7 +2679,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_validation_duration_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) / (sum by (namespace, pod) (increase(dingo_forge_validation_duration_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) > 0)",
           "instant": true,
@@ -2712,7 +2690,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -2723,7 +2701,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "last_over_time((sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) / (sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) > 0))[$__range:5m])",
           "instant": true,
@@ -2734,7 +2712,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_validation_duration_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -2745,7 +2723,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]))",
           "instant": true,
@@ -2761,7 +2739,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "One row per producer, coloured by the worst state it was in during each step. In order of severity: **credentials invalid** (it cannot sign), **pipeline stuck** (ledger pipeline stuck or halted), **syncing** (over 600 slots behind the wall clock), **lagging** (300 to 600 slots behind), **agent session idle** (a producer that signs through the KES agent holds no open session; informational, because the session is redialled before a leader slot), **ready**. A gap means the producer did not exist. **Healthy: green, with thin pale gaps on agent producers at most.** A red or blue stretch across a leader slot is a lost block; a long idle stretch together with dial failures below means the producer cannot reach the agent.",
       "fieldConfig": {
@@ -2859,7 +2837,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min_over_time(((max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"}) == 0) or (max by (namespace, pod) ((dingo_ledger_pipeline_stuck{cardano_network=~\"$network\",pod=~\"$pod\"} + dingo_ledger_pipeline_halted{cardano_network=~\"$network\",pod=~\"$pod\"}) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0) * 0 + 1 or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 600) * 0 + 2 or (max by (namespace, pod) (dingo_tip_gap_slots{cardano_network=~\"$network\",pod=~\"$pod\"} and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 300) * 0 + 3 or (max by (namespace, pod) (dingo_kes_agent_connected{cardano_network=~\"$network\",pod=~\"$pod\"}) == 0) * 0 + 4 or max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"}) * 0 + 5)[$__interval:1m]) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -2874,7 +2852,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Adopted blocks per hour, stacked by producer. This is the pool's output over time; the gaps are luck, not faults, as long as Forge problems beside Block Drought stays empty. **Healthy: bars that keep coming at each producer's usual rhythm.** Bars that stop for one producer while the others continue are worth a look at its row in the Producers table.",
       "fieldConfig": {
@@ -2962,7 +2940,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(cardano_node_metrics_Forge_adopted_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -2977,7 +2955,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Where the selected producers' measured stage time went over the dashboard range: the **KES agent round trip** (`dingo_kes_agent_sign_latency_seconds`, recorded for completed signs of producers that sign through the agent) and the producer's **self-validation** (`dingo_forge_validation_duration_seconds`). Validation also times blocks that were rejected, while the forge latency counts forged blocks only, so the two are not subtracted from a forge total and no build remainder is drawn; the per-producer view is in Forge Anatomy beside it. **Read it as: which measured stage takes more time.** A ring that is mostly orange says the agent path (network, TLS, the slot-guard write) dominates self-validation.",
       "fieldConfig": {
@@ -3071,7 +3049,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum((increase(dingo_kes_agent_sign_latency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())))",
           "instant": true,
@@ -3082,7 +3060,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum((increase(dingo_forge_validation_duration_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())))",
           "instant": true,
@@ -3098,7 +3076,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "For each producer that signs through a KES agent: the mean sign round trip over the range (`dingo_kes_agent_sign_latency_seconds`, request sent to signature held) as a share of the sign timeout (`CARDANO_SHELLEY_KES_AGENT_SIGN_TIMEOUT`; Dingo's default is 500 ms and it refuses 1 s or more). The timeout comes from the hidden dashboard constant `kes_sign_timeout_ms` (default 500): set it to your producers' value. Good: well under 50%.",
       "fieldConfig": {
@@ -3170,7 +3148,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(1000 * (sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) / (sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[$__range])) > 0)) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) / $kes_sign_timeout_ms",
           "instant": true,
@@ -3186,7 +3164,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Time per forged block, as the mean over 15-minute windows, so one point is one block (or the average of the blocks in that window). **Total forge** (blue) runs from the leader check to local adoption; **KES sign round trip** (orange) is the part spent waiting for the KES agent, for the producers that use it; **self-validation** (green) is the producer checking its own block. Points are drawn because blocks are sparse, and the histogram buckets are too coarse for quantiles at a few blocks an hour. The shaded bands are the budget: amber from 250 ms, red from the 1 s slot. **Healthy: every point below the amber band**; when a blue point is high, the orange point under it shows whether the agent round trip is the cause.",
       "fieldConfig": {
@@ -3326,7 +3304,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) / (sum by (namespace, pod) (increase(dingo_metrics_blockForgingLatency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) > 0)) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "legendFormat": "{{namespace}}/{{pod}} total forge",
@@ -3336,7 +3314,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) / (sum by (namespace, pod) (increase(dingo_kes_agent_sign_latency_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) > 0)) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "legendFormat": "{{namespace}}/{{pod}} KES sign round trip",
@@ -3346,7 +3324,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(sum by (namespace, pod) (increase(dingo_forge_validation_duration_seconds_sum{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) / (sum by (namespace, pod) (increase(dingo_forge_validation_duration_seconds_count{cardano_network=~\"$network\",pod=~\"$pod\"}[15m])) > 0)) and on (namespace, pod) max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())",
           "legendFormat": "{{namespace}}/{{pod}} self-validation",
@@ -3361,7 +3339,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Everything that stops a leader slot from becoming a block, per hour: leader slots missed after selection, slots where forging failed, a KES agent sign that failed, forged blocks that failed the producer's own validation, forges refused by the last-forged-slot fence (the guard against forging the same slot twice after a restart), and forge attempts skipped because the node was syncing or its tip was stale (with the reason). With a newer Dingo it also shows **scheduled slots never checked**: leader slots the slot clock passed while the forger was refusing to forge (`dingo_leader_scheduled_slots_elapsed_total` minus leader checks won). A skip is counted every slot the node is behind; a scheduled slot never checked is a block actually lost to it. Series at zero are hidden, so **a flat baseline is the healthy state**. Any bar is a lost block: read the producer log for that hour.",
       "fieldConfig": {
@@ -3451,7 +3429,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_forge_missed_leader_slots_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} missed leader slot",
@@ -3460,7 +3438,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(cardano_node_metrics_Forge_could_not_forge_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} could not forge",
@@ -3469,7 +3447,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_forge_validation_failed_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} validation failed",
@@ -3478,7 +3456,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_metrics_forgeFenceBlocked_int{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} fence blocked",
@@ -3487,7 +3465,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_kes_agent_sign_failure_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} agent sign failed",
@@ -3496,7 +3474,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_forge_sync_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} sync skips",
@@ -3505,7 +3483,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id, reason) (increase(dingo_forge_stale_tip_skip_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} stale tip skip {{reason}}",
@@ -3514,7 +3492,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) ((round(increase(dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod, pool_id) (dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__interval) and on (namespace, pod, pool_id) (dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__interval)) - round(increase(dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod, pool_id) (dingo_leader_scheduled_slots_elapsed_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__interval) and on (namespace, pod, pool_id) (dingo_metrics_leader_slot_won_total{cardano_network=~\"$network\",pod=~\"$pod\"} offset $__interval))) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end())) > 0",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} scheduled slot never checked",
@@ -3523,7 +3501,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "vector(0)",
           "legendFormat": "baseline (no problems)",
@@ -3537,7 +3515,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Per hour: failed dials or handshakes to the agent, and moves from one agent address to another. **Healthy: all flat at zero.** A failover with no dial failure afterwards is a replica restart handled cleanly. Dial failures that continue mean no replica is reachable from that producer. **Signer not ready** (a newer Dingo): a producer opens its agent session three slots ahead of a leader slot; this counts the leader slots where that preparation failed (`dingo_forge_remote_kes_signer_not_ready_total`). The sign at the slot dials again, so it is a warning that the block was at risk, not a lost block: a lost one shows as an agent sign failure in Forge Problems.",
       "fieldConfig": {
@@ -3627,7 +3605,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_kes_agent_reconnect_failures_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} reconnect failures",
@@ -3636,7 +3614,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_kes_agent_remote_failovers_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} failovers",
@@ -3645,7 +3623,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod, pool_id) (increase(dingo_forge_remote_kes_signer_not_ready_total{cardano_network=~\"$network\",pod=~\"$pod\"}[$__interval]) and on (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\",pod=~\"$pod\"} @ end()))",
           "legendFormat": "{{namespace}}/{{pod}} {{pool_id}} signer not ready before a leader slot",
@@ -3669,6 +3647,21 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "selected": true,
+          "text": "default",
+          "value": "default"
+        },
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "allValue": ".+",
         "allowCustomValue": true,
         "current": {
@@ -3677,7 +3670,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(dingo_forge_credentials_valid{cardano_network=~\"$network\"}, cardano_network)",
         "hide": 0,
@@ -3707,7 +3700,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(dingo_forge_credentials_valid{cardano_network=~\"$network\"}, pod)",
         "hide": 0,

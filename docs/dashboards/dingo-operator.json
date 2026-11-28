@@ -21,40 +21,18 @@
   "graphTooltip": 2,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
       "includeVars": true,
       "keepTime": true,
-      "tags": [],
+      "tags": [
+        "dingo"
+      ],
       "targetBlank": false,
-      "title": "Operator",
+      "title": "Dingo",
       "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-operator"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "DingoNodes",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingonodes"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "Forging Health",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-forging"
+      "type": "dashboards",
+      "url": ""
     }
   ],
   "liveNow": false,
@@ -62,7 +40,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -106,7 +84,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min(up{namespace=\"$operator_namespace\"} and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d]))",
           "instant": true,
@@ -117,7 +95,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(controller_runtime_reconcile_errors_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
           "instant": true,
@@ -128,7 +106,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(controller_runtime_reconcile_panics_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
           "instant": true,
@@ -139,7 +117,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "instant": true,
@@ -150,7 +128,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])))",
           "instant": true,
@@ -161,7 +139,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "1 - sum(rate(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[15m])) / sum(rate(workqueue_queue_duration_seconds_count{namespace=\"$operator_namespace\",name=~\"$controller\"}[15m]))",
           "instant": true,
@@ -172,7 +150,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count(((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "instant": true,
@@ -183,7 +161,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "count(kube_pod_status_ready{condition=\"true\"} == 1 and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or (0 * count(kube_pod_status_ready{condition=\"true\"}))",
           "instant": true,
@@ -194,7 +172,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) unless on (namespace, pod) (kube_pod_status_ready{condition=\"true\"} == 1)",
           "instant": true,
@@ -205,7 +183,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "min by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
           "instant": true,
@@ -216,7 +194,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"$operator_namespace\",container=\"manager\"}[24h]))",
           "instant": true,
@@ -227,7 +205,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(rest_client_requests_total{namespace=\"$operator_namespace\",code!~\"2..\"}[$__range]) and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d])) or vector(0)",
           "instant": true,
@@ -244,7 +222,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Share of the worker capacity in use: the average number of active workers (sampled at each scrape, so a reconcile still running counts) divided by the configured maximum concurrent reconciles, over the last 15 minutes and the last hour. **Healthy: green, under 85%.** Amber from 85%, red from 95%: at that point DingoNodes become due faster than the worker clears them and the queue wait grows without bound. The trend is in Worker saturation beside it.",
       "fieldConfig": {
@@ -316,7 +294,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[15m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "instant": true,
@@ -327,7 +305,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1h])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "instant": true,
@@ -343,7 +321,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every reconcile over the dashboard range by how it ended. `requeue_after` is the normal outcome: the operator finished and scheduled its next periodic check. `success` means done with nothing scheduled, `requeue` an immediate retry, `error` a reconcile that failed. **Healthy: one solid green ring of requeue_after.** Any red slice is a DingoNode the operator could not bring to its desired state: read the operator log for that controller.",
       "fieldConfig": {
@@ -467,7 +445,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (result) (increase(controller_runtime_reconcile_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__range]))",
           "instant": true,
@@ -483,7 +461,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every item the worker picked up over the dashboard range, by how long it had waited in the queue (`workqueue_queue_duration_seconds`; its buckets are decades, so these four bands are exact, where a quantile would be an interpolation). A wait of a few seconds is normal with one worker and a reconcile of about 5 s. **Healthy: mostly under 10 s and nothing over 100 s.** A growing 10 to 100 s slice means the worker is falling behind: see Worker Busy. The share over 10 s is also the Queued > 10 s figure in the header.",
       "fieldConfig": {
@@ -607,7 +585,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"1(\\\\.0)?\"}[$__range]))",
           "instant": true,
@@ -618,7 +596,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"1(\\\\.0)?\"}[$__range])), 0)",
           "instant": true,
@@ -629,7 +607,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"100(\\\\.0)?\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"10(\\\\.0)?\"}[$__range])), 0)",
           "instant": true,
@@ -640,7 +618,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "clamp_min(sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=\"+Inf\"}[$__range])) - sum(increase(workqueue_queue_duration_seconds_bucket{namespace=\"$operator_namespace\",name=~\"$controller\",le=~\"100(\\\\.0)?\"}[$__range])), 0)",
           "instant": true,
@@ -656,7 +634,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Every DingoNode pod: readiness now, restarts in total and over the dashboard range, and uptime. **Healthy: all ready, 0 restarts in range.** Restarts in range turn amber at 1 and red at 3; for a restarted pod read `kubectl logs --previous` and check whether it was OOM-killed. This is the closest thing to per-DingoNode status available as metrics. Pods come from the pod spec, so a pod that has not started (a claim that cannot bind) is listed as not ready; a removed DingoNode drops out at once.",
       "fieldConfig": {
@@ -784,7 +762,7 @@
                 "value": [
                   {
                     "title": "Open ${__value.text} in Forging Health",
-                    "url": "/d/dingo-forging?var-pod=${__value.raw}&${network:queryparam}&${__url_time_range}"
+                    "url": "/d/dingo-forging?var-pod=${__value.raw}&${datasource:queryparam}&${network:queryparam}&${__url_time_range}"
                   }
                 ]
               }
@@ -815,7 +793,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or ((((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0) and on () count(kube_pod_status_ready{condition=\"true\"}))",
           "format": "table",
@@ -826,7 +804,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (kube_pod_container_status_restarts_total and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -837,7 +815,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[$__range]) and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -848,7 +826,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "time() - max by (namespace, pod) (kube_pod_start_time and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})))",
           "format": "table",
@@ -893,7 +871,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "The life of every KES key in one picture. One bar per producer runs from the KES period its operational certificate starts in to the period it expires in; grey is used up, the coloured part is what is left, the marker is now, and the hatched amber zone at the right is a reference window of the default `renewBeforePeriods` (8, 12 days). Only rotation mode Auto renews at the DingoNode's own `renewBeforePeriods`; MonitorOnly, the default, never renews, so read the mode and threshold on the DingoNode. Shortest life first. Under each bar: when the reference renewal point is reached, the opcert issue number the node has loaded against the highest it has seen on chain, the KES period range, and credential reloads over the dashboard range. The lower rows are the keys the KES agent holds for the producers that sign through it (per profile, from the bursa KES agent's `bursa_kesagent_*` metrics; their start period is not exported, so those bars use the longest producer certificate as their scale). **Healthy: every marker left of the hatched zone, opcert loaded equal to or one ahead of the chain, replicas agreeing.** A marker inside the zone means the key is at the reference renewal point: check the DingoNode's rotation mode, then the DingoNode's RotationDue and OpCertIssued conditions. A loaded opcert behind the chain means the node's blocks are rejected. With more keys than fit, the panel drops the detail line (hover a row for it) rather than scroll.",
       "fieldConfig": {
@@ -918,7 +896,7 @@
       },
       "id": 41,
       "options": {
-        "afterRender": "// KES Rotation Timeline: Key Life, Rotation Window, Opcert: afterRender JS\n(function () {\n  var ROOT_ID = 'hx-rotation';\n  try {\n\n  function fhref(x) { var u = new URLSearchParams(window.location.search); return '/d/dingo-forging?var-pod=' + encodeURIComponent(x.pod) + '&var-network=' + encodeURIComponent(x.net) + '&from=' + encodeURIComponent(u.get('from') || 'now-6h') + '&to=' + encodeURIComponent(u.get('to') || 'now') }\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  /* two namespaces can both run relay-0: a pod name seen in more than one namespace is keyed and shown as namespace/pod; podRaw keeps the bare name */\n  var podNs = {};\n  for (var sn = 0; sn < s.length; sn++) {\n    var fn = (s[sn] && s[sn].fields) || [];\n    for (var jn = 0; jn < fn.length; jn++) {\n      var lbn = fn[jn].labels;\n      if (lbn && lbn.pod && lbn.namespace) { var qn = podNs[lbn.pod] = podNs[lbn.pod] || {}; qn[lbn.namespace] = 1 }\n    }\n  }\n  function podId(lb) {\n    var o = {}; for (var k in lb) o[k] = lb[k];\n    if (lb.pod) { o.podRaw = lb.pod; var q = podNs[lb.pod]; if (q && lb.namespace && Object.keys(q).length > 1) o.pod = lb.namespace + '/' + lb.pod }\n    return o;\n  }\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: podId(f[j].labels || {}), v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var RENEW = 8;\n  var out = el(ROOT_ID + '-rows'); if (!out) return;\n  var st = rows('ST'), EX = byLabel('EX', 'pod'), CUR = byLabel('CUR', 'pod'), SPK = byLabel('SPK', 'pod');\n  var OL = byLabel('OL', 'pod'), OC = byLabel('OC', 'pod'), RL = byLabel('RL', 'pod'), RF = byLabel('RF', 'pod');\n  var list = [], life = 0;\n  for (var i = 0; i < st.length; i++) {\n    var a = st[i].l.pod; if (!a || !has(EX[a]) || !has(CUR[a])) continue;\n    var o = { name: a, pod: st[i].l.podRaw || st[i].l.pod || '', net: st[i].l.cardano_network || '', sub: st[i].l.cardano_network || '', start: st[i].v, end: EX[a], cur: CUR[a], days: (has(SPK[a]) ? SPK[a] : 129600) / 86400, ol: OL[a], oc: OC[a], rl: RL[a], rf: RF[a] };\n    o.life = Math.max(1, o.end - o.start); o.left = o.end - o.cur; life = Math.max(life, o.life); list.push(o);\n  }\n  list.sort(function (x, y) { return x.left - y.left });\n  if (!life) life = 62;\n  var AL = byLabel('AL', 'profile'), AC = byLabel('AC', 'profile'), AI = byLabel('AI', 'profile'), AD = byLabel('AD', 'profile'), agent = [];\n  for (var p in AL) { if (!has(AC[p])) continue; agent.push({ name: p, sub: 'KES agent key', agent: true, end: AL[p], cur: AC[p], left: AL[p] - AC[p], life: Math.max(life, AL[p] - AC[p]), days: 1.5, ol: AI[p], split: has(AD[p]) }) }\n  agent.sort(function (x, y) { return x.left - y.left });\n  var all = list.concat(agent);\n  if (!all.length) { out.innerHTML = '<div class=\"hx-none\">No producer reports an operational certificate in this time range.</div>'; return }\n  var h = '';\n  for (var r = 0; r < all.length; r++) {\n    var x = all[r], used = Math.min(1, Math.max(0, (x.life - x.left) / x.life)), win = Math.min(1, RENEW / x.life);\n    var status = x.left > RENEW ? 'ok' : (x.left >= 4 ? 'warn' : 'bad'), col = status === 'ok' ? 'var(--ok)' : (status === 'warn' ? 'var(--warn)' : 'var(--bad)');\n    var bar = '<u style=\"width:' + (used * 100).toFixed(2) + '%;background:rgba(128,136,150,.38)\" title=\"KES periods already used\"></u>' +\n      '<u style=\"width:' + (Math.max(0, 1 - used) * 100).toFixed(2) + '%;background:' + col + ';opacity:.8\" title=\"KES periods left\"></u>' +\n      '<u style=\"position:absolute;right:0;top:0;width:' + (win * 100).toFixed(2) + '%;background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\" title=\"reference window: the default renewBeforePeriods is ' + RENEW + '; only rotation mode Auto renews, MonitorOnly never does\"></u>' +\n      '<em style=\"left:calc(' + (used * 100).toFixed(2) + '% - 1px)\" title=\"now\"></em>';\n    var dLeft = x.left * x.days, dRot = (x.left - RENEW) * x.days, parts = [];\n    parts.push(x.left > RENEW ? 'reference renewal point (' + RENEW + ' periods left) in about <b>' + n0(dRot) + ' days</b>' : (x.left > 0 ? '<b style=\"color:var(--warn)\">inside the reference window: check the DingoNode rotation mode</b>' : '<b style=\"color:var(--bad)\">EXPIRED</b>'));\n    if (x.agent) {\n      parts.push('opcert #' + n0(x.ol));\n      parts.push('signable through KES period ' + n0(x.end) + ', now ' + n0(x.cur));\n      parts.push(x.split ? '<b style=\"color:var(--bad)\">replicas disagree on this key</b>' : 'replicas hold the same key');\n    } else {\n      if (has(x.ol) && has(x.oc)) parts.push(x.ol === x.oc ? 'opcert #' + n0(x.ol) + ' loaded, same on chain' : (x.ol > x.oc ? 'opcert #' + n0(x.ol) + ' loaded, chain has seen #' + n0(x.oc) + ' (new certificate, not yet used in a block)' : '<b style=\"color:var(--bad)\">opcert #' + n0(x.ol) + ' loaded is behind #' + n0(x.oc) + ' on chain: its blocks are rejected</b>'));\n      parts.push('KES periods ' + n0(x.start) + ' to ' + n0(x.end) + ', now ' + n0(x.cur));\n      var nrl = has(x.rl) ? Math.round(x.rl) : 0, nrf = has(x.rf) ? Math.round(x.rf) : 0;\n      parts.push(nrl ? plural(nrl, 'credential reload', 'credential reloads') + ' applied in this range' : 'no reload in this range');\n      if (nrf) parts.push('<b style=\"color:var(--bad)\">' + plural(nrf, 'reload', 'reloads') + ' failed</b>');\n    }\n    var tip = parts.join(' · ').replace(/<[^>]+>/g, '');\n    h += '<div class=\"hx-r\" title=\"' + esc(x.name + ': ' + tip) + '\"' + (r === 0 ? ' style=\"border-top:0\"' : '') + '><div class=\"hx-rn\"><b>' + (x.pod ? '<a href=\"' + esc(fhref(x)) + '\" style=\"color:inherit;text-decoration:none\" title=\"Open in Forging Health\">' + esc(x.name) + '</a>' : esc(x.name)) + '</b><span>' + esc(x.sub) + '</span></div>' +\n      '<div><div class=\"hx-bar\">' + bar + '</div></div>' +\n      '<div class=\"hx-rv\" data-s=\"' + status + '\"><b>' + plural(Math.round(x.left), 'period', 'periods') + '</b> ' + n0(dLeft) + ' days left</div>' +\n      '<div class=\"hx-seg\"><span>' + parts.join('</span><span>') + '</span></div></div>';\n  }\n  out.innerHTML = h;\n  fit();\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-rows');\n    if (v) v.textContent = 'Panel script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
+        "afterRender": "// KES Rotation Timeline: Key Life, Rotation Window, Opcert: afterRender JS\n(function () {\n  var ROOT_ID = 'hx-rotation';\n  try {\n\n  function fhref(x) { var u = new URLSearchParams(window.location.search); return '/d/dingo-forging?var-pod=' + encodeURIComponent(x.pod) + '&var-network=' + encodeURIComponent(x.net) + '&from=' + encodeURIComponent(u.get('from') || 'now-6h') + '&to=' + encodeURIComponent(u.get('to') || 'now') + dsq(u) }\n  function dsq(u) { var d = u.get('var-datasource'); if (!d) { try { var g = context.grafana; var tok = '$' + '{datasource}'; d = g && g.replaceVariables ? g.replaceVariables(tok) : ''; if (d === tok) d = '' } catch (e) { d = '' } } return d ? '&var-datasource=' + encodeURIComponent(d) : '' }\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  /* two namespaces can both run relay-0: a pod name seen in more than one namespace is keyed and shown as namespace/pod; podRaw keeps the bare name */\n  var podNs = {};\n  for (var sn = 0; sn < s.length; sn++) {\n    var fn = (s[sn] && s[sn].fields) || [];\n    for (var jn = 0; jn < fn.length; jn++) {\n      var lbn = fn[jn].labels;\n      if (lbn && lbn.pod && lbn.namespace) { var qn = podNs[lbn.pod] = podNs[lbn.pod] || {}; qn[lbn.namespace] = 1 }\n    }\n  }\n  function podId(lb) {\n    var o = {}; for (var k in lb) o[k] = lb[k];\n    if (lb.pod) { o.podRaw = lb.pod; var q = podNs[lb.pod]; if (q && lb.namespace && Object.keys(q).length > 1) o.pod = lb.namespace + '/' + lb.pod }\n    return o;\n  }\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: podId(f[j].labels || {}), v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var RENEW = 8;\n  var out = el(ROOT_ID + '-rows'); if (!out) return;\n  /* a producer forging several pools exports one series per pool_id: a row per pool, keyed pod|pool_id; single-pool producers keep the pod key */\n  function rk(l) { return l.pool_id ? l.pod + '|' + l.pool_id : l.pod }\n  function byKey(ref) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { if (r[i].l.pod !== undefined) o[rk(r[i].l)] = r[i].v } return o }\n  var st = rows('ST'), EX = byKey('EX'), CUR = byKey('CUR'), SPK = byKey('SPK');\n  var OL = byKey('OL'), OC = byKey('OC'), RL = byLabel('RL', 'pod'), RF = byLabel('RF', 'pod');\n  var list = [], life = 0;\n  for (var i = 0; i < st.length; i++) {\n    var a = st[i].l.pod, pid = st[i].l.pool_id, k = rk(st[i].l); if (!a || !has(EX[k]) || !has(CUR[k])) continue;\n    var o = { name: pid ? a + ' ' + pid.slice(0, 12) : a, pod: st[i].l.podRaw || st[i].l.pod || '', net: st[i].l.cardano_network || '', sub: st[i].l.cardano_network || '', start: st[i].v, end: EX[k], cur: CUR[k], days: (has(SPK[k]) ? SPK[k] : 129600) / 86400, ol: OL[k], oc: OC[k], rl: RL[a], rf: RF[a] };\n    o.life = Math.max(1, o.end - o.start); o.left = o.end - o.cur; life = Math.max(life, o.life); list.push(o);\n  }\n  list.sort(function (x, y) { return x.left - y.left });\n  if (!life) life = 62;\n  var AL = byLabel('AL', 'profile'), AC = byLabel('AC', 'profile'), AI = byLabel('AI', 'profile'), AD = byLabel('AD', 'profile'), agent = [];\n  for (var p in AL) { if (!has(AC[p])) continue; agent.push({ name: p, sub: 'KES agent key', agent: true, end: AL[p], cur: AC[p], left: AL[p] - AC[p] + 1, life: Math.max(life, AL[p] - AC[p] + 1), days: 1.5, ol: AI[p], split: has(AD[p]) }) }\n  agent.sort(function (x, y) { return x.left - y.left });\n  var all = list.concat(agent);\n  if (!all.length) { out.innerHTML = '<div class=\"hx-none\">No producer reports an operational certificate in this time range.</div>'; return }\n  var h = '';\n  for (var r = 0; r < all.length; r++) {\n    var x = all[r], used = Math.min(1, Math.max(0, (x.life - x.left) / x.life)), win = Math.min(1, RENEW / x.life);\n    var status = x.left > RENEW ? 'ok' : (x.left >= 4 ? 'warn' : 'bad'), col = status === 'ok' ? 'var(--ok)' : (status === 'warn' ? 'var(--warn)' : 'var(--bad)');\n    var bar = '<u style=\"width:' + (used * 100).toFixed(2) + '%;background:rgba(128,136,150,.38)\" title=\"KES periods already used\"></u>' +\n      '<u style=\"width:' + (Math.max(0, 1 - used) * 100).toFixed(2) + '%;background:' + col + ';opacity:.8\" title=\"KES periods left\"></u>' +\n      '<u style=\"position:absolute;right:0;top:0;width:' + (win * 100).toFixed(2) + '%;background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\" title=\"reference window: the default renewBeforePeriods is ' + RENEW + '; only rotation mode Auto renews, MonitorOnly never does\"></u>' +\n      '<em style=\"left:calc(' + (used * 100).toFixed(2) + '% - 1px)\" title=\"now\"></em>';\n    var dLeft = x.left * x.days, dRot = (x.left - RENEW) * x.days, parts = [];\n    parts.push(x.left > RENEW ? 'reference renewal point (' + RENEW + ' periods left) in about <b>' + n0(dRot) + ' days</b>' : (x.left > 0 ? '<b style=\"color:var(--warn)\">inside the reference window: check the DingoNode rotation mode</b>' : '<b style=\"color:var(--bad)\">EXPIRED</b>'));\n    if (x.agent) {\n      parts.push('opcert #' + n0(x.ol));\n      parts.push('signable through KES period ' + n0(x.end) + ', now ' + n0(x.cur));\n      parts.push(x.split ? '<b style=\"color:var(--bad)\">replicas disagree on this key</b>' : 'replicas hold the same key');\n    } else {\n      if (has(x.ol) && has(x.oc)) parts.push(x.ol === x.oc ? 'opcert #' + n0(x.ol) + ' loaded, same on chain' : (x.ol > x.oc ? 'opcert #' + n0(x.ol) + ' loaded, chain has seen #' + n0(x.oc) + ' (new certificate, not yet used in a block)' : '<b style=\"color:var(--bad)\">opcert #' + n0(x.ol) + ' loaded is behind #' + n0(x.oc) + ' on chain: its blocks are rejected</b>'));\n      parts.push('KES periods ' + n0(x.start) + ' to ' + n0(x.end) + ', now ' + n0(x.cur));\n      var nrl = has(x.rl) ? Math.round(x.rl) : 0, nrf = has(x.rf) ? Math.round(x.rf) : 0;\n      parts.push(nrl ? plural(nrl, 'credential reload', 'credential reloads') + ' applied in this range' : 'no reload in this range');\n      if (nrf) parts.push('<b style=\"color:var(--bad)\">' + plural(nrf, 'reload', 'reloads') + ' failed</b>');\n    }\n    var tip = parts.join(' · ').replace(/<[^>]+>/g, '');\n    h += '<div class=\"hx-r\" title=\"' + esc(x.name + ': ' + tip) + '\"' + (r === 0 ? ' style=\"border-top:0\"' : '') + '><div class=\"hx-rn\"><b>' + (x.pod ? '<a href=\"' + esc(fhref(x)) + '\" style=\"color:inherit;text-decoration:none\" title=\"Open in Forging Health\">' + esc(x.name) + '</a>' : esc(x.name)) + '</b><span>' + esc(x.sub) + '</span></div>' +\n      '<div><div class=\"hx-bar\">' + bar + '</div></div>' +\n      '<div class=\"hx-rv\" data-s=\"' + status + '\"><b>' + plural(Math.round(x.left), 'period', 'periods') + '</b> ' + n0(dLeft) + ' days left</div>' +\n      '<div class=\"hx-seg\"><span>' + parts.join('</span><span>') + '</span></div></div>';\n  }\n  out.innerHTML = h;\n  fit();\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-rows');\n    if (v) v.textContent = 'Panel script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
         "content": "<div class=\"hx hx-plain\" id=\"hx-rotation\"><div class=\"hx-lg\"><span><i style=\"background:rgba(128,136,150,.5)\"></i>KES periods used</span><span><i style=\"background:#3ecf73\"></i>periods left</span><span><i style=\"background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\"></i>reference window (last 8 periods, the default renewBeforePeriods; only mode Auto renews)</span><span><i style=\"background:currentColor;width:2px\"></i>now</span></div><div class=\"hx-rows\" id=\"hx-rotation-rows\"></div></div>",
         "contentPartials": [],
         "defaultContent": "<div class=\"hx hx-plain\" id=\"hx-rotation\"><div class=\"hx-lg\"><span><i style=\"background:rgba(128,136,150,.5)\"></i>KES periods used</span><span><i style=\"background:#3ecf73\"></i>periods left</span><span><i style=\"background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\"></i>reference window (last 8 periods, the default renewBeforePeriods; only mode Auto renews)</span><span><i style=\"background:currentColor;width:2px\"></i>now</span></div><div class=\"hx-rows\" id=\"hx-rotation-rows\"><div class=\"hx-none\">No producer reports an operational certificate in this time range.</div></div></div>",
@@ -938,9 +916,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod, cardano_network) (cardano_node_metrics_operationalCertificateStartKESPeriod_int{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, cardano_network, pool_id) (cardano_node_metrics_operationalCertificateStartKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -949,9 +927,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (cardano_node_metrics_operationalCertificateExpiryKESPeriod_int{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (cardano_node_metrics_operationalCertificateExpiryKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -960,9 +938,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (cardano_node_metrics_currentKESPeriod_int{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (cardano_node_metrics_currentKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -971,9 +949,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -982,9 +960,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -993,9 +971,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -1004,7 +982,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\",result=\"success\"}[$__range]))",
           "instant": true,
@@ -1015,7 +993,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\",result=\"failure\"}[$__range]))",
           "instant": true,
@@ -1026,7 +1004,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (profile) (bursa_kesagent_last_period)",
           "instant": true,
@@ -1037,7 +1015,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (profile) (bursa_kesagent_current_period)",
           "instant": true,
@@ -1048,7 +1026,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (profile) (bursa_kesagent_opcert_issue_number)",
           "instant": true,
@@ -1059,7 +1037,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "(max by (profile) (bursa_kesagent_last_period) != on (profile) min by (profile) (bursa_kesagent_last_period)) or (max by (profile) (bursa_kesagent_opcert_issue_number) != on (profile) min by (profile) (bursa_kesagent_opcert_issue_number))",
           "instant": true,
@@ -1075,7 +1053,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Readiness of each DingoNode pod over time. **Healthy: solid green.** A red stretch is a restart, a rollout or a failed readiness probe; several pods turning red at the same moment points at the host or the operator rolling a change, a single pod at the node itself.",
       "fieldConfig": {
@@ -1150,7 +1128,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (kube_pod_status_ready{condition=\"true\"} and on (namespace, pod) ((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"}))) or ((((group by (namespace, pod) (kube_pod_spec_volumes_persistentvolumeclaims_info{volume=\"dingo-data\"}) or group by (namespace, pod) (kube_pod_container_info{container=\"dingo\"}) or group by (namespace, pod) (dingo_build_info{cardano_network=~\"$network\"})) unless on (namespace, pod) group by (namespace, pod) (dingo_build_info{cardano_network!~\"$network\"})) * 0) and on () count(kube_pod_status_ready{condition=\"true\"}))",
           "legendFormat": "{{namespace}}/{{pod}}",
@@ -1164,7 +1142,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "KES periods left per producer over time. It falls by one every 1.5 days and jumps back up when a rotation is applied, so the sawtooth is the rotation history. The amber band starts at 8, the default renewBeforePeriods (the red band starts at 4). Only rotation mode Auto renews, at the DingoNode's own renewBeforePeriods; MonitorOnly, the default, never renews. A line that keeps falling past the DingoNode's threshold under Auto means a rotation did not go through: check the DingoNode's RotationDue and OpCertIssued conditions. **Healthy: every line above the amber band, or dipping into it only briefly before it jumps back up.**",
       "fieldConfig": {
@@ -1259,21 +1237,37 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
-          "legendFormat": "{{namespace}}/{{pod}}",
+          "expr": "max by (namespace, pod, pool_id) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
+          "legendFormat": "{{namespace}}/{{pod}} {{pool_id}}",
           "refId": "A"
         }
       ],
       "title": "KES Periods Left over Time",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*) (pool1[a-z0-9]{7})[a-z0-9]{20,}$",
+            "renamePattern": "$1 $2"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*\\S) +$",
+            "renamePattern": "$1"
+          }
+        }
+      ],
       "transparent": true,
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Block producer credential reloads per hour, by trigger (signal, file change, agent push) and result (success, unchanged, failure). Series at zero are hidden, so **a flat baseline is normal** between rotations. A success after a KES rotation is what you want to see; a failure means the new key or certificate was rejected and the producer is still on the old one - read the node log before the old key expires. **Healthy: a success after each rotation and never a failure.**",
       "fieldConfig": {
@@ -1363,21 +1357,37 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
-          "expr": "sum by (namespace, pod, trigger, result) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\"}[$__interval])) > 0",
-          "legendFormat": "{{namespace}}/{{pod}} {{trigger}} {{result}}",
+          "expr": "sum by (namespace, pod, pool_id, trigger, result) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\"}[$__interval])) > 0",
+          "legendFormat": "{{namespace}}/{{pod}} {{trigger}} {{result}} {{pool_id}}",
           "refId": "A"
         }
       ],
       "title": "Rotations Applied (Credential Reloads)",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*) (pool1[a-z0-9]{7})[a-z0-9]{20,}$",
+            "renamePattern": "$1 $2"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*\\S) +$",
+            "renamePattern": "$1"
+          }
+        }
+      ],
       "transparent": true,
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Reconciles per minute by result. `requeue_after` is the normal outcome and should be the only non-zero line: the operator finished and scheduled its next periodic check. `success` (done, nothing scheduled) and `requeue` (immediate retry) stay at 0 in this operator; `error` should be 0. If the `requeue_after` line drops to 0 while the operator is UP, the worker is hung - see In-Flight and Longest-Running Reconcile. **Healthy: one steady green band.**",
       "fieldConfig": {
@@ -1525,7 +1535,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (controller, result) (rate(controller_runtime_reconcile_total{namespace=\"$operator_namespace\",controller=~\"$controller\"}[5m])) * 60",
           "legendFormat": "{{controller}} {{result}}",
@@ -1539,7 +1549,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "How long each reconcile took, as a heatmap of `controller_runtime_reconcile_time_seconds`: time runs left to right, the duration bucket bottom to top, and a darker cell means more reconciles landed in that bucket in that 5-minute step. Most of a reconcile is reading the node's metrics endpoint and writing status, so a slow or unreachable node lifts the band toward the timeout. **Healthy: one tight band around 5 s** (today: nearly everything between 1 and 10 s). A second band higher up, or a band that drifts upward, is a node that answers slowly; with a single worker every extra second adds directly to Worker saturation.",
       "fieldConfig": {
@@ -1611,7 +1621,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"$operator_namespace\",controller=~\"$controller\"}[$__interval]))",
           "format": "heatmap",
@@ -1627,7 +1637,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Share of worker capacity in use: the average number of active workers (sampled at each scrape, so a reconcile still running counts) divided by the configured maximum concurrent reconciles (1). The 5-minute line shows bursts, the 1-hour line the trend. The amber and red bands start at 85% and 95%: sustained above them, DingoNodes become due faster than the worker clears them and queue wait grows without bound. Remedies are a cheaper or less frequent reconcile, or more workers. **Healthy: both lines below the amber band.**",
       "fieldConfig": {
@@ -1722,7 +1732,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[5m])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "legendFormat": "busy (5m)",
@@ -1731,7 +1741,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(avg_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1h])) / sum(controller_runtime_max_concurrent_reconciles{namespace=\"$operator_namespace\",controller=~\"$controller\"})",
           "legendFormat": "busy (1h)",
@@ -1745,7 +1755,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "DingoNodes waiting for the worker, per priority lane of controller-runtime's priority queue. **Priority 0** is the normal lane: watch events and the periodic requeues. **Priority -100** is the low-priority lane controller-runtime uses for bulk re-list work - items queued when the operator starts or its cache resyncs without the object having changed - so that a restart cannot delay a real change; higher priority is served first. Depth is a count only: there is no per-DingoNode label, and each DingoNode is queued at most once, so the ceiling is the number of DingoNodes. **Healthy: brief spikes that drain to 0** (7-day maximum: 7 in lane 0, 1 in lane -100). A lane that stays above 0 for minutes means the worker is saturated or hung.",
       "fieldConfig": {
@@ -1836,7 +1846,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(workqueue_depth{namespace=\"$operator_namespace\",name=~\"$controller\",priority=\"0\"})",
           "legendFormat": "normal lane (priority 0)",
@@ -1845,7 +1855,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(workqueue_depth{namespace=\"$operator_namespace\",name=~\"$controller\",priority=\"-100\"})",
           "legendFormat": "low-priority lane (-100)",
@@ -1859,7 +1869,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "`workqueue_unfinished_work_seconds`: seconds of work currently in progress and not yet finished. `workqueue_longest_running_processor_seconds`: age of the oldest reconcile still running. With one worker the two are the same reconcile. **Healthy: a sawtooth that resets every few seconds**. A line that keeps climbing past a minute is a hung reconcile: nothing else is processed until it returns. Restarting the operator pod clears it; capture the log first.",
       "fieldConfig": {
@@ -1953,7 +1963,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum(workqueue_unfinished_work_seconds{namespace=\"$operator_namespace\",name=~\"$controller\"})",
           "legendFormat": "unfinished work",
@@ -1962,7 +1972,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max(workqueue_longest_running_processor_seconds{namespace=\"$operator_namespace\",name=~\"$controller\"})",
           "legendFormat": "longest running",
@@ -1976,7 +1986,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Operator resident memory as the process reports it, the container working set the kubelet uses for OOM decisions, and the container memory limit. **Healthy: flat, well under the limit** (about 80 MiB RSS against a 256 MiB limit today). A steady climb is a leak and ends in an OOM kill, visible as a restart.",
       "fieldConfig": {
@@ -2092,7 +2102,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (process_resident_memory_bytes{namespace=\"$operator_namespace\"} and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d]))",
           "legendFormat": "{{namespace}}/{{pod}} rss",
@@ -2101,7 +2111,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (namespace, pod) (container_memory_working_set_bytes{namespace=\"$operator_namespace\",container=\"manager\"})",
           "legendFormat": "{{namespace}}/{{pod}} working set",
@@ -2110,7 +2120,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "max by (namespace, pod) (kube_pod_container_resource_limits{namespace=\"$operator_namespace\",resource=\"memory\",container=\"manager\"})",
           "legendFormat": "{{namespace}}/{{pod}} limit",
@@ -2124,7 +2134,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "default"
+        "uid": "$datasource"
       },
       "description": "Requests per second from the operator to the Kubernetes API, by HTTP method and status code. **Healthy: only 2xx** - today roughly 1.6 GET, 1.0 PUT and a trickle of POST per second, about 7 PUTs per reconcile. 409 is an update conflict, 403 missing RBAC, 429 client- or server-side throttling, 5xx an API server problem. The PUT volume follows the reconcile rate, so it halves if the doubled reconcile rate is fixed. Any series that is not 2xx is drawn red.",
       "fieldConfig": {
@@ -2226,7 +2236,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "default"
+            "uid": "$datasource"
           },
           "expr": "sum by (method, code) (rate(rest_client_requests_total{namespace=\"$operator_namespace\"}[5m]) and on (namespace, job, instance) last_over_time(controller_runtime_active_workers{namespace=\"$operator_namespace\",controller=~\"$controller\"}[1d]))",
           "legendFormat": "{{method}} {{code}}",
@@ -2249,6 +2259,21 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "selected": true,
+          "text": "default",
+          "value": "default"
+        },
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "allValue": ".+",
         "allowCustomValue": true,
         "current": {
@@ -2261,7 +2286,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(up{cardano_service=\"dingo\"}, cardano_network)",
         "hide": 0,
@@ -2290,7 +2315,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(controller_runtime_reconcile_total{controller=\"dingonode\"}, namespace)",
         "hide": 0,
@@ -2320,7 +2345,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "default"
+          "uid": "$datasource"
         },
         "definition": "label_values(controller_runtime_reconcile_total{namespace=\"$operator_namespace\"}, controller)",
         "hide": 0,
