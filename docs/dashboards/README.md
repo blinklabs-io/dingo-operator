@@ -11,8 +11,21 @@ manages, on Kubernetes with the Prometheus Operator.
 | **DingoNodes** | `dingonodes.json` | `dingonodes` | Fleet view: sync and tip, block arrival, peers, storage runway, resources |
 | **Forging Health** | `dingo-forging-health.json` | `dingo-forging` | Producer readiness, leader slots to adopted blocks, forge timing, remote signing agent |
 
-The three dashboards link to each other from the top bar. The links keep the
-time range and the template variables.
+Each dashboard has a **Dingo** menu in the top bar. It lists every loaded
+dashboard tagged `dingo`: these three, plus the Dingo node dashboards and the
+Bursa KES agent dashboard when they are installed. The menu keeps the time
+range and the template variables; a variable carries over only to a dashboard
+that defines one with the same name, such as `$datasource`.
+
+On DingoNodes, the **Forging** column of the Dingo Health table shows
+`open ›` for block producers and links to Forging Health for that pod and
+network; relays leave it blank. The KES Fuel per Producer gauges link to the
+same place.
+
+On the Operator dashboard, a producer that forges for several pools reports
+one series per `pool_id`. The KES Rotation Timeline, KES Periods Left over Time
+and Rotations Applied panels then show a row or series per pool, labelled with
+the pod and a shortened pool ID. A producer with one pool shows as before.
 
 The screenshots below were rendered from synthetic metrics for one network
 with two relays, an API node and a block producer.

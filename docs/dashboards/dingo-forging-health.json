@@ -21,40 +21,18 @@
   "graphTooltip": 2,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
       "includeVars": true,
       "keepTime": true,
-      "tags": [],
+      "tags": [
+        "dingo"
+      ],
       "targetBlank": false,
-      "title": "Operator",
+      "title": "Dingo",
       "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-operator"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "DingoNodes",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingonodes"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "Forging Health",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-forging"
+      "type": "dashboards",
+      "url": ""
     }
   ],
   "liveNow": false,

@@ -21,40 +21,18 @@
   "graphTooltip": 2,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
       "includeVars": true,
       "keepTime": true,
-      "tags": [],
+      "tags": [
+        "dingo"
+      ],
       "targetBlank": false,
-      "title": "Operator",
+      "title": "Dingo",
       "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-operator"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "DingoNodes",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingonodes"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "Forging Health",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-forging"
+      "type": "dashboards",
+      "url": ""
     }
   ],
   "liveNow": false,
@@ -324,15 +302,42 @@
               {
                 "id": "custom.width",
                 "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Forging"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "from": 0,
+                      "result": {
+                        "text": "open ›"
+                      },
+                      "to": 1
+                    },
+                    "type": "range"
+                  }
+                ]
               },
               {
                 "id": "links",
                 "value": [
                   {
-                    "title": "Open ${__data.fields.Pod} in Forging Health (producers)",
-                    "url": "/d/dingo-forging?var-pod=${__data.fields.Pod}&${datasource:queryparam}&${network:queryparam}&${__url_time_range}"
+                    "title": "Open ${__data.fields.Pod} in Forging Health",
+                    "url": "/d/dingo-forging?var-pod=${__data.fields.Pod}&var-network=${__data.fields.Network}&${datasource:queryparam}&${__url_time_range}"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -846,6 +851,18 @@
           "legendFormat": "",
           "range": false,
           "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "max by (namespace, pod) (dingo_forge_credentials_valid{cardano_network=~\"$network\"}) >= 0",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "P"
         }
       ],
       "title": "Dingo Health",
@@ -874,6 +891,7 @@
               "Value #M": false,
               "Value #N": false,
               "Value #O": true,
+              "Value #P": false,
               "pod": false,
               "cardano_network": false,
               "version": false
@@ -892,7 +910,8 @@
               "Value #L": 15,
               "Value #M": 16,
               "Value #N": 17,
-              "Value #O": 3,
+              "Value #O": 4,
+              "Value #P": 3,
               "pod": 0,
               "cardano_network": 1,
               "version": 6
@@ -912,6 +931,7 @@
               "Value #M": "Restarts 24h",
               "Value #N": "Uptime",
               "Value #O": "Next slot",
+              "Value #P": "Forging",
               "pod": "Pod",
               "cardano_network": "Network",
               "version": "Version",
@@ -2662,6 +2682,12 @@
               }
             ]
           },
+          "links": [
+            {
+              "title": "Open ${__field.labels.pod} in Forging Health",
+              "url": "/d/dingo-forging?var-pod=${__field.labels.pod}&var-network=${__field.labels.cardano_network}&${datasource:queryparam}&${__url_time_range}"
+            }
+          ],
           "unit": "d"
         },
         "overrides": []
@@ -2708,7 +2734,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "sort(max by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"} * dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"}) / 86400)",
+          "expr": "sort(max by (namespace, pod, cardano_network) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"} * dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"}) / 86400)",
           "instant": true,
           "legendFormat": "{{namespace}}/{{pod}}",
           "range": false,

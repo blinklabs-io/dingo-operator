@@ -21,40 +21,18 @@
   "graphTooltip": 2,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
       "includeVars": true,
       "keepTime": true,
-      "tags": [],
+      "tags": [
+        "dingo"
+      ],
       "targetBlank": false,
-      "title": "Operator",
+      "title": "Dingo",
       "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-operator"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "DingoNodes",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingonodes"
-    },
-    {
-      "asDropdown": false,
-      "icon": "external link",
-      "includeVars": true,
-      "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "Forging Health",
-      "tooltip": "",
-      "type": "link",
-      "url": "/d/dingo-forging"
+      "type": "dashboards",
+      "url": ""
     }
   ],
   "liveNow": false,
@@ -918,7 +896,7 @@
       },
       "id": 41,
       "options": {
-        "afterRender": "// KES Rotation Timeline: Key Life, Rotation Window, Opcert: afterRender JS\n(function () {\n  var ROOT_ID = 'hx-rotation';\n  try {\n\n  function fhref(x) { var u = new URLSearchParams(window.location.search); return '/d/dingo-forging?var-pod=' + encodeURIComponent(x.pod) + '&var-network=' + encodeURIComponent(x.net) + '&from=' + encodeURIComponent(u.get('from') || 'now-6h') + '&to=' + encodeURIComponent(u.get('to') || 'now') }\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  /* two namespaces can both run relay-0: a pod name seen in more than one namespace is keyed and shown as namespace/pod; podRaw keeps the bare name */\n  var podNs = {};\n  for (var sn = 0; sn < s.length; sn++) {\n    var fn = (s[sn] && s[sn].fields) || [];\n    for (var jn = 0; jn < fn.length; jn++) {\n      var lbn = fn[jn].labels;\n      if (lbn && lbn.pod && lbn.namespace) { var qn = podNs[lbn.pod] = podNs[lbn.pod] || {}; qn[lbn.namespace] = 1 }\n    }\n  }\n  function podId(lb) {\n    var o = {}; for (var k in lb) o[k] = lb[k];\n    if (lb.pod) { o.podRaw = lb.pod; var q = podNs[lb.pod]; if (q && lb.namespace && Object.keys(q).length > 1) o.pod = lb.namespace + '/' + lb.pod }\n    return o;\n  }\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: podId(f[j].labels || {}), v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var RENEW = 8;\n  var out = el(ROOT_ID + '-rows'); if (!out) return;\n  var st = rows('ST'), EX = byLabel('EX', 'pod'), CUR = byLabel('CUR', 'pod'), SPK = byLabel('SPK', 'pod');\n  var OL = byLabel('OL', 'pod'), OC = byLabel('OC', 'pod'), RL = byLabel('RL', 'pod'), RF = byLabel('RF', 'pod');\n  var list = [], life = 0;\n  for (var i = 0; i < st.length; i++) {\n    var a = st[i].l.pod; if (!a || !has(EX[a]) || !has(CUR[a])) continue;\n    var o = { name: a, pod: st[i].l.podRaw || st[i].l.pod || '', net: st[i].l.cardano_network || '', sub: st[i].l.cardano_network || '', start: st[i].v, end: EX[a], cur: CUR[a], days: (has(SPK[a]) ? SPK[a] : 129600) / 86400, ol: OL[a], oc: OC[a], rl: RL[a], rf: RF[a] };\n    o.life = Math.max(1, o.end - o.start); o.left = o.end - o.cur; life = Math.max(life, o.life); list.push(o);\n  }\n  list.sort(function (x, y) { return x.left - y.left });\n  if (!life) life = 62;\n  var AL = byLabel('AL', 'profile'), AC = byLabel('AC', 'profile'), AI = byLabel('AI', 'profile'), AD = byLabel('AD', 'profile'), agent = [];\n  for (var p in AL) { if (!has(AC[p])) continue; agent.push({ name: p, sub: 'KES agent key', agent: true, end: AL[p], cur: AC[p], left: AL[p] - AC[p], life: Math.max(life, AL[p] - AC[p]), days: 1.5, ol: AI[p], split: has(AD[p]) }) }\n  agent.sort(function (x, y) { return x.left - y.left });\n  var all = list.concat(agent);\n  if (!all.length) { out.innerHTML = '<div class=\"hx-none\">No producer reports an operational certificate in this time range.</div>'; return }\n  var h = '';\n  for (var r = 0; r < all.length; r++) {\n    var x = all[r], used = Math.min(1, Math.max(0, (x.life - x.left) / x.life)), win = Math.min(1, RENEW / x.life);\n    var status = x.left > RENEW ? 'ok' : (x.left >= 4 ? 'warn' : 'bad'), col = status === 'ok' ? 'var(--ok)' : (status === 'warn' ? 'var(--warn)' : 'var(--bad)');\n    var bar = '<u style=\"width:' + (used * 100).toFixed(2) + '%;background:rgba(128,136,150,.38)\" title=\"KES periods already used\"></u>' +\n      '<u style=\"width:' + (Math.max(0, 1 - used) * 100).toFixed(2) + '%;background:' + col + ';opacity:.8\" title=\"KES periods left\"></u>' +\n      '<u style=\"position:absolute;right:0;top:0;width:' + (win * 100).toFixed(2) + '%;background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\" title=\"reference window: the default renewBeforePeriods is ' + RENEW + '; only rotation mode Auto renews, MonitorOnly never does\"></u>' +\n      '<em style=\"left:calc(' + (used * 100).toFixed(2) + '% - 1px)\" title=\"now\"></em>';\n    var dLeft = x.left * x.days, dRot = (x.left - RENEW) * x.days, parts = [];\n    parts.push(x.left > RENEW ? 'reference renewal point (' + RENEW + ' periods left) in about <b>' + n0(dRot) + ' days</b>' : (x.left > 0 ? '<b style=\"color:var(--warn)\">inside the reference window: check the DingoNode rotation mode</b>' : '<b style=\"color:var(--bad)\">EXPIRED</b>'));\n    if (x.agent) {\n      parts.push('opcert #' + n0(x.ol));\n      parts.push('signable through KES period ' + n0(x.end) + ', now ' + n0(x.cur));\n      parts.push(x.split ? '<b style=\"color:var(--bad)\">replicas disagree on this key</b>' : 'replicas hold the same key');\n    } else {\n      if (has(x.ol) && has(x.oc)) parts.push(x.ol === x.oc ? 'opcert #' + n0(x.ol) + ' loaded, same on chain' : (x.ol > x.oc ? 'opcert #' + n0(x.ol) + ' loaded, chain has seen #' + n0(x.oc) + ' (new certificate, not yet used in a block)' : '<b style=\"color:var(--bad)\">opcert #' + n0(x.ol) + ' loaded is behind #' + n0(x.oc) + ' on chain: its blocks are rejected</b>'));\n      parts.push('KES periods ' + n0(x.start) + ' to ' + n0(x.end) + ', now ' + n0(x.cur));\n      var nrl = has(x.rl) ? Math.round(x.rl) : 0, nrf = has(x.rf) ? Math.round(x.rf) : 0;\n      parts.push(nrl ? plural(nrl, 'credential reload', 'credential reloads') + ' applied in this range' : 'no reload in this range');\n      if (nrf) parts.push('<b style=\"color:var(--bad)\">' + plural(nrf, 'reload', 'reloads') + ' failed</b>');\n    }\n    var tip = parts.join(' · ').replace(/<[^>]+>/g, '');\n    h += '<div class=\"hx-r\" title=\"' + esc(x.name + ': ' + tip) + '\"' + (r === 0 ? ' style=\"border-top:0\"' : '') + '><div class=\"hx-rn\"><b>' + (x.pod ? '<a href=\"' + esc(fhref(x)) + '\" style=\"color:inherit;text-decoration:none\" title=\"Open in Forging Health\">' + esc(x.name) + '</a>' : esc(x.name)) + '</b><span>' + esc(x.sub) + '</span></div>' +\n      '<div><div class=\"hx-bar\">' + bar + '</div></div>' +\n      '<div class=\"hx-rv\" data-s=\"' + status + '\"><b>' + plural(Math.round(x.left), 'period', 'periods') + '</b> ' + n0(dLeft) + ' days left</div>' +\n      '<div class=\"hx-seg\"><span>' + parts.join('</span><span>') + '</span></div></div>';\n  }\n  out.innerHTML = h;\n  fit();\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-rows');\n    if (v) v.textContent = 'Panel script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
+        "afterRender": "// KES Rotation Timeline: Key Life, Rotation Window, Opcert: afterRender JS\n(function () {\n  var ROOT_ID = 'hx-rotation';\n  try {\n\n  function fhref(x) { var u = new URLSearchParams(window.location.search); return '/d/dingo-forging?var-pod=' + encodeURIComponent(x.pod) + '&var-network=' + encodeURIComponent(x.net) + '&from=' + encodeURIComponent(u.get('from') || 'now-6h') + '&to=' + encodeURIComponent(u.get('to') || 'now') }\n  var s = (context && context.panelData && context.panelData.series) ? context.panelData.series : [];\n  function lastv(v) { if (!v) return undefined; for (var i = v.length - 1; i >= 0; i--) { var x = v[i]; if (x !== null && x !== undefined && isFinite(x)) return Number(x) } return undefined }\n  /* rows(ref): [{l: labels, v: last value}] for every series of that query */\n  /* two namespaces can both run relay-0: a pod name seen in more than one namespace is keyed and shown as namespace/pod; podRaw keeps the bare name */\n  var podNs = {};\n  for (var sn = 0; sn < s.length; sn++) {\n    var fn = (s[sn] && s[sn].fields) || [];\n    for (var jn = 0; jn < fn.length; jn++) {\n      var lbn = fn[jn].labels;\n      if (lbn && lbn.pod && lbn.namespace) { var qn = podNs[lbn.pod] = podNs[lbn.pod] || {}; qn[lbn.namespace] = 1 }\n    }\n  }\n  function podId(lb) {\n    var o = {}; for (var k in lb) o[k] = lb[k];\n    if (lb.pod) { o.podRaw = lb.pod; var q = podNs[lb.pod]; if (q && lb.namespace && Object.keys(q).length > 1) o.pod = lb.namespace + '/' + lb.pod }\n    return o;\n  }\n  function rows(ref) {\n    var out = [];\n    for (var si = 0; si < s.length; si++) {\n      if (!s[si] || s[si].refId !== ref) continue;\n      var f = s[si].fields || [];\n      for (var j = 0; j < f.length; j++) {\n        if (f[j].type !== 'number') continue;\n        var v = lastv(f[j].values && f[j].values.toArray ? f[j].values.toArray() : f[j].values);\n        if (v !== undefined) out.push({ l: podId(f[j].labels || {}), v: v });\n      }\n    }\n    return out;\n  }\n  function one(ref) { var r = rows(ref); return r.length ? r[0].v : undefined }\n  function sum(ref) { var r = rows(ref), t = 0; for (var i = 0; i < r.length; i++) t += r[i].v; return r.length ? t : undefined }\n  function minRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v < m.v) m = r[i]; return m }\n  function maxRow(r) { var m = null; for (var i = 0; i < r.length; i++) if (!m || r[i].v > m.v) m = r[i]; return m }\n  function byLabel(ref, label) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { var k = r[i].l[label]; if (k !== undefined) o[k] = r[i].v } return o }\n  function has(x) { return x !== undefined && x !== null && isFinite(x) }\n  function n0(x) { return has(x) ? String(Math.round(x)) : '–' }\n  function ms(sec) { if (!has(sec)) return '–'; var m = sec * 1000; return m >= 10000 ? (m / 1000).toFixed(1) + ' s' : (m >= 100 ? Math.round(m) : (m >= 10 ? m.toFixed(0) : m.toFixed(1))) + ' ms' }\n  function plural(n, one_, many) { return n + ' ' + (n === 1 ? one_ : many) }\n  function names(a, max) { max = max || 3; return a.length <= max ? a.join(', ') : a.slice(0, max).join(', ') + ' +' + (a.length - max) }\n  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }\n  var RANK = { na: 0, ok: 1, warn: 2, bad: 3 };\n  function worst(a, b) { return RANK[b] > RANK[a] ? b : a }\n  /* lower is better: ok under w, warn under b, else bad */\n  function low(x, w, b) { return !has(x) ? 'na' : (x < w ? 'ok' : (x < b ? 'warn' : 'bad')) }\n  /* higher is better: ok at or above g, warn at or above a, else bad */\n  function high(x, g, a) { return !has(x) ? 'na' : (x >= g ? 'ok' : (x >= a ? 'warn' : 'bad')) }\n  function el(id) { return document.getElementById(id) }\n  var root = el(ROOT_ID);\n  /* light theme: ask Grafana, else infer it from the inherited text colour (dark text = light theme) */\n  try {\n    var th = context.grafana && context.grafana.theme, light = null;\n    if (th && typeof th.isDark === 'boolean') light = !th.isDark;\n    if (light === null && root && typeof getComputedStyle === 'function') {\n      var m = /(\\d+)[, ]+(\\d+)[, ]+(\\d+)/.exec(getComputedStyle(root).color || '');\n      if (m) light = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128;\n    }\n    if (root && light && String(root.className).indexOf('hx-light') < 0) root.className += ' hx-light';\n  } catch (e) { }\n  /* fit(): a dynamic-text panel scrolls inside itself when its content is taller than the panel, and that\n     captures the page scroll. Find the scrolling ancestor and, while the content overflows it, step through the\n     compact levels (hx-fit1 drops the detail line, hx-fit2 also thins the rows and drops the legend). */\n  function fit() {\n    try {\n      if (!root || !root.parentElement || typeof getComputedStyle !== 'function') return;\n      root.className = String(root.className).replace(/ hx-fit\\d/g, '');\n      var box = root.parentElement, found = false;\n      /* only a scroller inside this panel counts: stop at the panel chrome (<section>) or the grid item */\n      while (box && box !== document.body) {\n        var cls = typeof box.className === 'string' ? box.className : '';\n        if (box.tagName === 'SECTION' || cls.indexOf('react-grid-item') >= 0) break;\n        var oy = getComputedStyle(box).overflowY;\n        if ((oy === 'auto' || oy === 'scroll') && box.clientHeight > 0) { found = true; break }\n        box = box.parentElement;\n      }\n      if (!found) return;\n      for (var lvl = 1; lvl <= 2 && box.scrollHeight > box.clientHeight + 1; lvl++) root.className += ' hx-fit' + lvl;\n    } catch (e) { }\n  }\n  function dur(sec) { if (!has(sec)) return '–'; var a = Math.abs(sec); if (a < 90) return Math.round(a) + ' s'; if (a < 5400) return Math.round(a / 60) + ' min'; if (a < 172800) return (a / 3600).toFixed(a < 36000 ? 1 : 0) + ' h'; return (a / 86400).toFixed(a < 864000 ? 1 : 0) + ' d' }\n  var overall = 'na';\n  /* kpi(key, value, unit, status, note): fill one tile; value '–' when undefined */\n  function kpi(key, value, unit, status, note) {\n    var t = el(ROOT_ID + '-k-' + key); if (!t) return;\n    var miss = value === undefined || value === null || value === '–';\n    var st = miss ? 'na' : (status || 'na');\n    t.setAttribute('data-s', st);\n    var c = t.children;\n    if (c[1]) c[1].innerHTML = miss ? '–' : esc(value) + (unit ? '<small>' + esc(unit) + '</small>' : '');\n    if (c[2]) c[2].textContent = miss ? (note || 'no data') : (note || '');\n    if (c[2]) c[2].title = miss ? '' : (note || '');\n    overall = worst(overall, st);\n  }\n  var BADGE = { ok: 'Healthy', warn: 'Attention', bad: 'Action needed', na: 'No data' };\n  function verdict(html, status) {\n    var st = status || overall;\n    if (root) root.setAttribute('data-s', st);\n    var b = el(ROOT_ID + '-badge'); if (b) b.lastChild.textContent = BADGE[st];\n    var v = el(ROOT_ID + '-verdict'); if (v) v.innerHTML = html;\n    fit();\n  }\n\n  var RENEW = 8;\n  var out = el(ROOT_ID + '-rows'); if (!out) return;\n  /* a producer forging several pools exports one series per pool_id: a row per pool, keyed pod|pool_id; single-pool producers keep the pod key */\n  function rk(l) { return l.pool_id ? l.pod + '|' + l.pool_id : l.pod }\n  function byKey(ref) { var r = rows(ref), o = {}; for (var i = 0; i < r.length; i++) { if (r[i].l.pod !== undefined) o[rk(r[i].l)] = r[i].v } return o }\n  var st = rows('ST'), EX = byKey('EX'), CUR = byKey('CUR'), SPK = byKey('SPK');\n  var OL = byKey('OL'), OC = byKey('OC'), RL = byLabel('RL', 'pod'), RF = byLabel('RF', 'pod');\n  var list = [], life = 0;\n  for (var i = 0; i < st.length; i++) {\n    var a = st[i].l.pod, pid = st[i].l.pool_id, k = rk(st[i].l); if (!a || !has(EX[k]) || !has(CUR[k])) continue;\n    var o = { name: pid ? a + ' ' + pid.slice(0, 12) : a, pod: st[i].l.podRaw || st[i].l.pod || '', net: st[i].l.cardano_network || '', sub: st[i].l.cardano_network || '', start: st[i].v, end: EX[k], cur: CUR[k], days: (has(SPK[k]) ? SPK[k] : 129600) / 86400, ol: OL[k], oc: OC[k], rl: RL[a], rf: RF[a] };\n    o.life = Math.max(1, o.end - o.start); o.left = o.end - o.cur; life = Math.max(life, o.life); list.push(o);\n  }\n  list.sort(function (x, y) { return x.left - y.left });\n  if (!life) life = 62;\n  var AL = byLabel('AL', 'profile'), AC = byLabel('AC', 'profile'), AI = byLabel('AI', 'profile'), AD = byLabel('AD', 'profile'), agent = [];\n  for (var p in AL) { if (!has(AC[p])) continue; agent.push({ name: p, sub: 'KES agent key', agent: true, end: AL[p], cur: AC[p], left: AL[p] - AC[p], life: Math.max(life, AL[p] - AC[p]), days: 1.5, ol: AI[p], split: has(AD[p]) }) }\n  agent.sort(function (x, y) { return x.left - y.left });\n  var all = list.concat(agent);\n  if (!all.length) { out.innerHTML = '<div class=\"hx-none\">No producer reports an operational certificate in this time range.</div>'; return }\n  var h = '';\n  for (var r = 0; r < all.length; r++) {\n    var x = all[r], used = Math.min(1, Math.max(0, (x.life - x.left) / x.life)), win = Math.min(1, RENEW / x.life);\n    var status = x.left > RENEW ? 'ok' : (x.left >= 4 ? 'warn' : 'bad'), col = status === 'ok' ? 'var(--ok)' : (status === 'warn' ? 'var(--warn)' : 'var(--bad)');\n    var bar = '<u style=\"width:' + (used * 100).toFixed(2) + '%;background:rgba(128,136,150,.38)\" title=\"KES periods already used\"></u>' +\n      '<u style=\"width:' + (Math.max(0, 1 - used) * 100).toFixed(2) + '%;background:' + col + ';opacity:.8\" title=\"KES periods left\"></u>' +\n      '<u style=\"position:absolute;right:0;top:0;width:' + (win * 100).toFixed(2) + '%;background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\" title=\"reference window: the default renewBeforePeriods is ' + RENEW + '; only rotation mode Auto renews, MonitorOnly never does\"></u>' +\n      '<em style=\"left:calc(' + (used * 100).toFixed(2) + '% - 1px)\" title=\"now\"></em>';\n    var dLeft = x.left * x.days, dRot = (x.left - RENEW) * x.days, parts = [];\n    parts.push(x.left > RENEW ? 'reference renewal point (' + RENEW + ' periods left) in about <b>' + n0(dRot) + ' days</b>' : (x.left > 0 ? '<b style=\"color:var(--warn)\">inside the reference window: check the DingoNode rotation mode</b>' : '<b style=\"color:var(--bad)\">EXPIRED</b>'));\n    if (x.agent) {\n      parts.push('opcert #' + n0(x.ol));\n      parts.push('signable through KES period ' + n0(x.end) + ', now ' + n0(x.cur));\n      parts.push(x.split ? '<b style=\"color:var(--bad)\">replicas disagree on this key</b>' : 'replicas hold the same key');\n    } else {\n      if (has(x.ol) && has(x.oc)) parts.push(x.ol === x.oc ? 'opcert #' + n0(x.ol) + ' loaded, same on chain' : (x.ol > x.oc ? 'opcert #' + n0(x.ol) + ' loaded, chain has seen #' + n0(x.oc) + ' (new certificate, not yet used in a block)' : '<b style=\"color:var(--bad)\">opcert #' + n0(x.ol) + ' loaded is behind #' + n0(x.oc) + ' on chain: its blocks are rejected</b>'));\n      parts.push('KES periods ' + n0(x.start) + ' to ' + n0(x.end) + ', now ' + n0(x.cur));\n      var nrl = has(x.rl) ? Math.round(x.rl) : 0, nrf = has(x.rf) ? Math.round(x.rf) : 0;\n      parts.push(nrl ? plural(nrl, 'credential reload', 'credential reloads') + ' applied in this range' : 'no reload in this range');\n      if (nrf) parts.push('<b style=\"color:var(--bad)\">' + plural(nrf, 'reload', 'reloads') + ' failed</b>');\n    }\n    var tip = parts.join(' · ').replace(/<[^>]+>/g, '');\n    h += '<div class=\"hx-r\" title=\"' + esc(x.name + ': ' + tip) + '\"' + (r === 0 ? ' style=\"border-top:0\"' : '') + '><div class=\"hx-rn\"><b>' + (x.pod ? '<a href=\"' + esc(fhref(x)) + '\" style=\"color:inherit;text-decoration:none\" title=\"Open in Forging Health\">' + esc(x.name) + '</a>' : esc(x.name)) + '</b><span>' + esc(x.sub) + '</span></div>' +\n      '<div><div class=\"hx-bar\">' + bar + '</div></div>' +\n      '<div class=\"hx-rv\" data-s=\"' + status + '\"><b>' + plural(Math.round(x.left), 'period', 'periods') + '</b> ' + n0(dLeft) + ' days left</div>' +\n      '<div class=\"hx-seg\"><span>' + parts.join('</span><span>') + '</span></div></div>';\n  }\n  out.innerHTML = h;\n  fit();\n\n  } catch (e) {\n    var v = document.getElementById(ROOT_ID + '-rows');\n    if (v) v.textContent = 'Panel script error: ' + (e && e.message ? e.message : e);\n  }\n})();\n",
         "content": "<div class=\"hx hx-plain\" id=\"hx-rotation\"><div class=\"hx-lg\"><span><i style=\"background:rgba(128,136,150,.5)\"></i>KES periods used</span><span><i style=\"background:#3ecf73\"></i>periods left</span><span><i style=\"background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\"></i>reference window (last 8 periods, the default renewBeforePeriods; only mode Auto renews)</span><span><i style=\"background:currentColor;width:2px\"></i>now</span></div><div class=\"hx-rows\" id=\"hx-rotation-rows\"></div></div>",
         "contentPartials": [],
         "defaultContent": "<div class=\"hx hx-plain\" id=\"hx-rotation\"><div class=\"hx-lg\"><span><i style=\"background:rgba(128,136,150,.5)\"></i>KES periods used</span><span><i style=\"background:#3ecf73\"></i>periods left</span><span><i style=\"background:repeating-linear-gradient(135deg,rgba(245,177,46,.95) 0 4px,rgba(245,177,46,.25) 4px 8px)\"></i>reference window (last 8 periods, the default renewBeforePeriods; only mode Auto renews)</span><span><i style=\"background:currentColor;width:2px\"></i>now</span></div><div class=\"hx-rows\" id=\"hx-rotation-rows\"><div class=\"hx-none\">No producer reports an operational certificate in this time range.</div></div></div>",
@@ -940,7 +918,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod, cardano_network) (cardano_node_metrics_operationalCertificateStartKESPeriod_int{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, cardano_network, pool_id) (cardano_node_metrics_operationalCertificateStartKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -951,7 +929,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (cardano_node_metrics_operationalCertificateExpiryKESPeriod_int{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (cardano_node_metrics_operationalCertificateExpiryKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -962,7 +940,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (cardano_node_metrics_currentKESPeriod_int{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (cardano_node_metrics_currentKESPeriod_int{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -973,7 +951,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (dingo_forge_slots_per_kes_period{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -984,7 +962,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (dingo_forge_opcert_counter_loaded{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -995,7 +973,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\"})",
+          "expr": "max by (namespace, pod, pool_id) (dingo_forge_opcert_counter_onchain{cardano_network=~\"$network\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -1261,12 +1239,28 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (namespace, pod) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
-          "legendFormat": "{{namespace}}/{{pod}}",
+          "expr": "max by (namespace, pod, pool_id) (cardano_node_metrics_remainingKESPeriods_int{cardano_network=~\"$network\"})",
+          "legendFormat": "{{namespace}}/{{pod}} {{pool_id}}",
           "refId": "A"
         }
       ],
       "title": "KES Periods Left over Time",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*) (pool1[a-z0-9]{7})[a-z0-9]{20,}$",
+            "renamePattern": "$1 $2"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*\\S) +$",
+            "renamePattern": "$1"
+          }
+        }
+      ],
       "transparent": true,
       "type": "timeseries"
     },
@@ -1365,12 +1359,28 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "sum by (namespace, pod, trigger, result) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\"}[$__interval])) > 0",
-          "legendFormat": "{{namespace}}/{{pod}} {{trigger}} {{result}}",
+          "expr": "sum by (namespace, pod, pool_id, trigger, result) (increase(dingo_forge_credential_reloads_total{cardano_network=~\"$network\"}[$__interval])) > 0",
+          "legendFormat": "{{namespace}}/{{pod}} {{trigger}} {{result}} {{pool_id}}",
           "refId": "A"
         }
       ],
       "title": "Rotations Applied (Credential Reloads)",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*) (pool1[a-z0-9]{7})[a-z0-9]{20,}$",
+            "renamePattern": "$1 $2"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^(.*\\S) +$",
+            "renamePattern": "$1"
+          }
+        }
+      ],
       "transparent": true,
       "type": "timeseries"
     },
